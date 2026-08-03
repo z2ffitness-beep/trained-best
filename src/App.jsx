@@ -1209,7 +1209,28 @@ function parseAIJson(text) {
   if (start !== -1 && end !== -1) clean = clean.slice(start, end + 1);
   clean = clean.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
   clean = clean.replace(/,(\s*[}\]])/g, "$1"); // strip trailing commas
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch (e) {
+    // Response likely got cut off mid-structure. Trim back to the last complete
+    // element and auto-close any open braces/brackets, then retry once.
+    let repaired = clean.replace(/,\s*"[^"]*"?\s*:?\s*("[^"]*)?$/, ""); // drop dangling trailing property
+    repaired = repaired.replace(/,\s*$/, "");
+    const stack = [];
+    let inStr = false, esc = false;
+    for (const ch of repaired) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{" || ch === "[") stack.push(ch);
+      else if (ch === "}" && stack[stack.length - 1] === "{") stack.pop();
+      else if (ch === "]" && stack[stack.length - 1] === "[") stack.pop();
+    }
+    if (inStr) repaired += '"';
+    while (stack.length) repaired += stack.pop() === "{" ? "}" : "]";
+    return JSON.parse(repaired);
+  }
 }
 
 function applyGeneratedProgram(result, state, intake) {
@@ -1247,7 +1268,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 4096,
+          max_tokens: 8192,
           messages: [{ role: "user", content: buildAIPrompt(intake) }],
         })
       });
@@ -3553,7 +3574,7 @@ export default function App() {
       try {
         const response = await fetch("/api/chat", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4096, messages: [{ role: "user", content: buildAIPrompt(data) }] })
+          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 8192, messages: [{ role: "user", content: buildAIPrompt(data) }] })
         });
         const apiData = await response.json();
         const textBlock = (apiData.content || []).find(b => b.type === "text");
