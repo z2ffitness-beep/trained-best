@@ -1201,6 +1201,28 @@ Return JSON in this exact shape:
 }`;
 }
 
+function applyGeneratedProgram(result, state, intake) {
+  const newExercises = [];
+  const days = (result.days || []).map(d => ({
+    id: "d" + Math.random().toString(36).slice(2, 9), name: d.name,
+    exercises: (d.exercises || []).map(x => {
+      let match = state.exercises.find(e => e.name.toLowerCase() === x.name.toLowerCase());
+      if (!match) {
+        match = { id: "eai" + Math.random().toString(36).slice(2, 9), name: x.name, phase: x.phase, pattern: "AI-Generated", hasMedia: false };
+        newExercises.push(match);
+      }
+      return { id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id, phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
+    })
+  }));
+  const newProgram = { id: "pai" + Date.now(), name: result.programName, weeks: result.weeks || 6, assignedCount: 1, sport: intake?.["🥊 Sport / Focus"] || "General Fitness", days };
+  return {
+    ...state,
+    programs: [...state.programs, newProgram],
+    exercises: [...state.exercises, ...newExercises],
+    me: { ...state.me, program: newProgram.id, customProgram: null },
+  };
+}
+
 function AIProgramGenerator({ intake, onGenerated, onClose }) {
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
@@ -2566,16 +2588,33 @@ function Workout({ state, setState, nav }) {
   const [mood, setMood] = useState(null);
   const [swapOpen, setSwapOpen] = useState(false);
   const [swappedMap, setSwappedMap] = useState({});
+  const [showGenerator, setShowGenerator] = useState(false);
 
   if (!day) return (
     <div className="pb-28">
       <TopBar title="Workout" onLogout={nav.logout} />
       <div className="px-5 pt-10 text-center">
         {state.me.selfGuided
-          ? <><div className="text-sm font-semibold mb-1" style={{ color: C.text }}>Your program is being built</div><p className="text-xs" style={{ color: C.sub }}>Your AI-generated workout plan will appear here shortly.</p></>
+          ? (
+            <>
+              <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+              <p className="text-xs mb-5" style={{ color: C.sub }}>Generate a fully comprehensive program based on your sign-up screening.</p>
+              <Btn icon={Sparkles} onClick={() => setShowGenerator(true)}>Generate Program</Btn>
+            </>
+          )
           : <p className="text-sm" style={{ color: C.sub }}>Waiting on your coach to assign a program.</p>
         }
       </div>
+      {showGenerator && (
+        <AIProgramGenerator
+          intake={state.me.intake || {}}
+          onClose={() => setShowGenerator(false)}
+          onGenerated={(result) => {
+            setState(s => applyGeneratedProgram(result, s, state.me.intake));
+            setShowGenerator(false);
+          }}
+        />
+      )}
     </div>
   );
 
@@ -3497,6 +3536,7 @@ export default function App() {
         program: null,
         selfGuided: role === "athlete", // true = no coach, AI-only
         hasCoach: role === "athlete_coached",
+        intake: data,
       };
       setState(s => ({ ...s, me }));
       setAuthed(role);
@@ -3510,20 +3550,7 @@ export default function App() {
         const textBlock = (apiData.content || []).find(b => b.type === "text");
         const clean = textBlock?.text.replace(/```json|```/g, "").trim();
         const parsed = JSON.parse(clean);
-        const newExercises = [];
-        const days = (parsed.days || []).map(d => ({
-          id: "d" + Math.random().toString(36).slice(2, 9), name: d.name,
-          exercises: (d.exercises || []).map(x => {
-            let match = SEED_EXERCISES.find(e => e.name.toLowerCase() === x.name.toLowerCase());
-            if (!match) {
-              match = { id: "eai" + Math.random().toString(36).slice(2, 9), name: x.name, phase: x.phase, pattern: "AI-Generated", hasMedia: false };
-              newExercises.push(match);
-            }
-            return { id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id, phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
-          })
-        }));
-        const newProgram = { id: "pai" + Date.now(), name: parsed.programName, weeks: parsed.weeks || 6, assignedCount: 1, sport: data["🥊 Sport / Focus"] || "General Fitness", days };
-        setState(s => ({ ...s, programs: [...s.programs, newProgram], exercises: [...s.exercises, ...newExercises], me: { ...s.me, program: newProgram.id } }));
+        setState(s => applyGeneratedProgram(parsed, s, data));
       } catch (err) {
         // generation failed — athlete lands on dashboard without a program, same as before
       }
