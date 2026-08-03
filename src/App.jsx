@@ -1201,6 +1201,17 @@ Return JSON in this exact shape:
 }`;
 }
 
+function parseAIJson(text) {
+  if (!text) throw new Error("No response content from AI");
+  let clean = text.replace(/```json|```/g, "").trim();
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start !== -1 && end !== -1) clean = clean.slice(start, end + 1);
+  clean = clean.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  clean = clean.replace(/,(\s*[}\]])/g, "$1"); // strip trailing commas
+  return JSON.parse(clean);
+}
+
 function applyGeneratedProgram(result, state, intake) {
   const newExercises = [];
   const days = (result.days || []).map(d => ({
@@ -1236,15 +1247,13 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 1000,
+          max_tokens: 4096,
           messages: [{ role: "user", content: buildAIPrompt(intake) }],
         })
       });
       const data = await response.json();
       const textBlock = (data.content || []).find(b => b.type === "text");
-      if (!textBlock) throw new Error("No response content");
-      const clean = textBlock.text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const parsed = parseAIJson(textBlock?.text);
       setResult(parsed);
       setStatus("done");
     } catch (err) {
@@ -3544,12 +3553,11 @@ export default function App() {
       try {
         const response = await fetch("/api/chat", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: buildAIPrompt(data) }] })
+          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4096, messages: [{ role: "user", content: buildAIPrompt(data) }] })
         });
         const apiData = await response.json();
         const textBlock = (apiData.content || []).find(b => b.type === "text");
-        const clean = textBlock?.text.replace(/```json|```/g, "").trim();
-        const parsed = JSON.parse(clean);
+        const parsed = parseAIJson(textBlock?.text);
         setState(s => applyGeneratedProgram(parsed, s, data));
       } catch (err) {
         // generation failed — athlete lands on dashboard without a program, same as before
