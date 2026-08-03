@@ -101,13 +101,13 @@ const C = {
 // ---------- phase ordering (the canonical workout structure) ----------
 const PHASES = [
   { key: "warmup_general", label: "Dynamic Warmup", short: "Warmup" },
-  { key: "warmup_specific", label: "Injury Priming", short: "Priming" },
-  { key: "compound", label: "Heavy Compound", short: "Compound" },
-  { key: "explosive", label: "Explosive / Power", short: "Explosive" },
-  { key: "hypertrophy", label: "Hypertrophy", short: "Hypertrophy" },
-  { key: "lactic", label: "Lactic Endurance", short: "Lactic" },
-  { key: "aerobic", label: "Aerobic Endurance", short: "Aerobic" },
-  { key: "cooldown", label: "Stretch & Cooldown", short: "Cooldown" },
+  { key: "warmup_specific", label: "Primer", short: "Primer" },
+  { key: "explosive", label: "Plyometrics / Med Ball", short: "Plyo" },
+  { key: "compound", label: "Strength — Main Movements", short: "Strength" },
+  { key: "hypertrophy", label: "Strength — Accessories", short: "Accessories" },
+  { key: "lactic", label: "Cardio", short: "Cardio" },
+  { key: "aerobic", label: "Aerobic (own day if lengthy)", short: "Aerobic" },
+  { key: "cooldown", label: "Static Stretch & Cooldown", short: "Cooldown" },
 ];
 const phaseIndex = key => PHASES.findIndex(p => p.key === key);
 
@@ -1179,9 +1179,11 @@ Athlete intake:
 - Equipment: ${(intake.equipment || []).join(", ") || "Full gym access"}
 
 Rules:
-- Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply): dynamic warmup/general priming, injury-specific priming (if injuries listed), heavy compound movements, explosive/power movements, hypertrophy accessory work, lactic acid / anaerobic conditioning, aerobic conditioning, stretching/cooldown.
-- If the athlete has injuries, include specific priming/prehab work for that area early in the session and avoid contraindicated movements.
-- If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work.
+- Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply to that day): dynamic warmup, 1-2 primer exercises (movement prep, and injury-specific prehab if injuries are listed), plyometrics/med ball throws, strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
+- If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
+- Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
+- If the athlete has injuries, include specific priming/prehab work for that area in the primer exercises and avoid contraindicated movements.
+- If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
 - Match days per week to the requested schedule.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
 
@@ -1194,7 +1196,7 @@ Return JSON in this exact shape:
     {
       "name": "Day 1 — <focus>",
       "exercises": [
-        { "phase": "warmup_general|warmup_specific|compound|explosive|hypertrophy|lactic|aerobic|cooldown", "name": "string", "sets": number, "reps": "string", "rpe": number, "rest": "string" }
+        { "phase": "warmup_general|warmup_specific|explosive|compound|hypertrophy|lactic|aerobic|cooldown", "name": "string", "sets": number, "reps": "string", "rpe": number, "rest": "string" }
       ]
     }
   ]
@@ -1244,7 +1246,7 @@ function applyGeneratedProgram(result, state, intake) {
         newExercises.push(match);
       }
       return { id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id, phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
-    })
+    }).sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase))
   }));
   const newProgram = { id: "pai" + Date.now(), name: result.programName, weeks: result.weeks || 6, assignedCount: 1, sport: intake?.["🥊 Sport / Focus"] || "General Fitness", days };
   return {
@@ -2494,7 +2496,7 @@ function AthleteDashboard({ state, setState, nav }) {
   );
 }
 
-function AthleteProgram({ state, nav }) {
+function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
   const exById = id => state.exercises.find(e => e.id === id);
@@ -2514,7 +2516,29 @@ function AthleteProgram({ state, nav }) {
   }
 
   const day = myProgram.days[activeDayIdx];
-  const sortedExercises = day ? [...day.exercises].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase)) : [];
+  // Order is set once at generation/build time (phase sequence) and persists here —
+  // NOT re-sorted on every render — so a manual reorder below actually sticks.
+  const sortedExercises = day ? day.exercises : [];
+
+  const moveExercise = (fromIdx, toIdx) => {
+    if (toIdx < 0 || toIdx >= sortedExercises.length) return;
+    setState(s => {
+      const isCustom = !!s.me.customProgram;
+      const updateDays = (prog) => ({
+        ...prog,
+        days: prog.days.map((d, i) => {
+          if (i !== activeDayIdx) return d;
+          const next = [...d.exercises];
+          [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+          return { ...d, exercises: next };
+        })
+      });
+      if (isCustom) {
+        return { ...s, me: { ...s.me, customProgram: updateDays(s.me.customProgram) } };
+      }
+      return { ...s, programs: s.programs.map(p => p.id === myProgram.id ? updateDays(p) : p) };
+    });
+  };
 
   return (
     <div className="pb-28">
@@ -2571,7 +2595,14 @@ function AthleteProgram({ state, nav }) {
                       <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
                       <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{phaseLabel} · {x.sets}×{x.reps} · RPE {x.rpe}</div>
                     </div>
-                    <ChevronRight size={16} style={{ color: C.faint }} className="shrink-0" />
+                    <div className="flex flex-col shrink-0">
+                      <button onClick={() => moveExercise(i, i - 1)} disabled={i === 0} className="p-1 disabled:opacity-25" aria-label="Move up">
+                        <ChevronUp size={16} style={{ color: C.sub }} />
+                      </button>
+                      <button onClick={() => moveExercise(i, i + 1)} disabled={i === sortedExercises.length - 1} className="p-1 disabled:opacity-25" aria-label="Move down">
+                        <ChevronDown size={16} style={{ color: C.sub }} />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -2609,7 +2640,7 @@ function Workout({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const day = myProgram?.days[0];
   const exById = id => state.exercises.find(e => e.id === id);
-  const sortedExercises = useMemo(() => day ? [...day.exercises].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase)) : [], [day]);
+  const sortedExercises = useMemo(() => day ? day.exercises : [], [day]);
 
   const [exIdx, setExIdx] = useState(0);
   const [setChecks, setSetChecks] = useState({});
@@ -3635,7 +3666,7 @@ export default function App() {
     "coach-payments": <CoachPayments state={state} setState={setState} nav={nav} />,
     "coach-profile": <CoachProfile state={state} setState={setState} nav={nav} />,
     "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav} />,
-    "athlete-program": <AthleteProgram state={state} nav={nav} />,
+    "athlete-program": <AthleteProgram state={state} setState={setState} nav={nav} />,
     "athlete-workout": <Workout state={state} setState={setState} nav={nav} />,
     "athlete-progress": <AthleteProgress state={state} setState={setState} nav={nav} />,
     "athlete-ai": <AthleteMessages state={state} setState={setState} nav={nav} />,
