@@ -292,7 +292,7 @@ function buildDay(name, phaseSelections) {
 
 const SEED_PROGRAMS = [
   {
-    id: "p1", name: "MMA Camp — Power & Conditioning", weeks: 6, assignedCount: 2, sport: "MMA",
+    id: "p1", name: "MMA Camp — Power & Conditioning", weeks: 6, assignedCount: 0, sport: "MMA",
     days: [
       buildDay("Day 1 — Power & Strike Conditioning", {
         warmup_general: [{ exerciseId: "e1", sets: 1, reps: "8/side", rpe: 4, rest: "—" }, { exerciseId: "e2", sets: 1, reps: "10/side", rpe: 4, rest: "—" }],
@@ -327,7 +327,7 @@ const SEED_PROGRAMS = [
     ]
   },
   {
-    id: "p2", name: "Build Muscle — Foundations", weeks: 4, assignedCount: 1, sport: "General Fitness",
+    id: "p2", name: "Build Muscle — Foundations", weeks: 4, assignedCount: 0, sport: "General Fitness",
     days: [
       buildDay("Day 1 — Upper Body", {
         warmup_general: [{ exerciseId: "e3", sets: 2, reps: "15", rpe: 3, rest: "—" }],
@@ -1714,6 +1714,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
 
         <ChalkDivider label="Progress History" />
         <div className="rounded-xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+          {state.progress.length === 0 ? (
+            <div className="text-center text-xs py-6" style={{ color: C.faint }}>No progress entries logged yet.</div>
+          ) : (
           <div className="flex items-end gap-2 h-24">
             {state.progress.map((d, i) => {
               const vals = state.progress.map(p => p.weightKg);
@@ -1727,6 +1730,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
               );
             })}
           </div>
+          )}
         </div>
 
         <ChalkDivider label="Assigned Program — Edit" />
@@ -2197,22 +2201,33 @@ function CoachMessages({ state, setState, nav }) {
           </button>
         ))}
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-        {thread.length === 0 && <div className="text-center text-sm mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>}
-        {thread.map(m => (
-          <div key={m.id} className={`flex ${m.from === "coach" ? "justify-end" : "justify-start"}`}>
-            <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: m.from === "coach" ? C.orange : C.panel, color: m.from === "coach" ? "#fff" : C.text, border: m.from === "coach" ? "none" : `1px solid ${C.border}` }}>
-              <div className="text-sm">{m.text}</div>
-              <div className="text-[10px] mt-1 opacity-70">{m.time}</div>
-            </div>
+      {state.athletes.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center px-6 text-center">
+          <div>
+            <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No athletes yet</div>
+            <p className="text-xs" style={{ color: C.sub }}>Once someone accepts your invite and joins your roster, you'll be able to message them here.</p>
           </div>
-        ))}
-        <div ref={endRef} />
-      </div>
-      <div className="flex items-center gap-2 px-4 py-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
-        <input style={{ ...inputStyle, flex: 1 }} placeholder="Message..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} />
-        <button onClick={send} className="rounded-full p-2.5 shrink-0" style={{ background: C.orange }}><Send size={18} style={{ color: "#fff" }} /></button>
-      </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+            {thread.length === 0 && <div className="text-center text-sm mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>}
+            {thread.map(m => (
+              <div key={m.id} className={`flex ${m.from === "coach" ? "justify-end" : "justify-start"}`}>
+                <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: m.from === "coach" ? C.orange : C.panel, color: m.from === "coach" ? "#fff" : C.text, border: m.from === "coach" ? "none" : `1px solid ${C.border}` }}>
+                  <div className="text-sm">{m.text}</div>
+                  <div className="text-[10px] mt-1 opacity-70">{m.time}</div>
+                </div>
+              </div>
+            ))}
+            <div ref={endRef} />
+          </div>
+          <div className="flex items-center gap-2 px-4 py-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
+            <input style={{ ...inputStyle, flex: 1 }} placeholder="Message..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} />
+            <button onClick={send} className="rounded-full p-2.5 shrink-0" style={{ background: C.orange }}><Send size={18} style={{ color: "#fff" }} /></button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2892,8 +2907,6 @@ function AthleteProgress({ state, setState, nav }) {
   const [weightInput, setWeightInput] = useState("");
   const [unit, setUnit] = useState("lb");
   const data = state.progress;
-  const maxW = Math.max(...data.map(d => d.weightKg));
-  const minW = Math.min(...data.map(d => d.weightKg));
   const display = kg => unit === "lb" ? kgToLb(kg) : kg;
 
   const logEntry = () => {
@@ -2902,6 +2915,28 @@ function AthleteProgress({ state, setState, nav }) {
     setState(s => ({ ...s, progress: [...s.progress, { date: "Today", weightKg: kg, bodyFat: null }] }));
     setWeightInput(""); setLogOpen(false);
   };
+
+  if (data.length === 0) {
+    return (
+      <div className="pb-28">
+        <TopBar title="Progress" onLogout={nav.logout} right={<button onClick={() => setLogOpen(true)}><Plus size={20} style={{ color: C.orange }} /></button>} />
+        <div className="px-5 pt-10 text-center">
+          <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No entries yet</div>
+          <p className="text-xs mb-5" style={{ color: C.sub }}>Log your weight to start tracking progress over time.</p>
+          <Btn icon={Plus} onClick={() => setLogOpen(true)}>Log Entry</Btn>
+        </div>
+        <Modal open={logOpen} onClose={() => setLogOpen(false)} title="Log Weight">
+          <Field label={`Weight (${unit})`}>
+            <input type="number" style={inputStyle} value={weightInput} onChange={e => setWeightInput(e.target.value)} placeholder="0" />
+          </Field>
+          <Btn className="w-full mt-2" onClick={logEntry}>Save Entry</Btn>
+        </Modal>
+      </div>
+    );
+  }
+
+  const maxW = Math.max(...data.map(d => d.weightKg));
+  const minW = Math.min(...data.map(d => d.weightKg));
 
   return (
     <div className="pb-28">
@@ -3060,7 +3095,7 @@ function AthleteProfile({ state, setState, nav }) {
         <div className="grid grid-cols-3 gap-2.5 mb-5">
           <StatCard icon={Flame} label="Streak" value={m.streak} sub="days" accent={C.amber} />
           <StatCard icon={Dumbbell} label="Logged" value={state.workoutLogs.length} sub="sessions" accent={C.blue} />
-          <StatCard icon={Award} label="PRs" value={3} accent={C.olive} />
+          <StatCard icon={Award} label="PRs" value={0} accent={C.olive} />
         </div>
         <div className="grid grid-cols-2 gap-2.5 mb-5">
           <StatCard icon={Clock} label="Time Trained" value={totalMinutes} sub="minutes" accent={C.orange} />
@@ -3662,17 +3697,22 @@ function buildMeFromOnboarding(data) {
 }
 
 const initialState = () => ({
-  athletes: SEED_ATHLETES,
+  // NOTE: athletes/communityPosts/messages/progress/workoutLogs start EMPTY.
+  // This is a live app — a real account should never show fake roster members,
+  // fake community posts, fake PRs, or fake training history that hasn't
+  // actually happened. Programs/exercises remain as a library coaches can
+  // assign from; that's template content, not a claim about real usage.
+  athletes: [],
   programs: SEED_PROGRAMS,
   exercises: SEED_EXERCISES,
-  messages: SEED_MESSAGES,
-  progress: SEED_PROGRESS,
-  workoutLogs: SEED_WORKOUT_LOGS,
+  messages: {},
+  progress: [],
+  workoutLogs: [],
   sessionCheckins: {}, // { "YYYY-MM-DD": { confirmed: bool, programDay: string, confirmedAt: string } }
-  me: { id: "a1", name: "Jordan Reyes", sex: "male", sport: "MMA", streak: 12, avatar: "JR", program: "p1", customProgram: null, injuries: ["shoulder"], goals: ["Athletic Performance", "Build Muscle"], isFighter: true, weightKg: 79.4, heightCm: 180 },
+  me: { id: "a1", name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178 },
   coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true },
   payments: { rates: [], clientBilling: {}, methods: [] },
-  communityPosts: SEED_COMMUNITY,
+  communityPosts: [],
 });
 
 export default function App() {
