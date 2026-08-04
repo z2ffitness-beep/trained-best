@@ -2499,6 +2499,7 @@ function AthleteDashboard({ state, setState, nav }) {
 function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
+  const [swapTarget, setSwapTarget] = useState(null);
   const exById = id => state.exercises.find(e => e.id === id);
 
   if (!myProgram) {
@@ -2519,6 +2520,22 @@ function AthleteProgram({ state, setState, nav }) {
   // Order is set once at generation/build time (phase sequence) and persists here —
   // NOT re-sorted on every render — so a manual reorder below actually sticks.
   const sortedExercises = day ? day.exercises : [];
+
+  const swapExerciseInMyProgram = (dayId, xId, newExercise) => {
+    setState(s => {
+      const isCustom = !!s.me.customProgram;
+      const updateDays = (prog) => ({
+        ...prog,
+        days: prog.days.map(d => d.id === dayId
+          ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, exerciseId: newExercise.id, phase: newExercise.phase } : x) }
+          : d)
+      });
+      if (isCustom) {
+        return { ...s, me: { ...s.me, customProgram: updateDays(s.me.customProgram) } };
+      }
+      return { ...s, programs: s.programs.map(p => p.id === myProgram.id ? updateDays(p) : p) };
+    });
+  };
 
   const moveExercise = (fromIdx, toIdx) => {
     if (toIdx < 0 || toIdx >= sortedExercises.length) return;
@@ -2595,13 +2612,18 @@ function AthleteProgram({ state, setState, nav }) {
                       <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
                       <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{phaseLabel} · {x.sets}×{x.reps} · RPE {x.rpe}</div>
                     </div>
-                    <div className="flex flex-col shrink-0">
-                      <button onClick={() => moveExercise(i, i - 1)} disabled={i === 0} className="p-1 disabled:opacity-25" aria-label="Move up">
-                        <ChevronUp size={16} style={{ color: C.sub }} />
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => setSwapTarget({ dayId: day.id, x })} className="p-1.5" aria-label="Swap exercise">
+                        <RotateCcw size={15} style={{ color: C.blue }} />
                       </button>
-                      <button onClick={() => moveExercise(i, i + 1)} disabled={i === sortedExercises.length - 1} className="p-1 disabled:opacity-25" aria-label="Move down">
-                        <ChevronDown size={16} style={{ color: C.sub }} />
-                      </button>
+                      <div className="flex flex-col">
+                        <button onClick={() => moveExercise(i, i - 1)} disabled={i === 0} className="p-1 disabled:opacity-25" aria-label="Move up">
+                          <ChevronUp size={16} style={{ color: C.sub }} />
+                        </button>
+                        <button onClick={() => moveExercise(i, i + 1)} disabled={i === sortedExercises.length - 1} className="p-1 disabled:opacity-25" aria-label="Move down">
+                          <ChevronDown size={16} style={{ color: C.sub }} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -2610,6 +2632,9 @@ function AthleteProgram({ state, setState, nav }) {
           </>
         )}
       </div>
+
+      <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
+        onSwap={(newEx) => swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx)} />
     </div>
   );
 }
