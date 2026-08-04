@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { supabase } from "./supabaseClient";
 import {
   Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen,
   Flame, TrendingUp, Clock, ChevronRight, ChevronLeft, Plus, X,
@@ -628,13 +629,81 @@ const DEFAULT_TEST_ATHLETE = {
   equipment: ["Full gym access"],
 };
 
-function Onboarding({ onComplete }) {
+// Skip needs a real, unique identity each time — otherwise signUp() fails silently
+// (no name/email/password = no real Supabase account = no community access, no login).
+function buildSkipTestAthlete() {
+  const id = Date.now().toString(36);
+  return {
+    ...DEFAULT_TEST_ATHLETE,
+    name: `Test Athlete ${id.slice(-4)}`,
+    email: `test.${id}@trainedbythebest.dev`,
+    password: `TestPass${id}!`,
+  };
+}
+
+function LoginScreen({ onLogin, onSwitchToSignup }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  const submit = async () => {
+    setError(null);
+    setLoading(true);
+    const err = await onLogin(email, password);
+    setLoading(false);
+    if (err) setError(err);
+  };
+
+  const forgotPassword = async () => {
+    if (!/\S+@\S+\.\S+/.test(email)) { setError("Enter your email above first, then tap 'Forgot password?'"); return; }
+    setError(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    if (error) setError(error.message);
+    else setResetSent(true);
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
+      <Dumbbell size={40} style={{ color: C.orange }} />
+      <h1 className="mt-4 text-3xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>WELCOME BACK</h1>
+
+      <div className="mt-10 w-full max-w-sm">
+        <Field label="Email">
+          <input type="email" autoFocus placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Password">
+          <input type="password" placeholder="Your password" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} onKeyDown={e => e.key === "Enter" && submit()} />
+        </Field>
+
+        {error && <p className="text-xs mb-3" style={{ color: C.red }}>{error}</p>}
+        {resetSent && <p className="text-xs mb-3" style={{ color: C.olive }}>Password reset email sent — check your inbox.</p>}
+
+        <Btn className="w-full mt-2" onClick={submit} disabled={loading || !email || !password}>
+          {loading ? "Logging in..." : "Log In"}
+        </Btn>
+
+        <button onClick={forgotPassword} className="w-full text-center text-sm mt-4" style={{ color: C.sub }}>
+          Forgot password?
+        </button>
+        <button onClick={onSwitchToSignup} className="w-full text-center text-sm mt-3" style={{ color: C.sub }}>
+          New here? <span style={{ color: C.orange, fontWeight: 600 }}>Create an account</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Onboarding({ onComplete, onSwitchToLogin }) {
   const [role, setRole] = useState(null);
   const [step, setStep] = useState(0);
   const [data, setData] = useState({
     weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
   });
   const set = (k, v) => setData(d => ({ ...d, [k]: v }));
+  const [skipLoading, setSkipLoading] = useState(false);
+  const [skipError, setSkipError] = useState(null);
 
   if (!role) {
     return (
@@ -679,21 +748,32 @@ function Onboarding({ onComplete }) {
           </button>
         </div>
 
-        <button onClick={() => onComplete("athlete", DEFAULT_TEST_ATHLETE)}
+        <button onClick={async () => {
+          setSkipLoading(true); setSkipError(null);
+          const err = await onComplete("athlete", buildSkipTestAthlete());
+          setSkipLoading(false);
+          if (err) setSkipError(err);
+        }}
+          disabled={skipLoading}
           className="mt-8 text-xs font-semibold px-4 py-2 rounded-full"
           style={{ color: C.faint, border: `1px dashed ${C.border}` }}>
-          ⚡ Skip (dev/test — default profile)
+          {skipLoading ? "Setting up..." : "⚡ Skip (dev/test — generated profile)"}
+        </button>
+        {skipError && <p className="text-xs mt-2 text-center" style={{ color: C.red }}>{skipError}</p>}
+
+        <button onClick={onSwitchToLogin} className="mt-4 text-sm" style={{ color: C.sub }}>
+          Already have an account? <span style={{ color: C.orange, fontWeight: 600 }}>Log in</span>
         </button>
       </div>
     );
   }
 
-  const coachSteps = ["🏅 Background", "📩 Invite Athletes"];
+  const coachSteps = ["👤 Your Name", "🏅 Background", "📩 Invite Athletes", "📸 Profile Photo", "🔐 Create Account"];
   const athleteSteps = [
-    "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
-    "🩹 Injuries", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment"
+    "👤 Your Name", "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+    "🩹 Injuries", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment", "📸 Profile Photo", "🔐 Create Account"
   ];
-  const coachedAthleteSteps = ["🔑 Coach Invite Code", ...athleteSteps];
+  const coachedAthleteSteps = ["👤 Your Name", "🔑 Coach Invite Code", ...athleteSteps.slice(1)];
   const steps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
   const isLast = step === steps.length - 1;
   const stepName = steps[step];
@@ -716,14 +796,18 @@ function Onboarding({ onComplete }) {
   const isStepComplete = () => {
     if (role === "coach") {
       switch (stepName) {
+        case "👤 Your Name": return !!(data.name || "").trim();
         case "🏅 Background": return !!data["🏅 Background"];
         case "⚡ Specialties": return true;
         case "🎯 Coaching Style": return true;
         case "📩 Invite Athletes": return true; // optional by design
+        case "📸 Profile Photo": return true; // optional by design
+        case "🔐 Create Account": return /\S+@\S+\.\S+/.test(data.email || "") && (data.password || "").length >= 6;
         default: return true;
       }
     }
     switch (stepName) {
+      case "👤 Your Name": return !!(data.name || "").trim();
       case "💪 Training Experience": return !!data.experience;
       case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6;
       case "🧬 Sex": return !!data.sex;
@@ -736,6 +820,8 @@ function Onboarding({ onComplete }) {
       case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
       case "📅 Training Schedule": return !!data.daysPerWeek;
       case "🏋️ Equipment": return (data.equipment || []).length > 0;
+      case "📸 Profile Photo": return true; // optional by design
+      case "🔐 Create Account": return /\S+@\S+\.\S+/.test(data.email || "") && (data.password || "").length >= 6;
       default: return true;
     }
   };
@@ -759,7 +845,13 @@ function Onboarding({ onComplete }) {
 
       <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
         <Btn variant="secondary" onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
-        <Btn className="flex-1" disabled={!canProceed} onClick={() => isLast ? onComplete(role, data) : advance(1)}>
+        <Btn className="flex-1" disabled={!canProceed} onClick={() => {
+          if (isLast) {
+            onComplete(role, data).then(err => { if (err) setData(d => ({ ...d, signupError: err })); });
+          } else {
+            advance(1);
+          }
+        }}>
           {isLast ? "Finish Setup" : "Continue"}
         </Btn>
       </div>
@@ -848,6 +940,59 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
             </button>
           );
         })}
+      </div>
+    );
+  }
+
+  // Name step — shared across all roles, asked early for personalization
+  if (stepName === "👤 Your Name") {
+    return (
+      <div>
+        <p className="text-sm mb-6" style={{ color: C.sub }}>What should we call you? This is how you'll appear to {role === "coach" ? "your athletes" : "your coach and the community"}.</p>
+        <input
+          type="text"
+          autoFocus
+          placeholder="Your name"
+          value={data.name || ""}
+          onChange={e => set("name", e.target.value)}
+          style={{ ...inputStyle, fontSize: 20, padding: "16px" }}
+        />
+      </div>
+    );
+  }
+
+  // Photo step — shared across all roles, optional, placed at the end after investment is built
+  if (stepName === "📸 Profile Photo") {
+    return (
+      <div className="flex flex-col items-center pt-4">
+        <p className="text-sm mb-6 text-center" style={{ color: C.sub }}>Add a profile photo so people recognize you. You can always add or change this later — totally optional.</p>
+        <EditableAvatar
+          initials={(data.name || "?").trim().split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "?"}
+          size={120}
+          photoUrl={data.photoUrl}
+          onChange={url => set("photoUrl", url)}
+        />
+        {data.photoUrl && (
+          <button onClick={() => set("photoUrl", null)} className="mt-4 text-xs font-semibold" style={{ color: C.sub }}>Remove photo</button>
+        )}
+      </div>
+    );
+  }
+
+  // Account step — shared, last step, creates the real login credentials
+  if (stepName === "🔐 Create Account") {
+    return (
+      <div>
+        <p className="text-sm mb-6" style={{ color: C.sub }}>Create your login so you can come back anytime — this is also how you'll reset your password if you forget it.</p>
+        <Field label="Email">
+          <input type="email" autoFocus placeholder="you@example.com" value={data.email || ""} onChange={e => set("email", e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Password">
+          <input type="password" placeholder="At least 6 characters" value={data.password || ""} onChange={e => set("password", e.target.value)} style={inputStyle} />
+        </Field>
+        {data.signupError && (
+          <p className="text-xs mt-2" style={{ color: C.red }}>{data.signupError}</p>
+        )}
       </div>
     );
   }
@@ -3479,52 +3624,102 @@ function CalendarViewPage({ state, nav }) {
   );
 }
 
+function timeAgo(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 function CommunityPage({ state, setState, nav }) {
   const [filter, setFilter] = useState("All");
   const [postText, setPostText] = useState("");
   const [replyTarget, setReplyTarget] = useState(null);
   const [replyText, setReplyText] = useState("");
   const [expandedPost, setExpandedPost] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [myUserId, setMyUserId] = useState(null);
+  const [loaded, setLoaded] = useState(false);
 
-  const me = state.me || state.coachProfile;
   const isCoach = !state.me?.sport;
   const myName = isCoach ? (state.coachProfile?.name || "Coach") : (state.me?.name || "You");
   const myAvatar = isCoach ? (state.coachProfile?.avatar || "CO") : (state.me?.avatar || "ME");
   const myPhoto = isCoach ? state.coachProfile?.photoUrl : state.me?.photoUrl;
-  const mySport = isCoach ? null : state.me?.sport;
-  const myRole = isCoach ? "coach" : "athlete";
+
+  const loadPosts = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    const uid = user?.id || null;
+    setMyUserId(uid);
+
+    const [{ data: postRows }, { data: replyRows }, { data: likeRows }] = await Promise.all([
+      supabase.from("community_posts").select("id, text, created_at, user_id, profiles(name, avatar, photo_url, role, sport)").order("created_at", { ascending: false }),
+      supabase.from("community_replies").select("id, post_id, text, created_at, user_id, profiles(name, avatar, photo_url, role)").order("created_at", { ascending: true }),
+      supabase.from("community_likes").select("post_id, user_id"),
+    ]);
+
+    const likesByPost = {};
+    (likeRows || []).forEach(l => { likesByPost[l.post_id] = (likesByPost[l.post_id] || 0) + 1; });
+    const likedSet = new Set((likeRows || []).filter(l => l.user_id === uid).map(l => l.post_id));
+
+    const merged = (postRows || []).map(p => ({
+      id: p.id, text: p.text, time: timeAgo(p.created_at),
+      name: p.profiles?.name || "Someone", avatar: p.profiles?.avatar || "?",
+      photoUrl: p.profiles?.photo_url, role: p.profiles?.role, sport: p.profiles?.sport,
+      likes: likesByPost[p.id] || 0, liked: likedSet.has(p.id),
+      replies: (replyRows || []).filter(r => r.post_id === p.id).map(r => ({
+        id: r.id, text: r.text, time: timeAgo(r.created_at),
+        name: r.profiles?.name || "Someone", avatar: r.profiles?.avatar || "?",
+        photoUrl: r.profiles?.photo_url, role: r.profiles?.role,
+      })),
+    }));
+    setPosts(merged);
+    setLoaded(true);
+  };
+
+  useEffect(() => {
+    loadPosts();
+    const channel = supabase
+      .channel("community-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "community_posts" }, loadPosts)
+      .on("postgres_changes", { event: "*", schema: "public", table: "community_replies" }, loadPosts)
+      .on("postgres_changes", { event: "*", schema: "public", table: "community_likes" }, loadPosts)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   const filters = ["All", "MMA", "General Fitness", "Coaches"];
-  const posts = (state.communityPosts || []).filter(p => {
+  const filteredPosts = posts.filter(p => {
     if (filter === "All") return true;
     if (filter === "Coaches") return p.role === "coach";
     return p.sport === filter;
   });
 
-  const submitPost = () => {
-    if (!postText.trim()) return;
-    const newPost = {
-      id: "c" + Date.now(), userId: "me", name: myName, avatar: myAvatar, photoUrl: myPhoto,
-      sport: mySport, role: myRole, text: postText.trim(), likes: 0, liked: false,
-      time: "Just now", replies: []
-    };
-    setState(s => ({ ...s, communityPosts: [newPost, ...(s.communityPosts || [])] }));
+  const submitPost = async () => {
+    if (!postText.trim() || !myUserId) return;
+    const text = postText.trim();
     setPostText("");
+    await supabase.from("community_posts").insert({ user_id: myUserId, text });
+    loadPosts();
   };
 
-  const toggleLike = (postId) => {
-    setState(s => ({ ...s, communityPosts: (s.communityPosts || []).map(p =>
-      p.id === postId ? { ...p, liked: !p.liked, likes: p.liked ? p.likes - 1 : p.likes + 1 } : p
-    )}));
+  const toggleLike = async (postId) => {
+    if (!myUserId) return;
+    const post = posts.find(p => p.id === postId);
+    if (post?.liked) await supabase.from("community_likes").delete().eq("post_id", postId).eq("user_id", myUserId);
+    else await supabase.from("community_likes").insert({ post_id: postId, user_id: myUserId });
+    loadPosts();
   };
 
-  const submitReply = (postId) => {
-    if (!replyText.trim()) return;
-    const newReply = { id: "r" + Date.now(), userId: "me", name: myName, avatar: myAvatar, photoUrl: myPhoto, role: myRole, text: replyText.trim(), time: "Just now" };
-    setState(s => ({ ...s, communityPosts: (s.communityPosts || []).map(p =>
-      p.id === postId ? { ...p, replies: [...(p.replies || []), newReply] } : p
-    )}));
+  const submitReply = async (postId) => {
+    if (!replyText.trim() || !myUserId) return;
+    const text = replyText.trim();
     setReplyText(""); setReplyTarget(null);
+    await supabase.from("community_replies").insert({ post_id: postId, user_id: myUserId, text });
+    loadPosts();
   };
 
   const PostCard = ({ post, expanded }) => (
@@ -3631,14 +3826,17 @@ function CommunityPage({ state, setState, nav }) {
 
       {/* Feed */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-        {posts.length === 0 && (
+        {!loaded && (
+          <div className="text-center py-16"><Loader2 size={24} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>
+        )}
+        {loaded && filteredPosts.length === 0 && (
           <div className="text-center py-16">
             <div className="text-2xl mb-2">🌍</div>
             <div className="text-sm font-semibold" style={{ color: C.text }}>No posts in this category yet</div>
             <p className="text-xs mt-1" style={{ color: C.sub }}>Be the first to start the conversation.</p>
           </div>
         )}
-        {posts.map(post => (
+        {filteredPosts.map(post => (
           <PostCard key={post.id} post={post} expanded={expandedPost === post.id} />
         ))}
       </div>
@@ -3686,9 +3884,11 @@ function NutritionPage({ state, nav }) {
 // ============================================================
 
 function buildMeFromOnboarding(data) {
+  const name = (data.name || "").trim() || "You";
+  const initials = name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "ME";
   return {
-    id: "a1", name: "You", sex: data.sex === "Female" ? "female" : "male",
-    sport: data["🥊 Sport / Focus"] || "General Fitness", streak: 0, avatar: "ME",
+    id: "a1", name, sex: data.sex === "Female" ? "female" : "male",
+    sport: data["🥊 Sport / Focus"] || "General Fitness", streak: 0, avatar: initials, photoUrl: data.photoUrl || null,
     program: "p1", customProgram: null,
     injuries: (data.injuries || []).filter(i => i !== "None currently"),
     goals: data.goals || [], isFighter: !!data.isFighter,
@@ -3720,6 +3920,9 @@ export default function App() {
   const [view, setView] = useState(null);
   const [navParam, setNavParam] = useState(null);
   const [state, setState] = useState(initialState);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [authMode, setAuthMode] = useState("onboarding"); // 'onboarding' | 'login'
+  const [pendingConfirmEmail, setPendingConfirmEmail] = useState(null);
 
   useEffect(() => {
     const link = document.createElement("link");
@@ -3728,18 +3931,78 @@ export default function App() {
     return () => document.head.removeChild(link);
   }, []);
 
+  // Turn a DB profile row into the local `me` / `coachProfile` shape the rest of the app expects.
+  const hydrateFromProfile = (profile) => {
+    if (profile.role === "coach") {
+      setState(s => ({ ...s, coachProfile: { ...s.coachProfile, name: profile.name, avatar: profile.avatar, photoUrl: profile.photo_url } }));
+    } else {
+      setState(s => ({
+        ...s,
+        me: {
+          ...s.me, id: profile.id, name: profile.name, avatar: profile.avatar, photoUrl: profile.photo_url,
+          sport: profile.sport, sex: profile.sex, isFighter: profile.is_fighter,
+          injuries: profile.injuries || [], goals: profile.goals || [],
+          weightKg: profile.weight_kg, heightCm: profile.height_cm, streak: profile.streak || 0,
+          selfGuided: profile.role === "athlete", hasCoach: profile.role === "athlete_coached",
+          intake: profile.intake || {},
+        }
+      }));
+    }
+    setAuthed(profile.role);
+    setView(profile.role === "coach" ? "coach-dashboard" : "athlete-dashboard");
+  };
+
+  // On load: restore an existing session so refreshing the page doesn't log people out.
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) { if (active) setSessionLoading(false); return; }
+      const { data: profile } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+      if (active) {
+        if (profile) hydrateFromProfile(profile);
+        setSessionLoading(false);
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") { setAuthed(null); setView(null); }
+    });
+    return () => { active = false; listener?.subscription?.unsubscribe(); };
+  }, []);
+
   const [generatingProgram, setGeneratingProgram] = useState(false);
 
+  // Returns an error string on failure, or undefined on success (caller navigates away on success).
   const handleOnboardComplete = async (role, data) => {
+    const { data: signUpData, error } = await supabase.auth.signUp({ email: data.email, password: data.password });
+    if (error) return error.message;
+
+    const name = (data.name || "").trim() || (role === "coach" ? "Coach" : "You");
+    const avatar = name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "ME";
+    const userId = signUpData.user?.id;
+
+    if (userId) {
+      const profileRow = role === "coach"
+        ? { id: userId, role, name, avatar, photo_url: data.photoUrl || null }
+        : {
+            id: userId, role, name, avatar, photo_url: data.photoUrl || null,
+            sport: data["🥊 Sport / Focus"] || "General Fitness", sex: data.sex === "Female" ? "female" : "male",
+            is_fighter: !!data.isFighter, injuries: (data.injuries || []).filter(i => i !== "None currently"),
+            goals: data.goals || [], weight_kg: lbToKg(data.weightLb || 175), height_cm: data.heightCm || 178,
+            intake: data,
+          };
+      const { error: profileError } = await supabase.from("profiles").insert(profileRow);
+      if (profileError) return profileError.message;
+    }
+
+    // Supabase may require email confirmation before a session exists — if so, we can't
+    // log them in yet. Show a "check your email" screen instead of the dashboard.
+    if (!signUpData.session) {
+      setPendingConfirmEmail(data.email);
+      return;
+    }
+
     if (role === "athlete" || role === "athlete_coached") {
-      const me = {
-        ...buildMeFromOnboarding(data),
-        id: "a1",
-        program: null,
-        selfGuided: role === "athlete", // true = no coach, AI-only
-        hasCoach: role === "athlete_coached",
-        intake: data,
-      };
+      const me = { ...buildMeFromOnboarding(data), id: userId, program: null, selfGuided: role === "athlete", hasCoach: role === "athlete_coached", intake: data };
       setState(s => ({ ...s, me }));
       setAuthed(role);
       setGeneratingProgram(true);
@@ -3758,15 +4021,43 @@ export default function App() {
       setGeneratingProgram(false);
       setView("athlete-dashboard");
     } else {
+      setState(s => ({ ...s, coachProfile: { ...s.coachProfile, name, avatar, photoUrl: data.photoUrl || null } }));
       setAuthed(role);
       setView("coach-dashboard");
     }
   };
 
+  const handleLogin = async (email, password) => {
+    const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return error.message;
+    const { data: profile, error: profileError } = await supabase.from("profiles").select("*").eq("id", signInData.user.id).single();
+    if (profileError || !profile) return "We couldn't find a profile for this account. Please contact support.";
+    hydrateFromProfile(profile);
+  };
+
   const nav = {
     go: (key, param) => { setView(key); setNavParam(param ?? null); },
-    logout: () => { setAuthed(null); setView(null); },
+    logout: () => { supabase.auth.signOut(); setAuthed(null); setView(null); setState(initialState()); },
   };
+
+  if (sessionLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
+        <Loader2 size={32} className="animate-spin" style={{ color: C.orange }} />
+      </div>
+    );
+  }
+
+  if (pendingConfirmEmail) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ background: C.bg }}>
+        <Mail size={40} style={{ color: C.orange }} />
+        <h2 className="mt-4 text-2xl font-bold" style={{ fontFamily: "Inter", color: C.text }}>Check your email</h2>
+        <p className="mt-2 text-sm" style={{ color: C.sub }}>We sent a confirmation link to {pendingConfirmEmail}. Confirm it, then come back and log in.</p>
+        <button onClick={() => { setPendingConfirmEmail(null); setAuthMode("login"); }} className="mt-6 text-sm font-semibold" style={{ color: C.orange }}>Back to login</button>
+      </div>
+    );
+  }
 
   if (!authed || generatingProgram) {
     if (generatingProgram) {
@@ -3778,7 +4069,10 @@ export default function App() {
         </div>
       );
     }
-    return <div style={{ fontFamily: "Inter, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} /></div>;
+    if (authMode === "login") {
+      return <div style={{ fontFamily: "Inter, sans-serif" }}><LoginScreen onLogin={handleLogin} onSwitchToSignup={() => setAuthMode("onboarding")} /></div>;
+    }
+    return <div style={{ fontFamily: "Inter, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} onSwitchToLogin={() => setAuthMode("login")} /></div>;
   }
 
   const coachNavItems = [
