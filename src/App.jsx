@@ -608,6 +608,26 @@ const SPORTS = ["MMA", "General Fitness", "New to training (weightlifting focus)
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 const INJURY_AREAS = ["None currently", "Shoulder", "Knee", "Low back", "Ankle", "Hip", "Elbow / Wrist"];
 
+const DEFAULT_TEST_ATHLETE = {
+  sex: "Male",
+  "🥊 Sport / Focus": "MMA",
+  isFighter: true,
+  discipline: "Muay Thai / Wrestling",
+  experience: "Intermediate",
+  goals: ["Athletic Performance", "Build Muscle"],
+  goalNotes: "Test profile — details don't matter",
+  timeframe: "Off-season, no fight booked",
+  fightDate: null,
+  injuries: ["None currently"],
+  injuryNotes: "",
+  heightCm: 178,
+  weightLb: 175,
+  weightUnit: "lb",
+  heightUnit: "imperial",
+  daysPerWeek: 4,
+  equipment: ["Full gym access"],
+};
+
 function Onboarding({ onComplete }) {
   const [role, setRole] = useState(null);
   const [step, setStep] = useState(0);
@@ -658,6 +678,12 @@ function Onboarding({ onComplete }) {
             </div>
           </button>
         </div>
+
+        <button onClick={() => onComplete("athlete", DEFAULT_TEST_ATHLETE)}
+          className="mt-8 text-xs font-semibold px-4 py-2 rounded-full"
+          style={{ color: C.faint, border: `1px dashed ${C.border}` }}>
+          ⚡ Skip (dev/test — default profile)
+        </button>
       </div>
     );
   }
