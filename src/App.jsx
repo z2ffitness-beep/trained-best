@@ -1035,36 +1035,67 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
     case "⚖️ Weight": {
       const lb = data.weightUnit === "lb" ? data.weightLb : kgToLb(data.weightLb);
       const sliderLb = Math.min(300, Math.max(100, data.weightLb || 175));
+      const pct = ((sliderLb - 100) / (300 - 100)) * 100;
       return (
         <div>
+          <style>{`
+            .weight-slider {
+              -webkit-appearance: none; appearance: none;
+              width: 100%; height: 10px; border-radius: 999px; outline: none;
+              background: linear-gradient(to right, ${C.orange} 0%, ${C.orange} ${pct}%, ${C.border} ${pct}%, ${C.border} 100%);
+            }
+            .weight-slider::-webkit-slider-thumb {
+              -webkit-appearance: none; appearance: none;
+              width: 34px; height: 34px; border-radius: 50%;
+              background: ${C.orange}; border: 4px solid #fff;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.35); cursor: pointer;
+            }
+            .weight-slider::-moz-range-thumb {
+              width: 34px; height: 34px; border-radius: 50%;
+              background: ${C.orange}; border: 4px solid #fff;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.35); cursor: pointer;
+            }
+            .weight-slider::-moz-range-track { height: 10px; border-radius: 999px; background: ${C.border}; }
+          `}</style>
+
           <div className="flex justify-end mb-4"><UnitToggle value={data.weightUnit} options={["lb", "kg"]} onChange={v => set("weightUnit", v)} /></div>
-          <div className="text-center mb-3">
-            <input type="number" style={{ ...inputStyle, textAlign: "center", fontSize: 28, fontFamily: "JetBrains Mono", fontWeight: 700, padding: "16px" }}
+
+          <div className="text-center mb-6">
+            <div style={{ fontSize: 44, fontFamily: "JetBrains Mono", fontWeight: 800, color: C.text }}>
+              {data.weightLb ? (data.weightUnit === "lb" ? Math.round(data.weightLb) : Math.round(lbToKg(data.weightLb))) : "—"}
+            </div>
+            <div className="text-sm mt-1" style={{ color: C.sub }}>{data.weightUnit === "lb" ? "pounds" : "kilograms"}</div>
+          </div>
+
+          <div className="px-2 py-4 rounded-2xl" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <input
+              type="range" min={100} max={300} step={1}
+              value={sliderLb}
+              onChange={e => set("weightLb", Number(e.target.value))}
+              className="weight-slider"
+            />
+            <div className="flex justify-between text-[10px] mt-2 px-0.5" style={{ color: C.faint }}>
+              <span>100 lb</span>
+              <span>150</span>
+              <span>200</span>
+              <span>250</span>
+              <span>300+ lb</span>
+            </div>
+          </div>
+
+          {(data.weightLb || 0) >= 300 && (
+            <p className="text-center text-xs mt-3" style={{ color: C.sub }}>At the top of the slider — tap below to type an exact number if you're over 300 lb.</p>
+          )}
+
+          <div className="text-center mt-4">
+            <input type="number" style={{ ...inputStyle, textAlign: "center", fontSize: 16, padding: "10px", maxWidth: 160, margin: "0 auto" }}
+              placeholder="Type exact number"
               value={data.weightLb ? (data.weightUnit === "lb" ? data.weightLb : lbToKg(data.weightLb)) : ""}
               onChange={e => {
                 const v = parseFloat(e.target.value) || 0;
                 set("weightLb", data.weightUnit === "lb" ? v : kgToLb(v));
               }} />
           </div>
-          <div className="text-center text-sm mb-5" style={{ color: C.sub }}>{data.weightUnit === "lb" ? "pounds" : "kilograms"}</div>
-
-          <div className="px-1">
-            <input
-              type="range" min={100} max={300} step={1}
-              value={sliderLb}
-              onChange={e => set("weightLb", Number(e.target.value))}
-              className="w-full"
-              style={{ accentColor: C.orange, height: 6 }}
-            />
-            <div className="flex justify-between text-[10px] mt-1.5" style={{ color: C.faint }}>
-              <span>100 lb</span>
-              <span>200 lb</span>
-              <span>300+ lb</span>
-            </div>
-          </div>
-          {(data.weightLb || 0) >= 300 && (
-            <p className="text-center text-xs mt-3" style={{ color: C.sub }}>At the top of the slider — type an exact number above if you're over 300 lb.</p>
-          )}
         </div>
       );
     }
