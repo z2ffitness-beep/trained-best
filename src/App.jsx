@@ -1034,6 +1034,7 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
     }
     case "⚖️ Weight": {
       const lb = data.weightUnit === "lb" ? data.weightLb : kgToLb(data.weightLb);
+      const sliderLb = Math.min(300, Math.max(100, data.weightLb || 175));
       return (
         <div>
           <div className="flex justify-end mb-4"><UnitToggle value={data.weightUnit} options={["lb", "kg"]} onChange={v => set("weightUnit", v)} /></div>
@@ -1045,7 +1046,25 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
                 set("weightLb", data.weightUnit === "lb" ? v : kgToLb(v));
               }} />
           </div>
-          <div className="text-center text-sm" style={{ color: C.sub }}>{data.weightUnit === "lb" ? "pounds" : "kilograms"}</div>
+          <div className="text-center text-sm mb-5" style={{ color: C.sub }}>{data.weightUnit === "lb" ? "pounds" : "kilograms"}</div>
+
+          <div className="px-1">
+            <input
+              type="range" min={100} max={300} step={1}
+              value={sliderLb}
+              onChange={e => set("weightLb", Number(e.target.value))}
+              className="w-full"
+              style={{ accentColor: C.orange, height: 6 }}
+            />
+            <div className="flex justify-between text-[10px] mt-1.5" style={{ color: C.faint }}>
+              <span>100 lb</span>
+              <span>200 lb</span>
+              <span>300+ lb</span>
+            </div>
+          </div>
+          {(data.weightLb || 0) >= 300 && (
+            <p className="text-center text-xs mt-3" style={{ color: C.sub }}>At the top of the slider — type an exact number above if you're over 300 lb.</p>
+          )}
         </div>
       );
     }
