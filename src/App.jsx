@@ -827,8 +827,23 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
   };
   const canProceed = isStepComplete();
 
+  const handleNext = () => {
+    if (!canProceed) return;
+    if (isLast) {
+      onComplete(role, data).then(err => { if (err) setData(d => ({ ...d, signupError: err })); });
+    } else {
+      advance(1);
+    }
+  };
+
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}>
+    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}
+      onKeyDown={e => {
+        if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
+          e.preventDefault();
+          handleNext();
+        }
+      }}>
       <div className="px-6 pt-8 pb-4 shrink-0">
         <div className="flex items-center gap-1.5 mb-1">
           {steps.map((_, i) => (
@@ -845,13 +860,7 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
 
       <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
         <Btn variant="secondary" onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
-        <Btn className="flex-1" disabled={!canProceed} onClick={() => {
-          if (isLast) {
-            onComplete(role, data).then(err => { if (err) setData(d => ({ ...d, signupError: err })); });
-          } else {
-            advance(1);
-          }
-        }}>
+        <Btn className="flex-1" disabled={!canProceed} onClick={handleNext}>
           {isLast ? "Finish Setup" : "Continue"}
         </Btn>
       </div>
