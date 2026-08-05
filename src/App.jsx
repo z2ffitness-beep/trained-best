@@ -1456,9 +1456,12 @@ function parseAIJson(text) {
   }
 }
 
-function applyGeneratedProgram(result, state, intake) {
+// Builds the day/exercise structure with local exerciseIds, matching by name
+// against existing exercises (seed library or ones already known locally).
+// Used both for freshly-generated AI programs AND for reloading a program from the DB.
+function buildDaysWithExerciseIds(rawDays, state) {
   const newExercises = [];
-  const days = (result.days || []).map(d => ({
+  const days = (rawDays || []).map(d => ({
     id: "d" + Math.random().toString(36).slice(2, 9), name: d.name,
     exercises: (d.exercises || []).map(x => {
       let match = state.exercises.find(e => e.name.toLowerCase() === x.name.toLowerCase());
@@ -1469,13 +1472,46 @@ function applyGeneratedProgram(result, state, intake) {
       return { id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id, phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
     }).sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase))
   }));
-  const newProgram = { id: "pai" + Date.now(), name: result.programName, weeks: result.weeks || 6, assignedCount: 1, sport: intake?.["🥊 Sport / Focus"] || "General Fitness", days };
+  return { days, newExercises };
+}
+
+// Inverse of the above — turns local exerciseId-based days back into plain
+// name-based JSON for saving to the database (so it survives independent of
+// this session's locally-generated exercise ids).
+function denormalizeDays(days, state) {
+  return (days || []).map(d => ({
+    name: d.name,
+    exercises: (d.exercises || []).map(x => {
+      const ex = state.exercises.find(e => e.id === x.exerciseId);
+      return { name: ex?.name || "Unknown Exercise", phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
+    })
+  }));
+}
+
+function applyGeneratedProgram(result, state, intake, programId) {
+  const { days, newExercises } = buildDaysWithExerciseIds(result.days, state);
+  const newProgram = { id: programId || ("plocal" + Date.now()), name: result.programName, weeks: result.weeks || 6, assignedCount: 1, sport: intake?.["🥊 Sport / Focus"] || "General Fitness", days };
   return {
     ...state,
     programs: [...state.programs, newProgram],
     exercises: [...state.exercises, ...newExercises],
     me: { ...state.me, program: newProgram.id, customProgram: null },
   };
+}
+
+// Creates a new program row from a freshly-generated AI result (already name-based JSON).
+async function createProgramRow(athleteId, name, weeks, sport, rawDays) {
+  const { data, error } = await supabase.from("programs").insert({ athlete_id: athleteId, name, weeks, sport, days: rawDays }).select().single();
+  if (error || !data) return null;
+  await supabase.from("profiles").update({ active_program_id: data.id }).eq("id", athleteId);
+  return data.id;
+}
+
+// Updates an existing program row after a manual edit (reorder/swap) — local
+// days are in exerciseId form, so they need denormalizing back to plain names first.
+async function updateProgramRow(programId, days, state) {
+  const { error } = await supabase.from("programs").update({ days: denormalizeDays(days, state) }).eq("id", programId);
+  return !error;
 }
 
 function AIProgramGenerator({ intake, onGenerated, onClose }) {
@@ -2758,39 +2794,43 @@ function AthleteProgram({ state, setState, nav }) {
   const sortedExercises = day ? day.exercises : [];
 
   const swapExerciseInMyProgram = (dayId, xId, newExercise) => {
-    setState(s => {
-      const isCustom = !!s.me.customProgram;
-      const updateDays = (prog) => ({
-        ...prog,
-        days: prog.days.map(d => d.id === dayId
-          ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, exerciseId: newExercise.id, phase: newExercise.phase } : x) }
-          : d)
-      });
-      if (isCustom) {
-        return { ...s, me: { ...s.me, customProgram: updateDays(s.me.customProgram) } };
-      }
-      return { ...s, programs: s.programs.map(p => p.id === myProgram.id ? updateDays(p) : p) };
+    const isCustom = !!state.me.customProgram;
+    const updateDays = (prog) => ({
+      ...prog,
+      days: prog.days.map(d => d.id === dayId
+        ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, exerciseId: newExercise.id, phase: newExercise.phase } : x) }
+        : d)
     });
+    if (isCustom) {
+      const updated = updateDays(state.me.customProgram);
+      setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
+    } else {
+      const updated = updateDays(myProgram);
+      setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
+      if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
+    }
   };
 
   const moveExercise = (fromIdx, toIdx) => {
     if (toIdx < 0 || toIdx >= sortedExercises.length) return;
-    setState(s => {
-      const isCustom = !!s.me.customProgram;
-      const updateDays = (prog) => ({
-        ...prog,
-        days: prog.days.map((d, i) => {
-          if (i !== activeDayIdx) return d;
-          const next = [...d.exercises];
-          [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
-          return { ...d, exercises: next };
-        })
-      });
-      if (isCustom) {
-        return { ...s, me: { ...s.me, customProgram: updateDays(s.me.customProgram) } };
-      }
-      return { ...s, programs: s.programs.map(p => p.id === myProgram.id ? updateDays(p) : p) };
+    const isCustom = !!state.me.customProgram;
+    const updateDays = (prog) => ({
+      ...prog,
+      days: prog.days.map((d, i) => {
+        if (i !== activeDayIdx) return d;
+        const next = [...d.exercises];
+        [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+        return { ...d, exercises: next };
+      })
     });
+    if (isCustom) {
+      const updated = updateDays(state.me.customProgram);
+      setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
+    } else {
+      const updated = updateDays(myProgram);
+      setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
+      if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
+    }
   };
 
   return (
@@ -2931,8 +2971,11 @@ function Workout({ state, setState, nav }) {
         <AIProgramGenerator
           intake={state.me.intake || {}}
           onClose={() => setShowGenerator(false)}
-          onGenerated={(result) => {
-            setState(s => applyGeneratedProgram(result, s, state.me.intake));
+          onGenerated={async (result) => {
+            const weeks = result.weeks || 6;
+            const sport = state.me.intake?.["🥊 Sport / Focus"] || "General Fitness";
+            const dbId = state.me.id ? await createProgramRow(state.me.id, result.programName, weeks, sport, result.days) : null;
+            setState(s => applyGeneratedProgram(result, s, state.me.intake, dbId));
             setShowGenerator(false);
           }}
         />
@@ -2957,6 +3000,7 @@ function Workout({ state, setState, nav }) {
 
   const finishWorkout = () => {
     setState(s => ({ ...s, workoutLogs: [{ id: "l" + Date.now(), date: todayISO(), programDay: day.name, duration: 52, mood }, ...s.workoutLogs] }));
+    if (state.me.id) supabase.from("workout_logs").insert({ user_id: state.me.id, date: todayISO(), program_day: day.name, duration: 52, mood });
     setFinished(true);
   };
 
@@ -3058,6 +3102,7 @@ function AthleteProgress({ state, setState, nav }) {
     if (!weightInput) return;
     const kg = unit === "lb" ? lbToKg(parseFloat(weightInput)) : parseFloat(weightInput);
     setState(s => ({ ...s, progress: [...s.progress, { date: "Today", weightKg: kg, bodyFat: null }] }));
+    if (state.me.id) supabase.from("progress_entries").insert({ user_id: state.me.id, weight_kg: kg, body_fat: null });
     setWeightInput(""); setLogOpen(false);
   };
 
@@ -3932,7 +3977,7 @@ export default function App() {
   }, []);
 
   // Turn a DB profile row into the local `me` / `coachProfile` shape the rest of the app expects.
-  const hydrateFromProfile = (profile) => {
+  const hydrateFromProfile = async (profile) => {
     if (profile.role === "coach") {
       setState(s => ({ ...s, coachProfile: { ...s.coachProfile, name: profile.name, avatar: profile.avatar, photoUrl: profile.photo_url } }));
     } else {
@@ -3944,9 +3989,34 @@ export default function App() {
           injuries: profile.injuries || [], goals: profile.goals || [],
           weightKg: profile.weight_kg, heightCm: profile.height_cm, streak: profile.streak || 0,
           selfGuided: profile.role === "athlete", hasCoach: profile.role === "athlete_coached",
-          intake: profile.intake || {},
+          intake: profile.intake || {}, program: null,
         }
       }));
+
+      // Restore this athlete's real program, workout history, and progress from the database.
+      const [{ data: programRow }, { data: logRows }, { data: progressRows }] = await Promise.all([
+        profile.active_program_id
+          ? supabase.from("programs").select("*").eq("id", profile.active_program_id).single()
+          : Promise.resolve({ data: null }),
+        supabase.from("workout_logs").select("*").eq("user_id", profile.id).order("created_at", { ascending: false }),
+        supabase.from("progress_entries").select("*").eq("user_id", profile.id).order("created_at", { ascending: true }),
+      ]);
+
+      setState(s => {
+        let next = s;
+        if (programRow) {
+          const { days, newExercises } = buildDaysWithExerciseIds(programRow.days, s);
+          const program = { id: programRow.id, name: programRow.name, weeks: programRow.weeks, assignedCount: 1, sport: programRow.sport, days };
+          next = { ...next, programs: [...next.programs, program], exercises: [...next.exercises, ...newExercises], me: { ...next.me, program: program.id } };
+        }
+        if (logRows?.length) {
+          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, mood: l.mood })) };
+        }
+        if (progressRows?.length) {
+          next = { ...next, progress: progressRows.map(p => ({ date: new Date(p.created_at).toLocaleDateString(), weightKg: p.weight_kg, bodyFat: p.body_fat })) };
+        }
+        return next;
+      });
     }
     setAuthed(profile.role);
     setView(profile.role === "coach" ? "coach-dashboard" : "athlete-dashboard");
@@ -3959,7 +4029,7 @@ export default function App() {
       if (!session) { if (active) setSessionLoading(false); return; }
       const { data: profile } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
       if (active) {
-        if (profile) hydrateFromProfile(profile);
+        if (profile) await hydrateFromProfile(profile);
         setSessionLoading(false);
       }
     });
@@ -4014,7 +4084,10 @@ export default function App() {
         const apiData = await response.json();
         const textBlock = (apiData.content || []).find(b => b.type === "text");
         const parsed = parseAIJson(textBlock?.text);
-        setState(s => applyGeneratedProgram(parsed, s, data));
+        const weeks = parsed.weeks || 6;
+        const sport = data["🥊 Sport / Focus"] || "General Fitness";
+        const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days) : null;
+        setState(s => applyGeneratedProgram(parsed, s, data, dbId));
       } catch (err) {
         // generation failed — athlete lands on dashboard without a program, same as before
       }
@@ -4032,7 +4105,7 @@ export default function App() {
     if (error) return error.message;
     const { data: profile, error: profileError } = await supabase.from("profiles").select("*").eq("id", signInData.user.id).single();
     if (profileError || !profile) return "We couldn't find a profile for this account. Please contact support.";
-    hydrateFromProfile(profile);
+    await hydrateFromProfile(profile);
   };
 
   const nav = {
