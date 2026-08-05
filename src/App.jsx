@@ -836,14 +836,24 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
     }
   };
 
+  // Window-level listener (not just onKeyDown on the container) so Enter works
+  // even on steps built from tap-to-select buttons, where nothing has real
+  // keyboard focus — especially on mobile browsers.
+  const handleNextRef = useRef(handleNext);
+  useEffect(() => { handleNextRef.current = handleNext; });
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        handleNextRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}
-      onKeyDown={e => {
-        if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
-          e.preventDefault();
-          handleNext();
-        }
-      }}>
+    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}>
       <div className="px-6 pt-8 pb-4 shrink-0">
         <div className="flex items-center gap-1.5 mb-1">
           {steps.map((_, i) => (
