@@ -705,69 +705,6 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
   const [skipLoading, setSkipLoading] = useState(false);
   const [skipError, setSkipError] = useState(null);
 
-  if (!role) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
-        <Dumbbell size={40} style={{ color: C.orange }} />
-        <h1 className="mt-4 text-4xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>TRAINEDBEST</h1>
-        <p className="mt-2 text-sm" style={{ color: C.sub }}>Beyourownhero</p>
-
-        <div className="mt-12 w-full max-w-sm space-y-3">
-          <button onClick={() => setRole("coach")}
-            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
-            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Shield size={22} style={{ color: C.orange }} /></div>
-              <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I'M A COACH</div>
-                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Build programs, track athletes, message your roster</div>
-              </div>
-            </div>
-          </button>
-          <button onClick={() => setRole("athlete_coached")}
-            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
-            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.steel}55` }}><Users size={22} style={{ color: C.blue }} /></div>
-              <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I HAVE A COACH</div>
-                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Join your coach's roster with an invite code</div>
-              </div>
-            </div>
-          </button>
-          <button onClick={() => setRole("athlete")}
-            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
-            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Zap size={22} style={{ color: C.olive }} /></div>
-              <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>SELF-GUIDED ATHLETE</div>
-                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Get an AI-generated program instantly, train on your own</div>
-              </div>
-            </div>
-          </button>
-        </div>
-
-        <button onClick={async () => {
-          setSkipLoading(true); setSkipError(null);
-          const err = await onComplete("athlete", buildSkipTestAthlete());
-          setSkipLoading(false);
-          if (err) setSkipError(err);
-        }}
-          disabled={skipLoading}
-          className="mt-8 text-xs font-semibold px-4 py-2 rounded-full"
-          style={{ color: C.faint, border: `1px dashed ${C.border}` }}>
-          {skipLoading ? "Setting up..." : "⚡ Skip (dev/test — generated profile)"}
-        </button>
-        {skipError && <p className="text-xs mt-2 text-center" style={{ color: C.red }}>{skipError}</p>}
-
-        <button onClick={onSwitchToLogin} className="mt-4 text-sm" style={{ color: C.sub }}>
-          Already have an account? <span style={{ color: C.orange, fontWeight: 600 }}>Log in</span>
-        </button>
-      </div>
-    );
-  }
-
   const coachSteps = ["👤 Your Name", "🏅 Background", "📩 Invite Athletes", "📸 Profile Photo", "🔐 Create Account"];
   const athleteSteps = [
     "👤 Your Name", "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
@@ -838,7 +775,8 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
 
   // Window-level listener (not just onKeyDown on the container) so Enter works
   // even on steps built from tap-to-select buttons, where nothing has real
-  // keyboard focus — especially on mobile browsers.
+  // keyboard focus — especially on mobile browsers. These hooks must run on
+  // EVERY render (before any early return) or React throws error #310.
   const handleNextRef = useRef(handleNext);
   useEffect(() => { handleNextRef.current = handleNext; });
   useEffect(() => {
@@ -851,6 +789,69 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  if (!role) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
+        <Dumbbell size={40} style={{ color: C.orange }} />
+        <h1 className="mt-4 text-4xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>TRAINEDBEST</h1>
+        <p className="mt-2 text-sm" style={{ color: C.sub }}>Beyourownhero</p>
+
+        <div className="mt-12 w-full max-w-sm space-y-3">
+          <button onClick={() => setRole("coach")}
+            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
+            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Shield size={22} style={{ color: C.orange }} /></div>
+              <div className="min-w-0">
+                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I'M A COACH</div>
+                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Build programs, track athletes, message your roster</div>
+              </div>
+            </div>
+          </button>
+          <button onClick={() => setRole("athlete_coached")}
+            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
+            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.steel}55` }}><Users size={22} style={{ color: C.blue }} /></div>
+              <div className="min-w-0">
+                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I HAVE A COACH</div>
+                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Join your coach's roster with an invite code</div>
+              </div>
+            </div>
+          </button>
+          <button onClick={() => setRole("athlete")}
+            className="w-full text-left rounded-xl p-5 transition-transform active:scale-[0.98]"
+            style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Zap size={22} style={{ color: C.olive }} /></div>
+              <div className="min-w-0">
+                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>SELF-GUIDED ATHLETE</div>
+                <div className="text-xs mt-0.5" style={{ color: C.sub }}>Get an AI-generated program instantly, train on your own</div>
+              </div>
+            </div>
+          </button>
+        </div>
+
+        <button onClick={async () => {
+          setSkipLoading(true); setSkipError(null);
+          const err = await onComplete("athlete", buildSkipTestAthlete());
+          setSkipLoading(false);
+          if (err) setSkipError(err);
+        }}
+          disabled={skipLoading}
+          className="mt-8 text-xs font-semibold px-4 py-2 rounded-full"
+          style={{ color: C.faint, border: `1px dashed ${C.border}` }}>
+          {skipLoading ? "Setting up..." : "⚡ Skip (dev/test — generated profile)"}
+        </button>
+        {skipError && <p className="text-xs mt-2 text-center" style={{ color: C.red }}>{skipError}</p>}
+
+        <button onClick={onSwitchToLogin} className="mt-4 text-sm" style={{ color: C.sub }}>
+          Already have an account? <span style={{ color: C.orange, fontWeight: 600 }}>Log in</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: C.bg }}>
