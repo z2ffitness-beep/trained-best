@@ -8,7 +8,7 @@ import {
   Pause, RotateCcw, ArrowRight, Shield, Zap, Trophy, Home, Mail,
   ChevronDown, ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2,
   Sparkles, Bot, RefreshCw, AlertCircle, Swords, HeartPulse, Ruler,
-  Scale, ChevronsUpDown, Wand2, Loader2
+  Scale, ChevronsUpDown, Wand2, Loader2, Eye, EyeOff
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -647,6 +647,7 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const submit = async () => {
     setError(null);
@@ -674,7 +675,12 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
           <input type="email" autoFocus placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
         </Field>
         <Field label="Password">
-          <input type="password" placeholder="Your password" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} onKeyDown={e => e.key === "Enter" && submit()} />
+          <div className="relative">
+            <input type={showPassword ? "text" : "password"} placeholder="Your password" value={password} onChange={e => setPassword(e.target.value)} style={{ ...inputStyle, paddingRight: 44 }} onKeyDown={e => e.key === "Enter" && submit()} />
+            <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2" aria-label={showPassword ? "Hide password" : "Show password"}>
+              {showPassword ? <EyeOff size={18} style={{ color: C.sub }} /> : <Eye size={18} style={{ color: C.sub }} />}
+            </button>
+          </div>
         </Field>
 
         {error && <p className="text-xs mb-3" style={{ color: C.red }}>{error}</p>}
@@ -1008,7 +1014,12 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
           <input type="email" autoFocus placeholder="you@example.com" value={data.email || ""} onChange={e => set("email", e.target.value)} style={inputStyle} />
         </Field>
         <Field label="Password">
-          <input type="password" placeholder="At least 6 characters" value={data.password || ""} onChange={e => set("password", e.target.value)} style={inputStyle} />
+          <div className="relative">
+            <input type={data.showPassword ? "text" : "password"} placeholder="At least 6 characters" value={data.password || ""} onChange={e => set("password", e.target.value)} style={{ ...inputStyle, paddingRight: 44 }} />
+            <button type="button" onClick={() => set("showPassword", !data.showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2" aria-label={data.showPassword ? "Hide password" : "Show password"}>
+              {data.showPassword ? <EyeOff size={18} style={{ color: C.sub }} /> : <Eye size={18} style={{ color: C.sub }} />}
+            </button>
+          </div>
         </Field>
         {data.signupError && (
           <p className="text-xs mt-2" style={{ color: C.red }}>{data.signupError}</p>
@@ -4087,9 +4098,26 @@ function AppInner() {
   const [generatingProgram, setGeneratingProgram] = useState(false);
 
   // Returns an error string on failure, or undefined on success (caller navigates away on success).
+  // Extracts a readable message no matter what shape the error comes in —
+  // a Supabase error, a network failure, or anything else — so we never show
+  // a blank "{}" again.
+  const errText = (e) => {
+    if (!e) return "Something went wrong. Please try again.";
+    if (typeof e === "string") return e;
+    if (e.message) return e.message;
+    if (e.error_description) return e.error_description;
+    try { const s = JSON.stringify(e); return s === "{}" ? "Unknown error — check your connection and try again." : s; }
+    catch { return String(e); }
+  };
+
   const handleOnboardComplete = async (role, data) => {
+    try {
     const { data: signUpData, error } = await supabase.auth.signUp({ email: data.email, password: data.password });
-    if (error) return error.message;
+    if (error) return errText(error);
+
+    // Never persist the raw password (or UI-only noise) anywhere outside Supabase's
+    // own hashed auth storage — this is what gets saved as "intake" for later reuse.
+    const { password, signupError, showPassword, ...safeIntake } = data;
 
     const name = (data.name || "").trim() || (role === "coach" ? "Coach" : "You");
     const avatar = name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "ME";
@@ -4103,10 +4131,10 @@ function AppInner() {
             sport: data["🥊 Sport / Focus"] || "General Fitness", sex: data.sex === "Female" ? "female" : "male",
             is_fighter: !!data.isFighter, injuries: (data.injuries || []).filter(i => i !== "None currently"),
             goals: data.goals || [], weight_kg: lbToKg(data.weightLb || 175), height_cm: data.heightCm || 178,
-            intake: data,
+            intake: safeIntake,
           };
       const { error: profileError } = await supabase.from("profiles").insert(profileRow);
-      if (profileError) return profileError.message;
+      if (profileError) return errText(profileError);
     }
 
     // Supabase may require email confirmation before a session exists — if so, we can't
@@ -4117,7 +4145,7 @@ function AppInner() {
     }
 
     if (role === "athlete" || role === "athlete_coached") {
-      const me = { ...buildMeFromOnboarding(data), id: userId, program: null, selfGuided: role === "athlete", hasCoach: role === "athlete_coached", intake: data };
+      const me = { ...buildMeFromOnboarding(data), id: userId, program: null, selfGuided: role === "athlete", hasCoach: role === "athlete_coached", intake: safeIntake };
       setState(s => ({ ...s, me }));
       setAuthed(role);
       setGeneratingProgram(true);
@@ -4143,14 +4171,22 @@ function AppInner() {
       setAuthed(role);
       setView("coach-dashboard");
     }
+    } catch (err) {
+      setGeneratingProgram(false);
+      return errText(err);
+    }
   };
 
   const handleLogin = async (email, password) => {
-    const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return error.message;
-    const { data: profile, error: profileError } = await supabase.from("profiles").select("*").eq("id", signInData.user.id).single();
-    if (profileError || !profile) return "We couldn't find a profile for this account. Please contact support.";
-    await hydrateFromProfile(profile);
+    try {
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return errText(error);
+      const { data: profile, error: profileError } = await supabase.from("profiles").select("*").eq("id", signInData.user.id).single();
+      if (profileError || !profile) return "We couldn't find a profile for this account. Please contact support.";
+      await hydrateFromProfile(profile);
+    } catch (err) {
+      return errText(err);
+    }
   };
 
   const nav = {
