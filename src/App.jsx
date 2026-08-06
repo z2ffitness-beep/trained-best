@@ -3979,7 +3979,32 @@ const initialState = () => ({
   communityPosts: [],
 });
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("App crashed:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#000", color: "#fff", padding: 24, fontFamily: "monospace", fontSize: 13, whiteSpace: "pre-wrap", overflowY: "auto" }}>
+          <div style={{ color: "#ff6b6b", fontWeight: "bold", fontSize: 16, marginBottom: 12 }}>Something crashed — screenshot this and send it over:</div>
+          <div style={{ marginBottom: 12 }}>{String(this.state.error?.message || this.state.error)}</div>
+          <div style={{ opacity: 0.6, fontSize: 11 }}>{this.state.error?.stack}</div>
+          <button onClick={() => window.location.reload()} style={{ marginTop: 20, padding: "10px 16px", background: "#ff6600", color: "#fff", border: "none", borderRadius: 8, fontFamily: "sans-serif", fontWeight: 600 }}>
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
+  return <ErrorBoundary><AppInner /></ErrorBoundary>;
+}
+
+function AppInner() {
   const [authed, setAuthed] = useState(null);
   const [view, setView] = useState(null);
   const [navParam, setNavParam] = useState(null);
