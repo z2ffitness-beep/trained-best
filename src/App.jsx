@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { supabase } from "./supabaseClient";
+
+const BUILD_TAG = "2026-08-07-1";
 import {
   Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen,
   Flame, TrendingUp, Clock, ChevronRight, ChevronLeft, Plus, X,
@@ -855,6 +857,8 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
         <button onClick={onSwitchToLogin} className="mt-4 text-sm" style={{ color: C.sub }}>
           Already have an account? <span style={{ color: C.orange, fontWeight: 600 }}>Log in</span>
         </button>
+
+        <div className="mt-8 text-[10px]" style={{ color: C.faint }}>build {BUILD_TAG}</div>
       </div>
     );
   }
