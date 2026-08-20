@@ -3914,7 +3914,7 @@ function CalendarViewPage({ state, setState, nav }) {
 function ClearScheduleModal({ open, onClose, days, onApply }) {
   const [selected, setSelected] = useState(() => new Set());
   const [mode, setMode] = useState("permanent"); // "permanent" | "limited"
-  const [weeks, setWeeks] = useState(2);
+  const [weeks, setWeeks] = useState("2");
   const [startDate, setStartDate] = useState(() => todayISO());
 
   useEffect(() => { if (open) setSelected(new Set(days.map(d => d.id))); }, [open]);
@@ -3923,7 +3923,7 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
 
   const apply = () => {
     if (selected.size === 0) return;
-    onApply(Array.from(selected), mode, mode === "limited" ? { start: startDate, weeks } : null);
+    onApply(Array.from(selected), mode, mode === "limited" ? { start: startDate, weeks: Math.max(1, Number(weeks) || 1) } : null);
     onClose();
   };
 
@@ -3967,7 +3967,7 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
               <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
                 className="text-xs rounded py-1.5 px-2" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
               <span className="text-xs" style={{ color: C.sub }}>for</span>
-              <input type="number" min={1} value={weeks} onChange={e => setWeeks(Math.max(1, Number(e.target.value) || 1))}
+              <input type="text" inputMode="numeric" value={weeks} onChange={e => setWeeks(e.target.value.replace(/[^0-9]/g, ""))}
                 className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
               <span className="text-xs" style={{ color: C.sub }}>weeks</span>
             </div>
@@ -3985,23 +3985,24 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
 
 function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onSetWindow, onAddSkip, onRemoveSkip }) {
   const [windowMode, setWindowMode] = useState("every"); // "every" | "limited"
-  const [weeksInput, setWeeksInput] = useState(6);
-  const [skipWeeksInput, setSkipWeeksInput] = useState(2);
+  const [weeksInput, setWeeksInput] = useState("6"); // raw text while typing — parsed only on Apply
+  const [skipWeeksInput, setSkipWeeksInput] = useState("2");
 
   useEffect(() => {
-    if (day?.scheduleStart && day?.scheduleWeeks) { setWindowMode("limited"); setWeeksInput(day.scheduleWeeks); }
-    else { setWindowMode("every"); setWeeksInput(6); }
-  }, [day?.id, day?.scheduleStart, day?.scheduleWeeks]);
+    if (day?.scheduleStart && day?.scheduleWeeks) { setWindowMode("limited"); setWeeksInput(String(day.scheduleWeeks)); }
+    else { setWindowMode("every"); setWeeksInput("6"); }
+  }, [day?.id]);
 
   if (!date) return null;
   const weekday = WEEKDAY_ORDER[(new Date(date + "T00:00:00").getDay() + 6) % 7];
   const dateLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
   const otherDays = allDays.filter(d => d.id !== day?.id && d.weekday !== weekday);
 
-  const applyWindow = (mode, weeks) => {
+  const clearWindow = () => { if (day) onSetWindow(day.id, { scheduleStart: null, scheduleWeeks: null }); };
+  const applyWindow = () => {
     if (!day) return;
-    if (mode === "every") onSetWindow(day.id, { scheduleStart: null, scheduleWeeks: null });
-    else onSetWindow(day.id, { scheduleStart: day.scheduleStart || date, scheduleWeeks: weeks });
+    const weeks = Math.max(1, Number(weeksInput) || 1);
+    onSetWindow(day.id, { scheduleStart: day.scheduleStart || date, scheduleWeeks: weeks });
   };
 
   return (
@@ -4037,11 +4038,11 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
 
           <ChalkDivider label="Repeat Duration" />
           <div className="flex gap-2 mb-3">
-            <button onClick={() => { setWindowMode("every"); applyWindow("every", null); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+            <button onClick={() => { setWindowMode("every"); clearWindow(); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
               style={{ background: windowMode === "every" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "every" ? C.orange : C.border}`, color: windowMode === "every" ? C.orange : C.sub }}>
               Every week
             </button>
-            <button onClick={() => { setWindowMode("limited"); applyWindow("limited", weeksInput); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+            <button onClick={() => setWindowMode("limited")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
               style={{ background: windowMode === "limited" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "limited" ? C.orange : C.border}`, color: windowMode === "limited" ? C.orange : C.sub }}>
               For N weeks
             </button>
@@ -4049,10 +4050,14 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
           {windowMode === "limited" && (
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs" style={{ color: C.sub }}>Starting {day.scheduleStart ? new Date(day.scheduleStart + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : dateLabel}, for</span>
-              <input type="number" min={1} value={weeksInput}
-                onChange={e => { const v = Math.max(1, Number(e.target.value) || 1); setWeeksInput(v); applyWindow("limited", v); }}
+              <input type="text" inputMode="numeric" value={weeksInput}
+                onChange={e => setWeeksInput(e.target.value.replace(/[^0-9]/g, ""))}
                 className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
               <span className="text-xs" style={{ color: C.sub }}>weeks</span>
+              <button onClick={applyWindow}
+                className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.orange}18`, color: C.orange, border: `1px solid ${C.orange}55` }}>
+                {day.scheduleStart && day.scheduleWeeks ? "Update" : "Set"}
+              </button>
             </div>
           )}
 
@@ -4073,11 +4078,11 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
           )}
           <div className="flex items-center gap-2 mb-3">
             <span className="text-xs" style={{ color: C.sub }}>Clear starting {dateLabel} for</span>
-            <input type="number" min={1} value={skipWeeksInput}
-              onChange={e => setSkipWeeksInput(Math.max(1, Number(e.target.value) || 1))}
+            <input type="text" inputMode="numeric" value={skipWeeksInput}
+              onChange={e => setSkipWeeksInput(e.target.value.replace(/[^0-9]/g, ""))}
               className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
             <span className="text-xs" style={{ color: C.sub }}>weeks</span>
-            <button onClick={() => onAddSkip(day.id, { start: date, weeks: skipWeeksInput })}
+            <button onClick={() => onAddSkip(day.id, { start: date, weeks: Math.max(1, Number(skipWeeksInput) || 1) })}
               className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.red}18`, color: C.red, border: `1px solid ${C.red}55` }}>
               Clear
             </button>
