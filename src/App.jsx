@@ -620,6 +620,41 @@ function attachWeekdays(days, trainingDays) {
   return (days || []).map((d, i) => ({ ...d, weekday: ordered[i] || null }));
 }
 
+// A day is "on the calendar" for a given date if its weekday matches AND
+// (it has no bounded window, meaning it repeats indefinitely) OR the date
+// falls inside its scheduleStart..scheduleStart+scheduleWeeks window.
+function isDayScheduledOn(day, ds) {
+  if (!day?.weekday) return false;
+  const wd = WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7];
+  if (wd !== day.weekday) return false;
+  if (day.scheduleStart && day.scheduleWeeks) {
+    const start = new Date(day.scheduleStart + "T00:00:00");
+    const end = new Date(start);
+    end.setDate(end.getDate() + day.scheduleWeeks * 7);
+    const d = new Date(ds + "T00:00:00");
+    return d >= start && d < end;
+  }
+  return true;
+}
+
+// Shared persistence path for editing the signed-in athlete's own program
+// days (used by both the Program tab and the Calendar's day-detail modal) —
+// writes to the per-athlete override if one exists, otherwise the shared
+// program row, and syncs to Supabase.
+function persistMyProgramDays(state, setState, updateDays) {
+  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  if (!myProgram) return;
+  const isCustom = !!state.me.customProgram;
+  if (isCustom) {
+    const updated = updateDays(state.me.customProgram);
+    setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
+  } else {
+    const updated = updateDays(myProgram);
+    setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
+    if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
+  }
+}
+
 const DEFAULT_TEST_ATHLETE = {
   sex: "Male",
   "🥊 Sport / Focus": "MMA",
@@ -1513,6 +1548,7 @@ function buildDaysWithExerciseIds(rawDays, state) {
   const newExercises = [];
   const days = (rawDays || []).map(d => ({
     id: "d" + Math.random().toString(36).slice(2, 9), name: d.name, weekday: d.weekday || null,
+    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null,
     exercises: (d.exercises || []).map(x => {
       let match = state.exercises.find(e => e.name.toLowerCase() === x.name.toLowerCase());
       if (!match) {
@@ -1531,6 +1567,7 @@ function buildDaysWithExerciseIds(rawDays, state) {
 function denormalizeDays(days, state) {
   return (days || []).map(d => ({
     name: d.name, weekday: d.weekday || null,
+    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null,
     exercises: (d.exercises || []).map(x => {
       const ex = state.exercises.find(e => e.id === x.exerciseId);
       return { name: ex?.name || "Unknown Exercise", phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
@@ -1795,6 +1832,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [swapTarget, setSwapTarget] = useState(null);
+  const [detailExercise, setDetailExercise] = useState(null);
   const exById = id => state.exercises.find(e => e.id === id);
 
   if (!athlete) return null;
@@ -1993,7 +2031,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
                       <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                          <span className="text-sm font-medium truncate flex-1" style={{ color: C.text }}>{ex?.name}</span>
+                          <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-sm font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
                           <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
                           <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
                         </div>
@@ -2031,6 +2069,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
       <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
         onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
         onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
     </div>
   );
 }
@@ -2136,6 +2175,7 @@ function CoachPrograms({ state, setState, nav }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [detailExercise, setDetailExercise] = useState(null);
   const exById = id => state.exercises.find(e => e.id === id);
 
   const createProgram = () => {
@@ -2202,10 +2242,10 @@ function CoachPrograms({ state, setState, nav }) {
                   return (
                     <div key={x.id} className="rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
                       <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                      <div className="flex-1 min-w-0">
+                      <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="flex-1 min-w-0 text-left">
                         <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name || "Exercise"}</div>
                         <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{x.sets}×{x.reps} · RPE {x.rpe} · rest {x.rest}</div>
-                      </div>
+                      </button>
                       <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })} className="shrink-0"><Trash2 size={15} style={{ color: C.sub }} /></button>
                     </div>
                   );
@@ -2226,6 +2266,7 @@ function CoachPrograms({ state, setState, nav }) {
           onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
         <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
           onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
+        <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
       </div>
     );
   }
@@ -2890,6 +2931,7 @@ function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
   const [swapTarget, setSwapTarget] = useState(null);
+  const [detailExercise, setDetailExercise] = useState(null);
   const exById = id => state.exercises.find(e => e.id === id);
 
   if (!myProgram) {
@@ -3033,13 +3075,15 @@ function AthleteProgram({ state, setState, nav }) {
                 const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
                 return (
                   <div key={x.id} className="rounded-2xl p-3 flex items-center gap-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                    <div className="rounded-xl w-11 h-11 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
-                      {exerciseImage(ex?.name) ? <img src={exerciseImage(ex.name)} alt={ex.name} className="w-full h-full object-cover" /> : <span className="text-sm font-bold text-white">{i + 1}</span>}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
-                      <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{phaseLabel} · {x.sets}×{x.reps} · RPE {x.rpe}</div>
-                    </div>
+                    <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                      <div className="rounded-xl w-11 h-11 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
+                        {exerciseImage(ex?.name) ? <img src={exerciseImage(ex.name)} alt={ex.name} className="w-full h-full object-cover" /> : <span className="text-sm font-bold text-white">{i + 1}</span>}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
+                        <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{phaseLabel} · {x.sets}×{x.reps} · RPE {x.rpe}</div>
+                      </div>
+                    </button>
                     <div className="flex items-center gap-1 shrink-0">
                       <button onClick={() => setSwapTarget({ dayId: day.id, x })} className="p-1.5" aria-label="Swap exercise">
                         <RotateCcw size={15} style={{ color: C.blue }} />
@@ -3065,6 +3109,7 @@ function AthleteProgram({ state, setState, nav }) {
         onSwap={(newEx) => swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
     </div>
   );
 }
@@ -3525,9 +3570,19 @@ function ExerciseDetailModal({ open, onClose, exercise }) {
       <div className="mb-1 text-xl font-bold" style={{ fontFamily: "Inter", color: C.text }}>{exercise.name}</div>
       <div className="flex flex-wrap gap-2 mt-2 mb-4">
         <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${accent}22`, color: accent }}>{phaseLabel}</span>
-        <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.border}`, color: C.sub }}>{exercise.pattern}</span>
+        {exercise.pattern && <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.border}`, color: C.sub }}>{exercise.pattern}</span>}
         {exercise.injuryTag && <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.red}22`, color: C.red }}>⚠️ {exercise.injuryTag} care</span>}
       </div>
+      {(exercise.sets != null) && (
+        <div className="grid grid-cols-4 gap-2">
+          {[["Sets", exercise.sets], ["Reps", exercise.reps], ["RPE", exercise.rpe], ["Rest", exercise.rest]].map(([label, val]) => (
+            <div key={label} className="rounded-lg p-3 text-center" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+              <div className="font-mono font-bold text-lg" style={{ color: C.text }}>{val}</div>
+              <div className="text-[10px] uppercase tracking-wide mt-0.5" style={{ color: C.faint }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -3718,9 +3773,10 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach }) {
   );
 }
 
-function CalendarViewPage({ state, nav }) {
+function CalendarViewPage({ state, setState, nav }) {
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
-  const [selectedDate, setSelectedDate] = useState(null);
+  const [openDate, setOpenDate] = useState(null);
+  const [detailExercise, setDetailExercise] = useState(null);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -3732,14 +3788,6 @@ function CalendarViewPage({ state, nav }) {
 
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
 
-  // Program days recur weekly by their assigned weekday — not tied to a
-  // single week, so any date whose weekday matches shows that day scheduled.
-  const dayByWeekday = useMemo(() => {
-    const map = {};
-    (myProgram?.days || []).forEach(d => { if (d.weekday) map[d.weekday] = d; });
-    return map;
-  }, [myProgram]);
-
   const logsByDate = useMemo(() => {
     const map = {};
     state.workoutLogs.forEach(l => {
@@ -3750,14 +3798,20 @@ function CalendarViewPage({ state, nav }) {
   }, [state.workoutLogs]);
 
   const dateStrFor = (day) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  const scheduledDayFor = (ds) => dayByWeekday[WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7]];
+  // Program days recur weekly by their assigned weekday (optionally bounded to
+  // a start date + N weeks) — not tied to a single calendar week.
+  const scheduledDayFor = (ds) => (myProgram?.days || []).find(d => isDayScheduledOn(d, ds));
 
   const cells = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
-  const selectedLogs = selectedDate ? (logsByDate[selectedDate] || []) : [];
-  const selectedScheduledDay = selectedDate ? scheduledDayFor(selectedDate) : null;
+  const setDayWeekday = (dayId, weekday) => {
+    persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, weekday } : d) }));
+  };
+  const setDayWindow = (dayId, window) => {
+    persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, ...window } : d) }));
+  };
 
   const blockWeeks = [
     { label: "Week 1-2", focus: "Accumulation" }, { label: "Week 3-4", focus: "Intensification" }, { label: "Week 5-6", focus: "Peak / Taper" }
@@ -3781,55 +3835,21 @@ function CalendarViewPage({ state, nav }) {
               const hasLog = !!logsByDate[ds];
               const scheduledDay = scheduledDayFor(ds);
               const isToday = ds === todayStr;
-              const isSelected = ds === selectedDate;
               return (
-                <button key={ds} onClick={() => setSelectedDate(isSelected ? null : ds)}
-                  className="aspect-square rounded-lg flex items-center justify-center text-xs font-mono relative"
+                <button key={ds} onClick={() => setOpenDate(ds)}
+                  className="aspect-square rounded-lg flex flex-col items-center justify-center text-xs font-mono relative px-0.5"
                   style={{
                     background: hasLog ? `${C.orange}22` : scheduledDay ? `${C.blue}18` : C.bg,
                     color: hasLog ? C.orange : scheduledDay ? C.blue : C.sub,
-                    border: isSelected ? `1px solid ${C.orange}` : isToday ? `1px solid ${C.blue}` : scheduledDay && !hasLog ? `1px dashed ${C.blue}66` : "1px solid transparent",
+                    border: isToday ? `1px solid ${C.blue}` : scheduledDay && !hasLog ? `1px dashed ${C.blue}66` : "1px solid transparent",
                   }}>
-                  {d}
-                  {hasLog && <div className="absolute bottom-1 w-1 h-1 rounded-full" style={{ background: C.orange }} />}
-                  {!hasLog && scheduledDay && <div className="absolute bottom-1 w-1 h-1 rounded-full" style={{ background: C.blue }} />}
+                  <span>{d}</span>
+                  {scheduledDay && <span className="text-[7px] leading-none mt-0.5 truncate w-full text-center" style={{ color: hasLog ? C.orange : C.blue }}>{scheduledDay.name.split("—")[0].trim()}</span>}
                 </button>
               );
             })}
           </div>
         </div>
-
-        {selectedDate && (
-          <div className="mb-5">
-            <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>
-              {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
-            </div>
-            {selectedScheduledDay && (
-              <div className="rounded-lg p-3.5 mb-2 flex items-center gap-3" style={{ background: `${C.blue}14`, border: `1px solid ${C.blue}55` }}>
-                <div className="rounded-lg p-2 shrink-0" style={{ background: `${C.blue}22` }}><Calendar size={16} style={{ color: C.blue }} /></div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate" style={{ color: C.text }}>{selectedScheduledDay.name}</div>
-                  <div className="text-xs" style={{ color: C.sub }}>Scheduled — {selectedScheduledDay.exercises.length} exercises</div>
-                </div>
-              </div>
-            )}
-            {selectedLogs.length === 0 ? (
-              !selectedScheduledDay && <div className="rounded-lg p-3.5 text-sm" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>No workout logged this day.</div>
-            ) : (
-              <div className="space-y-2">
-                {selectedLogs.map(l => (
-                  <div key={l.id} className="rounded-lg p-3.5 flex items-center gap-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                    <div className="rounded-lg p-2 shrink-0" style={{ background: C.border }}><CheckCircle2 size={16} style={{ color: C.olive }} /></div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate" style={{ color: C.text }}>{l.programDay}</div>
-                      <div className="text-xs" style={{ color: C.sub }}>{l.duration} min{l.mood ? ` · felt ${l.mood}` : ""}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         <ChalkDivider label="Training Block Overview" />
         <div className="space-y-2.5">
@@ -3851,7 +3871,130 @@ function CalendarViewPage({ state, nav }) {
           </div>
         </div>
       </div>
+
+      <DayDetailModal
+        open={!!openDate} onClose={() => setOpenDate(null)} date={openDate}
+        day={openDate ? scheduledDayFor(openDate) : null}
+        allDays={myProgram?.days || []}
+        logs={openDate ? (logsByDate[openDate] || []) : []}
+        exById={id => state.exercises.find(e => e.id === id)}
+        onExerciseClick={setDetailExercise}
+        onSetWeekday={setDayWeekday}
+        onSetWindow={setDayWindow}
+      />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
     </div>
+  );
+}
+
+function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onSetWindow }) {
+  const [windowMode, setWindowMode] = useState("every"); // "every" | "limited"
+  const [weeksInput, setWeeksInput] = useState(6);
+
+  useEffect(() => {
+    if (day?.scheduleStart && day?.scheduleWeeks) { setWindowMode("limited"); setWeeksInput(day.scheduleWeeks); }
+    else { setWindowMode("every"); setWeeksInput(6); }
+  }, [day?.id, day?.scheduleStart, day?.scheduleWeeks]);
+
+  if (!date) return null;
+  const weekday = WEEKDAY_ORDER[(new Date(date + "T00:00:00").getDay() + 6) % 7];
+  const dateLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+  const otherDays = allDays.filter(d => d.id !== day?.id && d.weekday !== weekday);
+
+  const applyWindow = (mode, weeks) => {
+    if (!day) return;
+    if (mode === "every") onSetWindow(day.id, { scheduleStart: null, scheduleWeeks: null });
+    else onSetWindow(day.id, { scheduleStart: day.scheduleStart || date, scheduleWeeks: weeks });
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title={dateLabel} wide>
+      {day ? (
+        <div>
+          <div className="rounded-xl p-4 mb-4" style={{ background: `${C.blue}14`, border: `1px solid ${C.blue}55` }}>
+            <div className="text-lg font-bold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+            <div className="text-xs mt-0.5" style={{ color: C.sub }}>{day.exercises.length} exercises</div>
+          </div>
+
+          <div className="space-y-2 mb-5">
+            {day.exercises.map(x => {
+              const ex = exById(x.exerciseId);
+              const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
+              return (
+                <button key={x.id} onClick={() => onExerciseClick({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
+                  className="w-full text-left rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                  <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
+                    <div className="text-xs font-mono mt-0.5" style={{ color: C.sub }}>{x.sets}×{x.reps} · RPE {x.rpe}</div>
+                  </div>
+                  <ChevronRight size={16} style={{ color: C.faint }} className="shrink-0" />
+                </button>
+              );
+            })}
+          </div>
+
+          <ChalkDivider label="Move This Session" />
+          <p className="text-xs mb-2" style={{ color: C.sub }}>Repeats every week on:</p>
+          <DayWeekdayPicker value={day.weekday} onChange={(w) => w && onSetWeekday(day.id, w)} takenDays={allDays.filter(d => d.id !== day.id).map(d => d.weekday).filter(Boolean)} />
+
+          <ChalkDivider label="Repeat Duration" />
+          <div className="flex gap-2 mb-3">
+            <button onClick={() => { setWindowMode("every"); applyWindow("every", null); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+              style={{ background: windowMode === "every" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "every" ? C.orange : C.border}`, color: windowMode === "every" ? C.orange : C.sub }}>
+              Every week
+            </button>
+            <button onClick={() => { setWindowMode("limited"); applyWindow("limited", weeksInput); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+              style={{ background: windowMode === "limited" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "limited" ? C.orange : C.border}`, color: windowMode === "limited" ? C.orange : C.sub }}>
+              For N weeks
+            </button>
+          </div>
+          {windowMode === "limited" && (
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs" style={{ color: C.sub }}>Starting {day.scheduleStart ? new Date(day.scheduleStart + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : dateLabel}, for</span>
+              <input type="number" min={1} value={weeksInput}
+                onChange={e => { const v = Math.max(1, Number(e.target.value) || 1); setWeeksInput(v); applyWindow("limited", v); }}
+                className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
+              <span className="text-xs" style={{ color: C.sub }}>weeks</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          {logs.length === 0 ? (
+            <div className="rounded-lg p-3.5 text-sm mb-4" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>Nothing scheduled this day.</div>
+          ) : (
+            <div className="space-y-2 mb-4">
+              {logs.map(l => (
+                <div key={l.id} className="rounded-lg p-3.5 flex items-center gap-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                  <div className="rounded-lg p-2 shrink-0" style={{ background: C.border }}><CheckCircle2 size={16} style={{ color: C.olive }} /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate" style={{ color: C.text }}>{l.programDay}</div>
+                    <div className="text-xs" style={{ color: C.sub }}>{l.duration} min{l.mood ? ` · felt ${l.mood}` : ""}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {otherDays.length > 0 && (
+            <>
+              <ChalkDivider label={`Move a Session to ${weekday}`} />
+              <div className="space-y-2">
+                {otherDays.map(d => (
+                  <button key={d.id} onClick={() => onSetWeekday(d.id, weekday)} className="w-full text-left rounded-lg p-3.5 flex items-center justify-between" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                    <div>
+                      <div className="text-sm font-medium" style={{ color: C.text }}>{d.name}</div>
+                      <div className="text-xs mt-0.5" style={{ color: C.sub }}>{d.weekday ? `Currently ${d.weekday}` : "Currently unscheduled"}</div>
+                    </div>
+                    <ArrowRight size={16} style={{ color: C.faint }} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -4419,7 +4562,7 @@ function AppInner() {
     "athlete-profile": <AthleteProfile state={state} setState={setState} nav={nav} />,
     "exercise-library": <ExerciseLibraryPage state={state} setState={setState} nav={nav} isCoach={authed === "coach"} />,
     "community": <CommunityPage state={state} setState={setState} nav={nav} />,
-    "calendar": <CalendarViewPage state={state} nav={nav} />,
+    "calendar": <CalendarViewPage state={state} setState={setState} nav={nav} />,
     "nutrition": <NutritionPage state={state} nav={nav} />,
   };
 
