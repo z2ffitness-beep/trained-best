@@ -623,17 +623,20 @@ function attachWeekdays(days, trainingDays) {
 // A day is "on the calendar" for a given date if its weekday matches AND
 // (it has no bounded window, meaning it repeats indefinitely) OR the date
 // falls inside its scheduleStart..scheduleStart+scheduleWeeks window.
+function isDateInRange(ds, start, weeks) {
+  const s = new Date(start + "T00:00:00");
+  const e = new Date(s);
+  e.setDate(e.getDate() + weeks * 7);
+  const d = new Date(ds + "T00:00:00");
+  return d >= s && d < e;
+}
+
 function isDayScheduledOn(day, ds) {
   if (!day?.weekday) return false;
   const wd = WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7];
   if (wd !== day.weekday) return false;
-  if (day.scheduleStart && day.scheduleWeeks) {
-    const start = new Date(day.scheduleStart + "T00:00:00");
-    const end = new Date(start);
-    end.setDate(end.getDate() + day.scheduleWeeks * 7);
-    const d = new Date(ds + "T00:00:00");
-    return d >= start && d < end;
-  }
+  if (day.scheduleStart && day.scheduleWeeks && !isDateInRange(ds, day.scheduleStart, day.scheduleWeeks)) return false;
+  if ((day.skipRanges || []).some(r => isDateInRange(ds, r.start, r.weeks))) return false;
   return true;
 }
 
@@ -1548,7 +1551,7 @@ function buildDaysWithExerciseIds(rawDays, state) {
   const newExercises = [];
   const days = (rawDays || []).map(d => ({
     id: "d" + Math.random().toString(36).slice(2, 9), name: d.name, weekday: d.weekday || null,
-    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null,
+    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null, skipRanges: d.skipRanges || [],
     exercises: (d.exercises || []).map(x => {
       let match = state.exercises.find(e => e.name.toLowerCase() === x.name.toLowerCase());
       if (!match) {
@@ -1567,7 +1570,7 @@ function buildDaysWithExerciseIds(rawDays, state) {
 function denormalizeDays(days, state) {
   return (days || []).map(d => ({
     name: d.name, weekday: d.weekday || null,
-    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null,
+    scheduleStart: d.scheduleStart || null, scheduleWeeks: d.scheduleWeeks || null, skipRanges: d.skipRanges || [],
     exercises: (d.exercises || []).map(x => {
       const ex = state.exercises.find(e => e.id === x.exerciseId);
       return { name: ex?.name || "Unknown Exercise", phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
@@ -3777,6 +3780,7 @@ function CalendarViewPage({ state, setState, nav }) {
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
+  const [clearOpen, setClearOpen] = useState(false);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -3812,6 +3816,22 @@ function CalendarViewPage({ state, setState, nav }) {
   const setDayWindow = (dayId, window) => {
     persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, ...window } : d) }));
   };
+  const addSkip = (dayId, range) => {
+    persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, skipRanges: [...(d.skipRanges || []), range] } : d) }));
+  };
+  const removeSkip = (dayId, idx) => {
+    persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, skipRanges: (d.skipRanges || []).filter((_, i) => i !== idx) } : d) }));
+  };
+  const bulkClear = (dayIds, mode, range) => {
+    persistMyProgramDays(state, setState, prog => ({
+      ...prog,
+      days: prog.days.map(d => {
+        if (!dayIds.includes(d.id)) return d;
+        if (mode === "permanent") return { ...d, weekday: null, scheduleStart: null, scheduleWeeks: null, skipRanges: [] };
+        return { ...d, skipRanges: [...(d.skipRanges || []), range] };
+      })
+    }));
+  };
 
   const blockWeeks = [
     { label: "Week 1-2", focus: "Accumulation" }, { label: "Week 3-4", focus: "Intensification" }, { label: "Week 5-6", focus: "Peak / Taper" }
@@ -3819,7 +3839,8 @@ function CalendarViewPage({ state, setState, nav }) {
 
   return (
     <div className="pb-28">
-      <TopBar title="Calendar" onLogout={nav.logout} />
+      <TopBar title="Calendar" onLogout={nav.logout}
+        right={myProgram && <button onClick={() => setClearOpen(true)} aria-label="Clear schedule"><Trash2 size={18} style={{ color: C.sub }} /></button>} />
       <div className="px-5 pt-5">
         <div className="rounded-xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div className="flex items-center justify-between mb-4">
@@ -3881,15 +3902,91 @@ function CalendarViewPage({ state, setState, nav }) {
         onExerciseClick={setDetailExercise}
         onSetWeekday={setDayWeekday}
         onSetWindow={setDayWindow}
+        onAddSkip={addSkip}
+        onRemoveSkip={removeSkip}
       />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <ClearScheduleModal open={clearOpen} onClose={() => setClearOpen(false)} days={(myProgram?.days || []).filter(d => d.weekday)} onApply={bulkClear} />
     </div>
   );
 }
 
-function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onSetWindow }) {
+function ClearScheduleModal({ open, onClose, days, onApply }) {
+  const [selected, setSelected] = useState(() => new Set());
+  const [mode, setMode] = useState("permanent"); // "permanent" | "limited"
+  const [weeks, setWeeks] = useState(2);
+  const [startDate, setStartDate] = useState(() => todayISO());
+
+  useEffect(() => { if (open) setSelected(new Set(days.map(d => d.id))); }, [open]);
+
+  const toggle = (id) => setSelected(s => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
+
+  const apply = () => {
+    if (selected.size === 0) return;
+    onApply(Array.from(selected), mode, mode === "limited" ? { start: startDate, weeks } : null);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Clear Schedule">
+      {days.length === 0 ? (
+        <p className="text-sm" style={{ color: C.sub }}>No training days are currently scheduled.</p>
+      ) : (
+        <>
+          <p className="text-xs mb-2.5" style={{ color: C.sub }}>Which sessions?</p>
+          <div className="space-y-2 mb-4">
+            {days.map(d => {
+              const isOn = selected.has(d.id);
+              return (
+                <button key={d.id} onClick={() => toggle(d.id)} className="w-full flex items-center justify-between rounded-lg p-3"
+                  style={{ background: isOn ? `${C.orange}18` : C.panel, border: `1px solid ${isOn ? C.orange : C.border}` }}>
+                  <div className="text-left">
+                    <div className="text-sm font-medium" style={{ color: isOn ? C.orange : C.text }}>{d.name}</div>
+                    <div className="text-xs mt-0.5" style={{ color: C.sub }}>{d.weekday}</div>
+                  </div>
+                  {isOn && <Check size={16} style={{ color: C.orange }} />}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-xs mb-2.5" style={{ color: C.sub }}>How long?</p>
+          <div className="flex gap-2 mb-3">
+            <button onClick={() => setMode("permanent")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+              style={{ background: mode === "permanent" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "permanent" ? C.red : C.border}`, color: mode === "permanent" ? C.red : C.sub }}>
+              Permanently
+            </button>
+            <button onClick={() => setMode("limited")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+              style={{ background: mode === "limited" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "limited" ? C.red : C.border}`, color: mode === "limited" ? C.red : C.sub }}>
+              For N weeks
+            </button>
+          </div>
+          {mode === "limited" && (
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xs" style={{ color: C.sub }}>Starting</span>
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+                className="text-xs rounded py-1.5 px-2" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
+              <span className="text-xs" style={{ color: C.sub }}>for</span>
+              <input type="number" min={1} value={weeks} onChange={e => setWeeks(Math.max(1, Number(e.target.value) || 1))}
+                className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
+              <span className="text-xs" style={{ color: C.sub }}>weeks</span>
+            </div>
+          )}
+
+          <Btn variant="danger" className="w-full" disabled={selected.size === 0} onClick={apply}>
+            Clear {selected.size} session{selected.size !== 1 ? "s" : ""}
+          </Btn>
+        </>
+      )}
+      <Btn variant="ghost" className="w-full mt-2.5" onClick={onClose}>Cancel</Btn>
+    </Modal>
+  );
+}
+
+function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onSetWindow, onAddSkip, onRemoveSkip }) {
   const [windowMode, setWindowMode] = useState("every"); // "every" | "limited"
   const [weeksInput, setWeeksInput] = useState(6);
+  const [skipWeeksInput, setSkipWeeksInput] = useState(2);
 
   useEffect(() => {
     if (day?.scheduleStart && day?.scheduleWeeks) { setWindowMode("limited"); setWeeksInput(day.scheduleWeeks); }
@@ -3958,6 +4055,36 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
               <span className="text-xs" style={{ color: C.sub }}>weeks</span>
             </div>
           )}
+
+          <ChalkDivider label="Clear This Session" />
+          {(day.skipRanges || []).length > 0 && (
+            <div className="space-y-1.5 mb-3">
+              {day.skipRanges.map((r, i) => {
+                const s = new Date(r.start + "T00:00:00");
+                const e = new Date(s); e.setDate(e.getDate() + r.weeks * 7 - 1);
+                return (
+                  <div key={i} className="rounded-lg p-2.5 flex items-center justify-between" style={{ background: `${C.red}14`, border: `1px solid ${C.red}44` }}>
+                    <span className="text-xs" style={{ color: C.red }}>Cleared {s.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – {e.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                    <button onClick={() => onRemoveSkip(day.id, i)}><X size={14} style={{ color: C.red }} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xs" style={{ color: C.sub }}>Clear starting {dateLabel} for</span>
+            <input type="number" min={1} value={skipWeeksInput}
+              onChange={e => setSkipWeeksInput(Math.max(1, Number(e.target.value) || 1))}
+              className="w-14 text-center font-mono text-sm rounded py-1" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
+            <span className="text-xs" style={{ color: C.sub }}>weeks</span>
+            <button onClick={() => onAddSkip(day.id, { start: date, weeks: skipWeeksInput })}
+              className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.red}18`, color: C.red, border: `1px solid ${C.red}55` }}>
+              Clear
+            </button>
+          </div>
+          <button onClick={() => onSetWeekday(day.id, null)} className="w-full text-center text-xs font-semibold py-2" style={{ color: C.red }}>
+            Unschedule this session entirely
+          </button>
         </div>
       ) : (
         <div>
