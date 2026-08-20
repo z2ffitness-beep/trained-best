@@ -608,6 +608,17 @@ function HeightDial({ unit, valueCm, onChange }) {
 const SPORTS = ["MMA", "General Fitness", "New to training (weightlifting focus)"];
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 const INJURY_AREAS = ["None currently", "Shoulder", "Knee", "Low back", "Ankle", "Hip", "Elbow / Wrist"];
+const WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const WEEKDAY_SHORT = { Monday: "M", Tuesday: "T", Wednesday: "W", Thursday: "T", Friday: "F", Saturday: "S", Sunday: "S" };
+
+// Chronologically sorts a set of selected weekdays and zips them 1:1 onto a
+// list of program days in order — this is what actually schedules "Day 1"
+// onto "Monday", "Day 2" onto "Wednesday", etc. Extra days beyond the number
+// of selected weekdays are left unscheduled rather than guessed at.
+function attachWeekdays(days, trainingDays) {
+  const ordered = WEEKDAY_ORDER.filter(w => (trainingDays || []).includes(w));
+  return (days || []).map((d, i) => ({ ...d, weekday: ordered[i] || null }));
+}
 
 const DEFAULT_TEST_ATHLETE = {
   sex: "Male",
@@ -625,7 +636,7 @@ const DEFAULT_TEST_ATHLETE = {
   weightLb: 175,
   weightUnit: "lb",
   heightUnit: "imperial",
-  daysPerWeek: 4,
+  trainingDays: ["Monday", "Tuesday", "Thursday", "Friday"],
   equipment: ["Full gym access"],
 };
 
@@ -761,7 +772,7 @@ function Onboarding({ onComplete, onSwitchToLogin }) {
       case "🩹 Injuries": return (data.injuries || []).length > 0;
       case "📏 Height": return !!data.heightCm;
       case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
-      case "📅 Training Schedule": return !!data.daysPerWeek;
+      case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
       case "🏋️ Equipment": return (data.equipment || []).length > 0;
       case "📸 Profile Photo": return true; // optional by design
       case "🔐 Create Account": return /\S+@\S+\.\S+/.test(data.email || "") && (data.password || "").length >= 6;
@@ -1276,21 +1287,29 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
       );
     }
     case "📅 Training Schedule": {
-      const days = [2, 3, 4, 5, 6, 7];
-      const exp = data.experience || "Beginner";
+      const current = data.trainingDays || [];
+      const toggle = (day) => {
+        const next = current.includes(day) ? current.filter(d => d !== day) : [...current, day];
+        set("trainingDays", next);
+      };
       return (
         <div>
-          <p className="text-xs mb-3" style={{ color: C.sub }}>How many days per week can you realistically train?</p>
-          <div className="grid grid-cols-3 gap-2.5">
-            {days.map(d => (
-              <button key={d} onClick={() => set("daysPerWeek", d)} className="rounded-lg p-3.5 text-center"
-                style={{ background: data.daysPerWeek === d ? `${C.orange}18` : C.panel, border: `1px solid ${data.daysPerWeek === d ? C.orange : C.border}` }}>
-                <div className="font-mono font-bold text-xl" style={{ color: data.daysPerWeek === d ? C.orange : C.text }}>{d}</div>
-                <div className="text-[10px]" style={{ color: C.sub }}>days/wk</div>
-              </button>
-            ))}
+          <p className="text-xs mb-3" style={{ color: C.sub }}>Which days can you realistically train? Your program will be built around exactly these days.</p>
+          <div className="space-y-2">
+            {WEEKDAY_ORDER.map(day => {
+              const isActive = current.includes(day);
+              return (
+                <button key={day} onClick={() => toggle(day)} className="w-full flex items-center justify-between rounded-lg p-3.5"
+                  style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
+                  <span className="text-sm font-medium" style={{ color: isActive ? C.orange : C.text }}>{day}</span>
+                  {isActive && <Check size={16} style={{ color: C.orange }} />}
+                </button>
+              );
+            })}
           </div>
-
+          {current.length > 0 && (
+            <p className="text-xs mt-3" style={{ color: C.sub }}>{current.length} day{current.length !== 1 ? "s" : ""} per week selected.</p>
+          )}
         </div>
       );
     }
@@ -1427,7 +1446,7 @@ Athlete intake:
 - Injury notes: ${intake.injuryNotes || "n/a"}
 - Height: ${intake.heightCm}cm
 - Weight: ${intake.weightLb}lb
-- Days per week: ${intake.daysPerWeek || 4}
+- Training days: ${WEEKDAY_ORDER.filter(w => (intake.trainingDays || []).includes(w)).join(", ") || "4 days (unspecified schedule)"}
 - Equipment: ${(intake.equipment || []).join(", ") || "Full gym access"}
 
 Rules:
@@ -1436,7 +1455,7 @@ Rules:
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
 - If the athlete has injuries, include specific priming/prehab work for that area in the primer exercises and avoid contraindicated movements.
 - If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
-- Match days per week to the requested schedule.
+- Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
 
 Return JSON in this exact shape:
@@ -1493,7 +1512,7 @@ function parseAIJson(text) {
 function buildDaysWithExerciseIds(rawDays, state) {
   const newExercises = [];
   const days = (rawDays || []).map(d => ({
-    id: "d" + Math.random().toString(36).slice(2, 9), name: d.name,
+    id: "d" + Math.random().toString(36).slice(2, 9), name: d.name, weekday: d.weekday || null,
     exercises: (d.exercises || []).map(x => {
       let match = state.exercises.find(e => e.name.toLowerCase() === x.name.toLowerCase());
       if (!match) {
@@ -1511,7 +1530,7 @@ function buildDaysWithExerciseIds(rawDays, state) {
 // this session's locally-generated exercise ids).
 function denormalizeDays(days, state) {
   return (days || []).map(d => ({
-    name: d.name,
+    name: d.name, weekday: d.weekday || null,
     exercises: (d.exercises || []).map(x => {
       const ex = state.exercises.find(e => e.id === x.exerciseId);
       return { name: ex?.name || "Unknown Exercise", phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
@@ -1803,6 +1822,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
   const removeExercise = (dayId, xId) => {
     ensureCustom(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.filter(x => x.id !== xId) } : d) }));
   };
+  const addDay = () => {
+    ensureCustom(prog => ({ ...prog, days: [...prog.days, { id: "d" + Date.now(), name: `Day ${prog.days.length + 1}`, weekday: null, exercises: [] }] }));
+  };
+  const deleteDay = (dayId) => {
+    ensureCustom(prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
+  };
+  const setDayWeekday = (dayId, weekday) => {
+    ensureCustom(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, weekday } : d) }));
+  };
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const deleteExerciseGlobally = (exerciseId) => {
     setState(s => ({
       ...s,
@@ -1951,8 +1980,12 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
           <div className="space-y-4">
             {program.days.map(day => (
               <div key={day.id} className="rounded-xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                <div className="font-semibold mb-3" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
-                <div className="space-y-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="font-semibold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+                  <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+                </div>
+                <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} takenDays={program.days.filter(d => d.id !== day.id).map(d => d.weekday).filter(Boolean)} />
+                <div className="space-y-2 mt-3">
                   {sortedExercises(day).map(x => {
                     const ex = exById(x.exerciseId);
                     const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
@@ -1984,18 +2017,65 @@ function CoachAthleteDetail({ state, setState, nav, athleteId }) {
                 </button>
               </div>
             ))}
+            <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
             <div className="text-xs text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
           </div>
         )}
       </div>
 
       <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises} onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
+      <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
+        onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
       <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
         onSwap={(newEx) => swapExercise(swapTarget.dayId, swapTarget.x.id, newEx)} />
       <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
         onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
         onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
     </div>
+  );
+}
+
+// Lets a day be pinned to a specific weekday so it can show up on the calendar.
+// Tapping the active day clears it back to unscheduled; other program days'
+// weekdays are shown disabled so the same weekday can't be double-booked.
+function DayWeekdayPicker({ value, onChange, takenDays }) {
+  return (
+    <div className="flex gap-1 mt-2.5">
+      {WEEKDAY_ORDER.map(day => {
+        const isActive = value === day;
+        const isTaken = !isActive && (takenDays || []).includes(day);
+        return (
+          <button key={day} type="button" disabled={isTaken}
+            onClick={() => onChange(isActive ? null : day)}
+            title={day}
+            className="flex-1 aspect-square rounded-md text-[10px] font-bold flex items-center justify-center"
+            style={{
+              background: isActive ? C.orange : C.bg,
+              color: isActive ? "#fff" : isTaken ? C.faint : C.sub,
+              border: `1px solid ${isActive ? C.orange : C.border}`,
+              opacity: isTaken ? 0.4 : 1,
+            }}>
+            {WEEKDAY_SHORT[day]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DeleteDayModal({ open, onClose, dayName, onConfirm }) {
+  return (
+    <Modal open={open} onClose={onClose} title="Delete Training Day">
+      <p className="text-sm mb-5" style={{ color: C.text }}>
+        Delete <span className="font-semibold">{dayName}</span> and all its exercises? This can't be undone.
+      </p>
+      <div className="space-y-2.5">
+        <button onClick={onConfirm} className="w-full text-left rounded-lg p-3.5" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
+          <div className="text-sm font-medium" style={{ color: C.red }}>Delete this day</div>
+        </button>
+      </div>
+      <Btn variant="ghost" className="w-full mt-3" onClick={onClose}>Cancel</Btn>
+    </Modal>
   );
 }
 
@@ -2066,6 +2146,8 @@ function CoachPrograms({ state, setState, nav }) {
 
   const prog = state.programs.find(p => p.id === editing);
   const addDay = () => setState(s => ({ ...s, programs: s.programs.map(p => p.id === editing ? { ...p, days: [...p.days, { id: "d" + Date.now(), name: `Day ${p.days.length + 1}`, exercises: [] }] } : p) }));
+  const deleteDay = (dayId) => setState(s => ({ ...s, programs: s.programs.map(p => p.id === editing ? { ...p, days: p.days.filter(d => d.id !== dayId) } : p) }));
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const addExerciseToDay = (dayId, exercise) => {
     setState(s => ({ ...s, programs: s.programs.map(p => p.id === editing ? { ...p, days: p.days.map(d => d.id === dayId ? { ...d, exercises: [...d.exercises, { id: "x" + Date.now(), exerciseId: exercise.id, phase: exercise.phase, sets: 3, reps: "10", rpe: 7, rest: "90s" }] } : d) } : p) }));
   };
@@ -2109,7 +2191,10 @@ function CoachPrograms({ state, setState, nav }) {
         <div className="px-5 pt-4 space-y-5">
           {prog.days.map(day => (
             <div key={day.id} className="rounded-xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-              <div className="font-semibold mb-3" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+                <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+              </div>
               <div className="space-y-2">
                 {sortedExercises(day).map(x => {
                   const ex = exById(x.exerciseId);
@@ -2139,6 +2224,8 @@ function CoachPrograms({ state, setState, nav }) {
         <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
           onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
           onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
+        <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
+          onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
       </div>
     );
   }
@@ -2168,7 +2255,7 @@ function CoachPrograms({ state, setState, nav }) {
       </div>
       {aiOpen && (
         <AIProgramGenerator
-          intake={{ "🥊 Sport / Focus": "MMA", isFighter: true, experience: "Intermediate (1-3 years)", goals: ["Athletic Performance"], injuries: ["None currently"], daysPerWeek: 4, equipment: ["Full gym access"], heightCm: 178, weightLb: 175 }}
+          intake={{ "🥊 Sport / Focus": "MMA", isFighter: true, experience: "Intermediate (1-3 years)", goals: ["Athletic Performance"], injuries: ["None currently"], trainingDays: ["Monday", "Tuesday", "Thursday", "Friday"], equipment: ["Full gym access"], heightCm: 178, weightLb: 175 }}
           onGenerated={applyAIProgram} onClose={() => setAiOpen(false)} />
       )}
     </div>
@@ -2731,7 +2818,7 @@ function AthleteDashboard({ state, setState, nav }) {
           const loggedDates = new Set(state.workoutLogs.map(l => l.date));
           const dayLabels = ["S","M","T","W","T","F","S"];
           const completed = weekDays.filter(d => loggedDates.has(d.toISOString().slice(0,10))).length;
-          const target = state.me.daysPerWeek || 4;
+          const target = (state.me.trainingDays || []).length || 4;
           return (
             <div className="rounded-2xl p-4 mb-6" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
               <div className="flex items-center justify-between mb-3">
@@ -2864,6 +2951,31 @@ function AthleteProgram({ state, setState, nav }) {
     }
   };
 
+  const persistMyDays = (updateDays) => {
+    const isCustom = !!state.me.customProgram;
+    if (isCustom) {
+      const updated = updateDays(state.me.customProgram);
+      setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
+    } else {
+      const updated = updateDays(myProgram);
+      setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
+      if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
+    }
+  };
+
+  const addDayToMyProgram = () => {
+    persistMyDays(prog => ({ ...prog, days: [...prog.days, { id: "d" + Date.now(), name: `Day ${prog.days.length + 1}`, weekday: null, exercises: [] }] }));
+    setActiveDayIdx(myProgram.days.length);
+  };
+  const deleteDayFromMyProgram = (dayId) => {
+    persistMyDays(prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
+    setActiveDayIdx(i => Math.max(0, Math.min(i, myProgram.days.length - 2)));
+  };
+  const setMyDayWeekday = (dayId, weekday) => {
+    persistMyDays(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, weekday } : d) }));
+  };
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
@@ -2892,19 +3004,28 @@ function AthleteProgram({ state, setState, nav }) {
               {d.name.split("—")[0].trim()}
             </button>
           ))}
+          <button onClick={addDayToMyProgram} aria-label="Add training day" className="shrink-0 rounded-2xl w-10 h-10 flex items-center justify-center"
+            style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
+            <Plus size={16} style={{ color: C.sub }} />
+          </button>
         </div>
 
         {day && (
           <>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-1">
               <div>
                 <div className="text-xl" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>{day.name}</div>
                 <div className="text-sm mt-0.5" style={{ color: C.orange }}>{sortedExercises.length} exercises</div>
               </div>
-              <button onClick={() => nav.go("athlete-workout")} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-sm shrink-0" style={{ background: C.orange, color: "#fff" }}>
-                <Play size={14} fill="#fff" /> Start
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => setDeleteTarget(day)} aria-label="Delete day" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
+                <button onClick={() => nav.go("athlete-workout")} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-sm" style={{ background: C.orange, color: "#fff" }}>
+                  <Play size={14} fill="#fff" /> Start
+                </button>
+              </div>
             </div>
+            <DayWeekdayPicker value={day.weekday} onChange={(w) => setMyDayWeekday(day.id, w)} takenDays={myProgram.days.filter(d => d.id !== day.id).map(d => d.weekday).filter(Boolean)} />
+            <div className="mb-4" />
 
             <div className="space-y-2">
               {sortedExercises.map((x, i) => {
@@ -2942,6 +3063,8 @@ function AthleteProgram({ state, setState, nav }) {
 
       <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
         onSwap={(newEx) => swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx)} />
+      <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
+        onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
     </div>
   );
 }
@@ -3607,6 +3730,16 @@ function CalendarViewPage({ state, nav }) {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const todayStr = todayISO();
 
+  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+
+  // Program days recur weekly by their assigned weekday — not tied to a
+  // single week, so any date whose weekday matches shows that day scheduled.
+  const dayByWeekday = useMemo(() => {
+    const map = {};
+    (myProgram?.days || []).forEach(d => { if (d.weekday) map[d.weekday] = d; });
+    return map;
+  }, [myProgram]);
+
   const logsByDate = useMemo(() => {
     const map = {};
     state.workoutLogs.forEach(l => {
@@ -3617,12 +3750,14 @@ function CalendarViewPage({ state, nav }) {
   }, [state.workoutLogs]);
 
   const dateStrFor = (day) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const scheduledDayFor = (ds) => dayByWeekday[WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7]];
 
   const cells = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   const selectedLogs = selectedDate ? (logsByDate[selectedDate] || []) : [];
+  const selectedScheduledDay = selectedDate ? scheduledDayFor(selectedDate) : null;
 
   const blockWeeks = [
     { label: "Week 1-2", focus: "Accumulation" }, { label: "Week 3-4", focus: "Intensification" }, { label: "Week 5-6", focus: "Peak / Taper" }
@@ -3644,14 +3779,20 @@ function CalendarViewPage({ state, nav }) {
               if (d === null) return <div key={`empty${i}`} />;
               const ds = dateStrFor(d);
               const hasLog = !!logsByDate[ds];
+              const scheduledDay = scheduledDayFor(ds);
               const isToday = ds === todayStr;
               const isSelected = ds === selectedDate;
               return (
                 <button key={ds} onClick={() => setSelectedDate(isSelected ? null : ds)}
                   className="aspect-square rounded-lg flex items-center justify-center text-xs font-mono relative"
-                  style={{ background: hasLog ? `${C.orange}22` : C.bg, color: hasLog ? C.orange : C.sub, border: isSelected ? `1px solid ${C.orange}` : isToday ? `1px solid ${C.blue}` : "1px solid transparent" }}>
+                  style={{
+                    background: hasLog ? `${C.orange}22` : scheduledDay ? `${C.blue}18` : C.bg,
+                    color: hasLog ? C.orange : scheduledDay ? C.blue : C.sub,
+                    border: isSelected ? `1px solid ${C.orange}` : isToday ? `1px solid ${C.blue}` : scheduledDay && !hasLog ? `1px dashed ${C.blue}66` : "1px solid transparent",
+                  }}>
                   {d}
                   {hasLog && <div className="absolute bottom-1 w-1 h-1 rounded-full" style={{ background: C.orange }} />}
+                  {!hasLog && scheduledDay && <div className="absolute bottom-1 w-1 h-1 rounded-full" style={{ background: C.blue }} />}
                 </button>
               );
             })}
@@ -3663,8 +3804,17 @@ function CalendarViewPage({ state, nav }) {
             <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>
               {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
             </div>
+            {selectedScheduledDay && (
+              <div className="rounded-lg p-3.5 mb-2 flex items-center gap-3" style={{ background: `${C.blue}14`, border: `1px solid ${C.blue}55` }}>
+                <div className="rounded-lg p-2 shrink-0" style={{ background: `${C.blue}22` }}><Calendar size={16} style={{ color: C.blue }} /></div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate" style={{ color: C.text }}>{selectedScheduledDay.name}</div>
+                  <div className="text-xs" style={{ color: C.sub }}>Scheduled — {selectedScheduledDay.exercises.length} exercises</div>
+                </div>
+              </div>
+            )}
             {selectedLogs.length === 0 ? (
-              <div className="rounded-lg p-3.5 text-sm" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>No workout logged this day.</div>
+              !selectedScheduledDay && <div className="rounded-lg p-3.5 text-sm" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>No workout logged this day.</div>
             ) : (
               <div className="space-y-2">
                 {selectedLogs.map(l => (
@@ -3692,8 +3842,13 @@ function CalendarViewPage({ state, nav }) {
         </div>
 
         <ChalkDivider label="Legend" />
-        <div className="flex items-center gap-2 text-xs" style={{ color: C.sub }}>
-          <div className="w-3 h-3 rounded shrink-0" style={{ background: `${C.orange}22`, border: `1px solid ${C.orange}` }} /> Workout completed
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-xs" style={{ color: C.sub }}>
+            <div className="w-3 h-3 rounded shrink-0" style={{ background: `${C.orange}22`, border: `1px solid ${C.orange}` }} /> Workout completed
+          </div>
+          <div className="flex items-center gap-2 text-xs" style={{ color: C.sub }}>
+            <div className="w-3 h-3 rounded shrink-0" style={{ background: `${C.blue}18`, border: `1px dashed ${C.blue}66` }} /> Scheduled training day
+          </div>
         </div>
       </div>
     </div>
@@ -3969,6 +4124,7 @@ function buildMeFromOnboarding(data) {
     injuries: (data.injuries || []).filter(i => i !== "None currently"),
     goals: data.goals || [], isFighter: !!data.isFighter,
     weightKg: lbToKg(data.weightLb || 175), heightCm: data.heightCm || 178,
+    trainingDays: data.trainingDays || [],
   };
 }
 
@@ -3985,7 +4141,7 @@ const initialState = () => ({
   progress: [],
   workoutLogs: [],
   sessionCheckins: {}, // { "YYYY-MM-DD": { confirmed: bool, programDay: string, confirmedAt: string } }
-  me: { id: "a1", name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178 },
+  me: { id: "a1", name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, trainingDays: [] },
   coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true },
   payments: { rates: [], clientBilling: {}, methods: [] },
   communityPosts: [],
@@ -4045,7 +4201,7 @@ function AppInner() {
           injuries: profile.injuries || [], goals: profile.goals || [],
           weightKg: profile.weight_kg, heightCm: profile.height_cm, streak: profile.streak || 0,
           selfGuided: profile.role === "athlete", hasCoach: profile.role === "athlete_coached",
-          intake: profile.intake || {}, program: null,
+          intake: profile.intake || {}, trainingDays: profile.intake?.trainingDays || [], program: null,
         }
       }));
 
@@ -4157,6 +4313,7 @@ function AppInner() {
         const apiData = await response.json();
         const textBlock = (apiData.content || []).find(b => b.type === "text");
         const parsed = parseAIJson(textBlock?.text);
+        parsed.days = attachWeekdays(parsed.days, data.trainingDays);
         const weeks = parsed.weeks || 6;
         const sport = data["🥊 Sport / Focus"] || "General Fitness";
         const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days) : null;
