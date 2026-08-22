@@ -649,11 +649,13 @@ function endDateFromWeeks(startStr, weeks) {
   return end.toISOString().slice(0, 10);
 }
 
+// A day repeats every week on its assigned weekday, forever, unless a
+// cleared range covers this date — one single mechanism for "not scheduled
+// here" rather than two overlapping ones.
 function isDayScheduledOn(day, ds) {
   if (!day?.weekday) return false;
   const wd = WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7];
   if (wd !== day.weekday) return false;
-  if (day.scheduleStart && day.scheduleWeeks && !isDateInRange(ds, day.scheduleStart, day.scheduleWeeks)) return false;
   if ((day.skipRanges || []).some(r => isDateInRange(ds, r.start, r.weeks))) return false;
   return true;
 }
@@ -1002,7 +1004,8 @@ function OnboardingStepBody({ role, stepName, data, setData }) {
     );
   }
 
-  if (role === "coach") {
+  const sharedSteps = ["👤 Your Name", "📸 Profile Photo", "🔐 Create Account"];
+  if (role === "coach" && !sharedSteps.includes(stepName)) {
     const opts = {
       "🏅 Background": ["0-2 years coaching", "3-5 years coaching", "6-10 years coaching", "10+ years coaching"],
       "⚡ Specialties": ["Strength & Power", "MMA / Combat Performance", "Olympic Lifting", "Return-to-Play", "Conditioning", "General Fitness Coaching"],
@@ -3831,9 +3834,6 @@ function CalendarViewPage({ state, setState, nav }) {
   const setDayWeekday = (dayId, weekday) => {
     persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, weekday } : d) }));
   };
-  const setDayWindow = (dayId, window) => {
-    persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, ...window } : d) }));
-  };
   const addSkip = (dayId, range) => {
     persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, skipRanges: [...(d.skipRanges || []), range] } : d) }));
   };
@@ -3858,7 +3858,7 @@ function CalendarViewPage({ state, setState, nav }) {
   return (
     <div className="pb-28">
       <TopBar title="Calendar" onLogout={nav.logout}
-        right={myProgram && <button onClick={() => setClearOpen(true)} aria-label="Clear schedule"><Trash2 size={18} style={{ color: C.sub }} /></button>} />
+        right={myProgram && <button onClick={() => setClearOpen(true)} aria-label="Delete sessions"><Trash2 size={18} style={{ color: C.sub }} /></button>} />
       <div className="px-5 pt-5">
         <div className="rounded-xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div className="flex items-center justify-between mb-4">
@@ -3919,7 +3919,6 @@ function CalendarViewPage({ state, setState, nav }) {
         exById={id => state.exercises.find(e => e.id === id)}
         onExerciseClick={setDetailExercise}
         onSetWeekday={setDayWeekday}
-        onSetWindow={setDayWindow}
         onAddSkip={addSkip}
         onRemoveSkip={removeSkip}
       />
@@ -3947,7 +3946,7 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Clear Schedule">
+    <Modal open={open} onClose={onClose} title="Delete Sessions">
       {days.length === 0 ? (
         <p className="text-sm" style={{ color: C.sub }}>No training days are currently scheduled.</p>
       ) : (
@@ -3969,15 +3968,15 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
             })}
           </div>
 
-          <p className="text-xs mb-2.5" style={{ color: C.sub }}>How long?</p>
+          <p className="text-xs mb-2.5" style={{ color: C.sub }}>For good, or just a date range?</p>
           <div className="flex gap-2 mb-3">
             <button onClick={() => setMode("permanent")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
               style={{ background: mode === "permanent" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "permanent" ? C.red : C.border}`, color: mode === "permanent" ? C.red : C.sub }}>
-              Permanently
+              For good
             </button>
             <button onClick={() => setMode("limited")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
               style={{ background: mode === "limited" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "limited" ? C.red : C.border}`, color: mode === "limited" ? C.red : C.sub }}>
-              Date range
+              Specific dates
             </button>
           </div>
           {mode === "limited" && (
@@ -3996,7 +3995,7 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
           )}
 
           <Btn variant="danger" className="w-full" disabled={selected.size === 0} onClick={apply}>
-            Clear {selected.size} session{selected.size !== 1 ? "s" : ""}
+            Delete {selected.size} session{selected.size !== 1 ? "s" : ""}
           </Btn>
         </>
       )}
@@ -4005,26 +4004,14 @@ function ClearScheduleModal({ open, onClose, days, onApply }) {
   );
 }
 
-function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onSetWindow, onAddSkip, onRemoveSkip }) {
-  const [windowMode, setWindowMode] = useState("every"); // "every" | "limited"
-  const [rangeStart, setRangeStart] = useState("");
-  const [rangeEnd, setRangeEnd] = useState("");
-  const [skipStart, setSkipStart] = useState("");
-  const [skipEnd, setSkipEnd] = useState("");
+function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip }) {
+  const [clearStart, setClearStart] = useState("");
+  const [clearEnd, setClearEnd] = useState("");
 
   useEffect(() => {
     if (!date) return;
-    if (day?.scheduleStart && day?.scheduleWeeks) {
-      setWindowMode("limited");
-      setRangeStart(day.scheduleStart);
-      setRangeEnd(endDateFromWeeks(day.scheduleStart, day.scheduleWeeks));
-    } else {
-      setWindowMode("every");
-      setRangeStart(date);
-      setRangeEnd(endDateFromWeeks(date, 6));
-    }
-    setSkipStart(date);
-    setSkipEnd(endDateFromWeeks(date, 2));
+    setClearStart(date);
+    setClearEnd(endDateFromWeeks(date, 2));
   }, [day?.id, date]);
 
   if (!date) return null;
@@ -4032,14 +4019,9 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
   const dateLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
   const otherDays = allDays.filter(d => d.id !== day?.id && d.weekday !== weekday);
 
-  const clearWindow = () => { if (day) onSetWindow(day.id, { scheduleStart: null, scheduleWeeks: null }); };
-  const applyWindow = () => {
-    if (!day || !rangeStart || !rangeEnd) return;
-    onSetWindow(day.id, { scheduleStart: rangeStart, scheduleWeeks: weeksBetweenInclusive(rangeStart, rangeEnd) });
-  };
-  const applySkip = () => {
-    if (!day || !skipStart || !skipEnd) return;
-    onAddSkip(day.id, { start: skipStart, weeks: weeksBetweenInclusive(skipStart, skipEnd) });
+  const applyClear = () => {
+    if (!day || !clearStart || !clearEnd) return;
+    onAddSkip(day.id, { start: clearStart, weeks: weeksBetweenInclusive(clearStart, clearEnd) });
   };
 
   return (
@@ -4069,42 +4051,10 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
             })}
           </div>
 
-          <ChalkDivider label="Move This Session" />
-          <p className="text-xs mb-2" style={{ color: C.sub }}>Repeats every week on:</p>
+          <ChalkDivider label="Repeats Every Week On" />
           <DayWeekdayPicker value={day.weekday} onChange={(w) => w && onSetWeekday(day.id, w)} takenDays={allDays.filter(d => d.id !== day.id).map(d => d.weekday).filter(Boolean)} />
 
-          <ChalkDivider label="Active Dates" />
-          <div className="flex gap-2 mb-3">
-            <button onClick={() => { setWindowMode("every"); clearWindow(); }} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
-              style={{ background: windowMode === "every" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "every" ? C.orange : C.border}`, color: windowMode === "every" ? C.orange : C.sub }}>
-              Ongoing
-            </button>
-            <button onClick={() => setWindowMode("limited")} className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
-              style={{ background: windowMode === "limited" ? `${C.orange}18` : C.bg, border: `1px solid ${windowMode === "limited" ? C.orange : C.border}`, color: windowMode === "limited" ? C.orange : C.sub }}>
-              Specific dates
-            </button>
-          </div>
-          {windowMode === "limited" && (
-            <div className="mb-2">
-              <div className="flex items-end gap-2 mb-2">
-                <div className="flex-1">
-                  <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>From</label>
-                  <input type="date" value={rangeStart} onChange={e => setRangeStart(e.target.value)}
-                    className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>To</label>
-                  <input type="date" value={rangeEnd} min={rangeStart} onChange={e => setRangeEnd(e.target.value)}
-                    className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-                </div>
-              </div>
-              <Btn className="w-full" onClick={applyWindow} disabled={!rangeStart || !rangeEnd}>
-                {day.scheduleStart && day.scheduleWeeks ? "Update Dates" : "Save Dates"}
-              </Btn>
-            </div>
-          )}
-
-          <ChalkDivider label="Skip a Range" />
+          <ChalkDivider label="Delete From Calendar" />
           {(day.skipRanges || []).length > 0 && (
             <div className="space-y-1.5 mb-3">
               {day.skipRanges.map((r, i) => {
@@ -4112,32 +4062,32 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
                 const e = new Date(s); e.setDate(e.getDate() + r.weeks * 7 - 1);
                 return (
                   <div key={i} className="rounded-lg p-2.5 flex items-center justify-between" style={{ background: `${C.red}14`, border: `1px solid ${C.red}44` }}>
-                    <span className="text-xs" style={{ color: C.red }}>Skipped {s.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – {e.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                    <span className="text-xs" style={{ color: C.red }}>Deleted {s.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – {e.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                     <button onClick={() => onRemoveSkip(day.id, i)}><X size={14} style={{ color: C.red }} /></button>
                   </div>
                 );
               })}
             </div>
           )}
-          <div className="mb-3">
-            <div className="flex items-end gap-2 mb-2">
-              <div className="flex-1">
-                <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>From</label>
-                <input type="date" value={skipStart} onChange={e => setSkipStart(e.target.value)}
-                  className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-              </div>
-              <div className="flex-1">
-                <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>To</label>
-                <input type="date" value={skipEnd} min={skipStart} onChange={e => setSkipEnd(e.target.value)}
-                  className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-              </div>
+          <p className="text-xs mb-2" style={{ color: C.sub }}>Pick a date range to delete this session from — it comes back automatically after.</p>
+          <div className="flex items-end gap-2 mb-2">
+            <div className="flex-1">
+              <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>From</label>
+              <input type="date" value={clearStart} onChange={e => setClearStart(e.target.value)}
+                className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
             </div>
-            <Btn variant="danger" className="w-full" onClick={applySkip} disabled={!skipStart || !skipEnd}>
-              Skip This Range
-            </Btn>
+            <div className="flex-1">
+              <label className="block text-[10px] uppercase tracking-wide font-semibold mb-1" style={{ color: C.sub }}>To</label>
+              <input type="date" value={clearEnd} min={clearStart} onChange={e => setClearEnd(e.target.value)}
+                className="text-xs rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
+            </div>
           </div>
+          <Btn variant="danger" className="w-full mb-4" onClick={applyClear} disabled={!clearStart || !clearEnd}>
+            Delete This Range
+          </Btn>
+
           <button onClick={() => onSetWeekday(day.id, null)} className="w-full text-center text-xs font-semibold py-2" style={{ color: C.red }}>
-            Unschedule this session entirely
+            Remove this session for good
           </button>
         </div>
       ) : (
