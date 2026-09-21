@@ -1,0 +1,10 @@
+{
+  "appId": "best.trained.app",
+  "appName": "Trained.best",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#12100e",
+    "scrollEnabled": true
+  }
+}
