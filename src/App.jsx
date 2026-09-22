@@ -5743,6 +5743,74 @@ function CoachTodayPanel({ state, nav }) {
   );
 }
 
+// The coach's invite code, where a coach will actually look for it.
+//
+// It used to live only inside Athletes -> "Add an athlete", so most coaches
+// never found the one thing their clients need to join them. Now it sits at
+// the top of the dashboard and the profile, with Copy and Share - Share opens
+// the iPhone share sheet (Messages, WhatsApp, Instagram...) with a ready-made
+// message, and falls back to copying that message where sharing isn't offered.
+function CoachInviteCard({ code, coachName, compact = false }) {
+  const [done, setDone] = useState(null); // "copied" | "shared" | null
+
+  const link = typeof window !== "undefined" ? window.location.origin : "";
+  const message = `Join me on Trained.best${coachName ? ` (coach: ${coachName})` : ""}. ` +
+    `Sign up at ${link}, choose "I have a coach", and enter my code: ${code}`;
+
+  const flash = (what) => { setDone(what); setTimeout(() => setDone(null), 2000); };
+
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); flash("copied"); return true; }
+    catch { return false; } // blocked - the code is on screen to read out
+  };
+
+  const share = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: "Join me on Trained.best", text: message }); flash("shared"); return; }
+      catch (err) { if (err?.name === "AbortError") return; }
+    }
+    await copy(message);
+  };
+
+  if (!code) {
+    return (
+      <div className="rounded-2xl p-4 mb-5 text-xs" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.sub }}>
+        Your invite code is still being set up. Log out and back in to load it.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={{ background: `${C.orange}10`, border: `1px solid ${C.orange}55` }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-widest font-semibold" style={{ color: C.sub }}>Your invite code</div>
+          <div className="font-mono font-bold mt-1" style={{ fontSize: compact ? 24 : 30, letterSpacing: 5, color: C.orange }}>{code}</div>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button onClick={() => copy(code)} aria-label="Copy invite code"
+            className="rounded-xl px-3 py-2 text-xs font-semibold flex items-center gap-1.5"
+            style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }}>
+            {done === "copied" ? <Check size={14} /> : <ClipboardList size={14} />}
+            {done === "copied" ? "Copied" : "Copy"}
+          </button>
+          <button onClick={share} aria-label="Share invite code"
+            className="rounded-xl px-3 py-2 text-xs font-semibold flex items-center gap-1.5"
+            style={{ background: C.orange, color: "#fff" }}>
+            <Send size={14} /> {done === "shared" ? "Sent" : "Share"}
+          </button>
+        </div>
+      </div>
+      {!compact && (
+        <p className="text-xs mt-2.5 leading-relaxed" style={{ color: C.sub }}>
+          Athletes pick <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they
+          sign up and enter this code. Existing users can join from Profile {"\u2192"} Join your coach.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CoachDashboard({ state, nav }) {
   const totalAthletes = state.athletes.length;
   // Counts programs that are actually with an athlete. This used to count
@@ -5757,6 +5825,7 @@ function CoachDashboard({ state, nav }) {
     <div className="pb-28">
       <TopBar title="Dashboard" onLogout={nav.logout} />
       <div className="px-5 pt-5">
+        <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
           <StatCard icon={Users} label="Athletes" value={totalAthletes} />
           <StatCard icon={ClipboardList} label="Programs" value={activePrograms} accent={C.blue} />
@@ -8680,6 +8749,7 @@ function CoachProfile({ state, setState, nav }) {
     <div className="pb-28">
       <TopBar title="Profile" onLogout={nav.logout} />
       <div className="px-5 pt-5">
+        <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} compact />
         {settingError && (
           <div className="rounded-lg p-3 mb-4 text-xs flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
             <AlertCircle size={14} className="shrink-0 mt-0.5" />
