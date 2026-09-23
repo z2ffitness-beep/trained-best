@@ -27,10 +27,12 @@ const ALLOWED_MODELS = new Set([
 ]);
 const DEFAULT_MODEL = "claude-sonnet-5";
 const FALLBACK_MODEL = "claude-sonnet-4-6";
-// A 12-week, 5-day program with the long injury-specific warm-ups runs past
-// 8192 tokens, and a truncated response is not partial JSON - it is unparseable
-// JSON, which surfaced to the athlete as "the AI returned an empty response".
-const MAX_TOKENS_CEILING = 16384;
+// Raised twice now, because a truncated reply is not partial JSON - it is
+// unparseable JSON, and the athlete sees a raw parser error while standing in
+// a gym. Sonnet 5 will emit far more than this; the ceiling only has to be
+// above the longest program anyone actually asks for, and output is billed per
+// token PRODUCED, so a headroom that never gets used costs nothing at all.
+const MAX_TOKENS_CEILING = 64000;
 const MAX_BODY_BYTES = 100_000;
 
 // Per-user sliding window. Serverless instances get recycled, so this bounds
@@ -40,6 +42,15 @@ const MAX_BODY_BYTES = 100_000;
 const WINDOW_MS = 60_000;
 const MAX_CALLS_PER_WINDOW = 8;
 const callLog = new Map(); // userId -> timestamps[]
+
+// Redacts anything shaped like a credential from text bound for a log or a
+// response body. Error messages quote the value that upset them, so this is
+// the difference between a useful log line and a leaked key.
+function redactSecrets(text) {
+  return String(text)
+    .replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-[redacted]")
+    .replace(/eyJ[A-Za-z0-9._-]{20,}/g, "[redacted-token]");
+}
 
 function rateLimited(userId) {
   const now = Date.now();
@@ -137,9 +148,21 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
   if (!apiKey) {
     return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured" });
+  }
+  // The Console shows the new key inside a ready-to-run curl command, and it is
+  // natural to copy the whole block. Pasted into the env var, the value carries
+  // newlines and quotes, Headers.append rejects it as an invalid header value,
+  // and the TypeError it throws QUOTES THE VALUE - so the key itself was
+  // written into the server log, in plain text, on every attempt. Checked here,
+  // before it can ever reach a header or a log line.
+  if (!/^sk-ant-[A-Za-z0-9_-]+$/.test(apiKey)) {
+    console.error("ANTHROPIC_API_KEY is not a bare key: expected sk-ant-… with no spaces, quotes or line breaks (length " + apiKey.length + ")");
+    return res.status(500).json({
+      error: "The AI key is not set up correctly on the server. It must be the key on its own, starting sk-ant-, with nothing else around it.",
+    });
   }
 
   const user = await getUser(req);
@@ -171,26 +194,60 @@ export default async function handler(req, res) {
   if (typeof body.system === "string") payload.system = body.system;
   if (typeof body.temperature === "number") payload.temperature = body.temperature;
 
+  // An organization-level key (one not created inside a Workspace) is rejected
+  // until the request names the workspace to bill. Scoping the key in the
+  // Console is the tidier fix and needs no env var; this is the escape hatch
+  // for an org where only unscoped keys can be issued.
+  const workspaceId = (process.env.ANTHROPIC_WORKSPACE_ID || "").trim();
+
   const askAnthropic = (body) => fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
+      ...(workspaceId ? { "anthropic-workspace-id": workspaceId } : {}),
     },
     body: JSON.stringify(body),
   });
 
+  // Read the body as text and parse it ourselves. response.json() throws on a
+  // body that isn't JSON - a gateway's HTML error page, an empty 5xx - and that
+  // throw landed in the catch below, which reported the bare string "Internal
+  // server error": the one message that says nothing at all about what broke.
+  const readBody = async (response) => {
+    const raw = await response.text();
+    try { return JSON.parse(raw); } catch { return { __raw: raw }; }
+  };
+
   try {
     let response = await askAnthropic(payload);
-    let data = await response.json();
+    let data = await readBody(response);
 
     // A retired or mistyped model id comes back as 404 not_found_error. Retry
     // once on the fallback rather than failing the athlete's generation.
     if (response.status === 404 && payload.model !== FALLBACK_MODEL) {
       console.error("Model", payload.model, "rejected - retrying on", FALLBACK_MODEL);
       response = await askAnthropic({ ...payload, model: FALLBACK_MODEL });
-      data = await response.json();
+      data = await readBody(response);
+    }
+
+    // Truncation has a name, and the API says it plainly. Without this check
+    // the cut-off JSON travels all the way to the browser and fails there as
+    // "Unterminated string" - a message that describes the symptom, blames
+    // nothing, and gives the person holding the phone nothing to do.
+    if (response.ok && data?.stop_reason === "max_tokens") {
+      console.error("Anthropic hit max_tokens - the program was longer than the cap", payload.max_tokens);
+      return res.status(502).json({
+        error: "The program came back longer than we allow in one go, so it arrived incomplete. Tap Try Again — if it keeps happening, fewer training days per week will fix it.",
+      });
+    }
+
+    if (data.__raw !== undefined) {
+      console.error("Anthropic returned a non-JSON body", response.status, String(data.__raw).slice(0, 300));
+      return res.status(502).json({
+        error: `The AI service returned an unreadable response (${response.status}). This is on our side, not your account.`,
+      });
     }
 
     if (!response.ok) {
@@ -206,7 +263,12 @@ export default async function handler(req, res) {
     }
     return res.status(200).json(data);
   } catch (error) {
-    console.error("Proxy error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    // Say what actually went wrong, but never repeat a secret while doing it.
+    // An exception message can quote the offending value - that is exactly how
+    // a malformed key ended up in the logs - so anything key-shaped is scrubbed
+    // before it is written down or sent back.
+    const detail = redactSecrets(error?.message ? String(error.message) : "unknown error").slice(0, 200);
+    console.error("Proxy error:", detail);
+    return res.status(500).json({ error: `Server error reaching the AI: ${detail}` });
   }
 }
