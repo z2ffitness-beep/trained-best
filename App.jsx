@@ -5515,7 +5515,7 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
-  const response = await fetch(apiUrl("/api/chat"), {
+  const post = () => fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -5523,6 +5523,24 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
     },
     body: JSON.stringify({ model, max_tokens: maxTokens, messages, ...(system ? { system } : {}) }),
   });
+
+  // Building a program is a single request that can run for a minute with
+  // nothing coming back down the wire, and a phone on one bar in a gym drops
+  // it - which fetch reports as the bare, unattributable "Load failed". One
+  // silent retry catches most of those; a second failure is a real connection
+  // problem and worth saying so plainly, because "Load failed" tells the
+  // athlete neither what broke nor what to do.
+  let response;
+  try {
+    response = await post();
+  } catch {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      response = await post();
+    } catch {
+      throw new Error("Your connection dropped before the program came back. Find better signal and tap Try Again — nothing was lost.");
+    }
+  }
 
   let data = null;
   try { data = await response.json(); } catch { /* non-JSON error page */ }
