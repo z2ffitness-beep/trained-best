@@ -5845,7 +5845,120 @@ function CoachInviteCard({ code, coachName, compact = false }) {
   );
 }
 
-function CoachDashboard({ state, nav }) {
+// A coach coaches and a coach trains, and those are two different apps sharing
+// one account. Rather than bolt a sixth tab onto a nav bar that is already full
+// on a phone, the whole bar swaps: Coaching gives the roster, My Training gives
+// Program / Workout / Week, which are the athlete screens unchanged.
+function ModeSwitch({ training, onChange }) {
+  const opts = [[false, "Coaching"], [true, "My Training"]];
+  return (
+    <div className="flex rounded-full p-1 gap-1 mb-4" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+      {opts.map(([value, label]) => (
+        <button key={label} onClick={() => onChange(value)}
+          className="flex-1 rounded-full py-2 text-xs font-bold"
+          style={{ background: training === value ? C.orange : "transparent", color: training === value ? "#fff" : C.sub }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Everything the generator needs, and nothing it doesn't. A coach already has
+// a name, a photo and an account, so this is the athlete questionnaire with
+// those three taken out - and it renders through the same step bodies, so the
+// questions can never drift apart from the ones athletes answer.
+const TRAINING_INTAKE_STEPS = [
+  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+  "🩹 Injuries", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment",
+];
+
+function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
+  const [data, setData] = useState(() => ({
+    name: state.me?.name || "You",
+    weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
+    ...(state.me?.intake || {}),
+  }));
+  const [step, setStep] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Same rule as signup: the fighter follow-up only makes sense for fighters.
+  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || data["🥊 Sport / Focus"] === "MMA");
+  const stepName = steps[step];
+  const isLast = step === steps.length - 1;
+
+  const complete = () => {
+    switch (stepName) {
+      case "💪 Training Experience": return !!data.experience;
+      case "🧬 Sex": return !!data.sex;
+      case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+      case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
+      case "🎯 Goals": return (data.goals || []).length > 0;
+      case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
+      case "🏋️ Equipment": return (data.equipment || []).length > 0;
+      default: return true;
+    }
+  };
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true); setError(null);
+    // Read-modify-write rather than a blind update: `intake` already holds the
+    // coach's own settings - accountability, cancellation window, payment
+    // methods - and overwriting the column would take all of it with it.
+    const { data: row, error: readErr } = await supabase
+      .from("profiles").select("intake").eq("id", state.me.id).single();
+    if (readErr) { setSaving(false); setError("Couldn't reach your profile. Check your connection and try again."); return; }
+
+    const merged = { ...(row?.intake || {}), training: data };
+    const { error: writeErr } = await supabase
+      .from("profiles").update({ intake: merged }).eq("id", state.me.id);
+    setSaving(false);
+    if (writeErr) { setError("Couldn't save your answers. Check your connection and try again."); return; }
+
+    setState(s => ({ ...s, me: { ...s.me, ...buildMeFromOnboarding({ ...data, name: s.me.name }), id: s.me.id, name: s.me.name, avatar: s.me.avatar, photoUrl: s.me.photoUrl, coachId: null, hasCoach: false, selfGuided: true, intake: data, program: s.me.program, customProgram: null } }));
+    onDone?.();
+  };
+
+  return (
+    <div className="pb-28">
+      <div className="px-5 pt-6 pb-2">
+        <div className="text-2xl" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>Your training</div>
+        <div className="text-sm mt-0.5" style={{ color: C.sub }}>
+          The same screening your athletes answer. Once, then your program builds from it.
+        </div>
+      </div>
+
+      <div className="px-5">
+        <div className="flex gap-1 mb-5">
+          {steps.map((n, i) => (
+            <div key={n} className="h-1 flex-1 rounded-full" style={{ background: i <= step ? C.orange : C.border }} />
+          ))}
+        </div>
+
+        <OnboardingStepBody role="athlete" stepName={stepName} data={data} setData={setData} />
+
+        {error && (
+          <div className="rounded-lg p-3 mt-4 text-xs" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{error}</div>
+        )}
+
+        <div className="flex gap-2.5 mt-6">
+          <Btn variant="secondary" className="flex-1"
+            onClick={() => (step === 0 ? onCancel?.() : setStep(x => x - 1))}>
+            {step === 0 ? "Not now" : "Back"}
+          </Btn>
+          <Btn className="flex-1" disabled={!complete() || saving}
+            onClick={() => (isLast ? save() : setStep(x => x + 1))}>
+            {isLast ? (saving ? "Saving…" : "Done") : "Next"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CoachDashboard({ state, nav, onSwitchMode }) {
   const totalAthletes = state.athletes.length;
   // Counts programs that are actually with an athlete. This used to count
   // TEMPLATES, which meant a coach with twelve athletes all training saw the
@@ -5859,6 +5972,7 @@ function CoachDashboard({ state, nav }) {
     <div className="pb-28">
       <TopBar title="Dashboard" onLogout={nav.logout} />
       <div className="px-5 pt-5">
+        {onSwitchMode && <ModeSwitch training={false} onChange={onSwitchMode} />}
         <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
           <StatCard icon={Users} label="Athletes" value={totalAthletes} />
@@ -9065,7 +9179,7 @@ function CoachProfile({ state, setState, nav }) {
 // ATHLETE PORTAL
 // ============================================================
 
-function AthleteDashboard({ state, setState, nav }) {
+function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   // The day actually scheduled for today. This was hardcoded to days[0], so
   // "Today's Focus" announced Day 1 every day of the week regardless of the
@@ -9151,6 +9265,11 @@ function AthleteDashboard({ state, setState, nav }) {
 
   return (
     <div className="pb-28">
+      {/* The way back. Without it a coach who switched to their training would
+          have no route to their roster at all - the bottom bar has swapped. */}
+      {isCoach && onSwitchMode && (
+        <div className="px-5 pt-5"><ModeSwitch training={true} onChange={onSwitchMode} /></div>
+      )}
       <div className="px-5 pt-6 pb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-base" style={{ color: C.sub }}>{greeting} 👋</div>
@@ -16359,6 +16478,7 @@ class ErrorBoundary extends React.Component {
 // "Full width" beside the frame switches it off; the choice is remembered on
 // that computer. ?view=phone or ?view=full in the address forces either.
 const VIEW_PREF_KEY = "tb_view_pref";
+const TRAINING_MODE_KEY = "tb_training_mode";
 const PHONE_SCREEN = { width: 390, height: 844 };
 
 function isStandaloneApp() {
@@ -16487,6 +16607,12 @@ export default function App() {
 
 function AppInner() {
   const [authed, setAuthed] = useState(null);
+  // A coach looking at their OWN training rather than their roster. Remembered
+  // per device: a coach who trains on Tuesday mornings shouldn't have to find
+  // the switch again every time they open the app mid-session.
+  const [trainingMode, setTrainingMode] = useState(() => {
+    try { return localStorage.getItem(TRAINING_MODE_KEY) === "1"; } catch { return false; }
+  });
   const [view, setView] = useState(null);
   const [navParam, setNavParam] = useState(null);
   const [state, setState] = useState(initialState);
@@ -16595,7 +16721,11 @@ function AppInner() {
       const { data: coachPrograms } = await supabase
         .from("programs")
         .select("*")
-        .or(`coach_id.eq.${profile.id}${ids.length ? `,athlete_id.in.(${ids.join(",")})` : ""}`);
+        // athlete_id.eq.<self> is what pulls in the coach's OWN training
+        // program. A coach who trains logs against their own user id like
+        // anyone else - the RLS policies are written as auth.uid() = athlete_id,
+        // with no notion of role - so the only thing missing was asking for it.
+        .or(`coach_id.eq.${profile.id},athlete_id.eq.${profile.id}${ids.length ? `,athlete_id.in.(${ids.join(",")})` : ""}`);
 
       // Rates, billing assignments and payment methods. None of this was ever
       // loaded because none of it was ever stored.
@@ -16608,6 +16738,32 @@ function AppInner() {
       setState(s => ({
         ...s,
         groups: (groupRows || []).map(g => ({ id: g.id, name: g.name, color: g.color, sortOrder: g.sort_order })),
+      }));
+
+      // Coaches train too, and a coach with no `me` had nothing for the
+      // Program, Workout, Week or Progress screens to read - which is why
+      // those screens were athlete-only rather than because anything
+      // underneath them cared. The training answers live under intake.training
+      // so they can't collide with the coach settings already in intake.
+      const training = profile.intake?.training || null;
+      setState(s => ({
+        ...s,
+        me: {
+          ...s.me,
+          ...(training ? buildMeFromOnboarding({ ...training, name: profile.name }) : {}),
+          id: profile.id,
+          name: profile.name,
+          avatar: profile.avatar || "??",
+          photoUrl: profile.photo_url,
+          // Their own training is their own: no coach above them, and it must
+          // never surface on a roster or in an athlete's view.
+          coachId: null,
+          hasCoach: false,
+          selfGuided: true,
+          intake: training,
+          program: profile.active_program_id || null,
+          customProgram: null,
+        },
       }));
 
       const clientBilling = {};
@@ -17166,9 +17322,26 @@ function AppInner() {
     }
   };
 
+  // Flipping sides also moves the view, because the screen currently open
+  // belongs to the side being left: staying put would show a coach their
+  // roster under a nav bar that no longer has a way back to it.
+  const setTraining = (on) => {
+    setTrainingMode(on);
+    try { localStorage.setItem(TRAINING_MODE_KEY, on ? "1" : "0"); } catch { /* per-device nicety */ }
+    setView(on ? "athlete-dashboard" : "coach-dashboard");
+    setNavParam(null);
+  };
+
   const nav = {
     go: (key, param) => { setView(key); setNavParam(param ?? null); },
-    logout: () => { supabase.auth.signOut(); setAuthed(null); setView(null); setAuthUserId(null); setState(initialState()); },
+    logout: () => {
+      supabase.auth.signOut();
+      setAuthed(null); setView(null); setAuthUserId(null); setState(initialState());
+      // Otherwise the next person to sign in on this phone - an athlete - lands
+      // in a mode that only means anything for a coach.
+      setTrainingMode(false);
+      try { localStorage.setItem(TRAINING_MODE_KEY, "0"); } catch { /* ignore */ }
+    },
   };
 
   // Built here rather than up with the notification state, because `nav` is
@@ -17280,15 +17453,26 @@ function AppInner() {
     ...(state.me.coachId ? [{ key: "athlete-ai", label: "Coach", icon: MessageSquare, badge: unreadCount }] : []),
     { key: "athlete-profile", label: "Profile", icon: User },
   ];
-  const navItems = authed === "coach" ? coachNavItems : athleteNavItems;
+  // A coach in training mode uses the athlete bar outright. Its own conditions
+  // already do the right thing for them: no coach above them means no Book tab
+  // and no coach thread, which is exactly correct for someone coaching
+  // themselves.
+  const coaching = authed === "coach" && !trainingMode;
+  const navItems = coaching ? coachNavItems : athleteNavItems;
 
   const pages = {
-    "coach-dashboard": <CoachDashboard state={state} setState={setState} nav={nav} />,
+    "coach-dashboard": <CoachDashboard state={state} setState={setState} nav={nav} onSwitchMode={authed === "coach" ? setTraining : null} />,
+    // Asked once, the first time a coach opens their own training: the
+    // generator needs a sport, injuries, days and equipment, and coach signup
+    // never collects any of it.
+    "coach-training-intake": <CoachTrainingIntake state={state} setState={setState}
+      onDone={() => nav.go("athlete-program")} onCancel={() => setTraining(false)} />,
     "coach-athletes": <CoachAthletes state={state} setState={setState} nav={nav} myUserId={authUserId} />,
     "coach-athlete-detail": <CoachAthleteDetail state={state} setState={setState} nav={nav} athleteId={navParam} myUserId={authUserId} />,
     "coach-messages": <CoachMessages state={state} setState={setState} nav={nav} myUserId={authUserId} />,
     "coach-profile": <CoachProfile state={state} setState={setState} nav={nav} />,
-    "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav} />,
+    "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav}
+      isCoach={authed === "coach"} onSwitchMode={authed === "coach" ? setTraining : null} />,
     "athlete-program": <AthleteProgram state={state} setState={setState} nav={nav} />,
     "athlete-workout": <Workout state={state} setState={setState} nav={nav} dayId={navParam} />,
     "athlete-progress": <AthleteProgress state={state} setState={setState} nav={nav} />,
@@ -17322,7 +17506,9 @@ function AppInner() {
     <NotificationContext.Provider value={notificationContext}>
       <div style={{ fontFamily: "Inter, sans-serif", background: C.bg, minHeight: "100vh" }}>
         <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
-        {pages[view] || pages[authed === "coach" ? "coach-dashboard" : "athlete-dashboard"]}
+        {(authed === "coach" && trainingMode && !state.me?.intake && view !== "athlete-profile")
+          ? pages["coach-training-intake"]
+          : (pages[view] || pages[coaching ? "coach-dashboard" : "athlete-dashboard"])}
         <BottomNav items={navItems} active={activeNavKey} onChange={(key) => nav.go(key)} />
       </div>
     </NotificationContext.Provider>
