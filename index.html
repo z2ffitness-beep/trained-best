@@ -26,5 +26,37 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <!-- Service worker: caches the app shell so the app still OPENS when the
+         phone has no signal (see public/sw.js). Guarded three ways:
+           * http/https only - inside the Capacitor app the page is served from
+             capacitor://localhost, where registration throws and the native
+             build already ships its assets on the device anyway.
+           * registered on load, so it never competes with the first render.
+           * the reload-on-update only fires if a worker was ALREADY in control.
+             With skipWaiting + clients.claim the very first install also fires
+             controllerchange, and reloading there would bounce the page on
+             every athlete's first ever visit. -->
+    <script>
+      (function () {
+        if (!("serviceWorker" in navigator)) return;
+        if (location.protocol !== "http:" && location.protocol !== "https:") return;
+
+        var hadController = !!navigator.serviceWorker.controller;
+        var reloading = false;
+
+        navigator.serviceWorker.addEventListener("controllerchange", function () {
+          if (!hadController || reloading) return;
+          reloading = true;
+          location.reload();
+        });
+
+        window.addEventListener("load", function () {
+          navigator.serviceWorker.register("/sw.js").catch(function () {
+            /* Private mode, unsupported browser, or a bad response for sw.js.
+               The app works fine without it - it just won't open offline. */
+          });
+        });
+      })();
+    </script>
   </body>
 </html>

@@ -1841,12 +1841,23 @@ const DEFAULT_SESSION_MINUTES = 60;
 // picked out of the air, and handed to the generator as a hard ceiling — a
 // 60-minute session is roughly 9 movements once rest is counted, not the 16 to
 // 23 it was producing.
+//
+// The warm-up has its own allowance, separate from the main work. It used to
+// share one cap with everything else and the prompt said "at most 2 warmup
+// exercises", so every extra drill cost the athlete a real lift - and the
+// generator duly shipped one stretch and one band walk before a heavy back
+// squat. Warm-up drills are short (a single round of reps or ~30-45 seconds),
+// so 4-5 of them plus 2-3 primers is roughly 8-12 minutes, not a session.
 function exerciseBudget(minutes) {
   const m = Number(minutes) || DEFAULT_SESSION_MINUTES;
-  if (m <= 30) return { total: 6, strength: 2, accessory: 2 };
-  if (m <= 45) return { total: 8, strength: 2, accessory: 3 };
-  if (m <= 60) return { total: 10, strength: 3, accessory: 3 };
-  return { total: 13, strength: 4, accessory: 4 };
+  const b = m <= 30 ? { warmup: 4, primer: 2, strength: 2, accessory: 1 }
+          : m <= 45 ? { warmup: 4, primer: 2, strength: 2, accessory: 2 }
+          : m <= 60 ? { warmup: 5, primer: 3, strength: 3, accessory: 3 }
+          :           { warmup: 5, primer: 3, strength: 4, accessory: 4 };
+  // Main work = compound + accessory + power + up to one conditioning piece.
+  const main = b.strength + b.accessory + 1;
+  // Whole-day ceiling, used by the "this session is too long" warning.
+  return { ...b, main, total: b.warmup + b.primer + main + 1 };
 }
 
 // ---------- movement patterns (for accurate swapping) ----------
@@ -4961,10 +4972,24 @@ Athlete intake:
 - Equipment: ${(intake.equipment || []).join(", ") || "Full gym access"}
 
 VOLUME LIMIT — this is the most important rule and overrides everything below.
-The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. Once rest between sets is counted, that is about ${exerciseBudget(intake.sessionMinutes).total} exercises TOTAL per session, including warmup and cooldown.
-- HARD CAP: no more than ${exerciseBudget(intake.sessionMinutes).total} exercises in any single day. A day with more than that is a failed response.
-- At most 2 warmup exercises, ${exerciseBudget(intake.sessionMinutes).strength} main compound lifts, ${exerciseBudget(intake.sessionMinutes).accessory} accessories, 1-2 conditioning pieces, 1 cooldown.
-- Fewer, better-chosen exercises beat a long list. Do not pad. If you cannot fit something, leave it out — an exercise the athlete skips because they ran out of time is worth nothing.
+The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The warm-up and the main work are budgeted SEPARATELY:
+- MAIN WORK HARD CAP: no more than ${exerciseBudget(intake.sessionMinutes).main} exercises across plyometrics, strength, accessories and conditioning combined — at most ${exerciseBudget(intake.sessionMinutes).strength} main compound lifts and ${exerciseBudget(intake.sessionMinutes).accessory} accessories, plus at most 1 conditioning piece. A day over this is a failed response. Fewer, better-chosen main exercises beat a long list; do not pad.
+- WARM-UP (required, every day, NOT counted in the main-work cap): ${exerciseBudget(intake.sessionMinutes).warmup} dynamic warm-up exercises (phase "warmup_general") followed by 2-${exerciseBudget(intake.sessionMinutes).primer} primer exercises (phase "warmup_specific"). Each is a single round — sets: 1 (primers may use 2) — with reps like "8/side", "5 each direction" or "30s", rpe 3-4 and rest "—". The whole warm-up should take about 8-12 minutes. Never send someone into a heavy lift after one stretch.
+- COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
+
+WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
+- Dynamic warm-up: raise temperature and take every joint the day's main lifts will load through its range — e.g. a lower-body day covers hips, knees, ankles and thoracic spine before a squat or deadlift; an upper-body day covers thoracic spine, shoulders, elbows and wrists.
+- Primers: activate the muscles the first main lift depends on (e.g. glutes before squats, scapular stabilisers before pressing).
+- If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
+  • Shoulder: Shoulder CARs, light-band External Rotation, Band Pull Aparts, Scapular Push Ups, Wall Slides.
+  • Knee: Banded Terminal Knee Extension, Spanish Squat isometric hold, slow Step Downs, Knee CARs.
+  • Low back: Cat-Cow + Bird Dog, Dead Bugs, Glute Bridge, Hip Hinge drill with a dowel.
+  • Ankle / foot / shin: Ankle CARs, Ankle Banded Dorsiflexion Drill, slow Calf Raises, Single Leg Balance Reach, toe yoga.
+  • Hip / groin / hamstring: Hip CARs, 90/90 Hip Switch, Banded Lateral Walks, Adductor Rockbacks, Leg Swings.
+  • Elbow / wrist: Wrist CARs, light Band Wrist Flexion/Extension, Forearm Pronation/Supination with a light weight.
+  • Neck: Neck CARs, Chin Tucks, Banded Neck Iso Holds.
+- This is performance training, not physiotherapy: the targeted drills are mobility and activation to prepare the area, never rehab protocols or treatment claims. For a CURRENT injury, keep the drills easy and pain-free and mention in the rationale that pain during a drill means skip it and check with a physio.
+- A fully recovered injury needs no special treatment beyond a normal thorough warm-up.
 
 BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - The program is split into ${PHASE_WEEKS}-week phases (mesocycles). A program of ${MIN_WEEKS_FOR_DELOAD} weeks or more gets a DELOAD on the last week of every block except the final one — the app automatically cuts sets by about 40% and drops the difficulty target by ${DELOAD_DIFFICULTY_DROP} points on those weeks.
@@ -4972,10 +4997,10 @@ BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - DO mention the block structure and the deload in the rationale, in plain language, so the athlete knows it is coming and why.
 
 Rules:
-- Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply to that day): dynamic warmup, 1-2 primer exercises (movement prep, and injury-specific prehab if injuries are listed), plyometrics/med ball throws, strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
+- Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply to that day): dynamic warmup (see WARM-UP above), 2-3 primer exercises (movement prep, including the injury-specific drills required above), plyometrics/med ball throws, strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
 - If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
-- If the athlete has injuries, include specific priming/prehab work for that area in the primer exercises and avoid contraindicated movements.
+- If the athlete has injuries, follow the WARM-UP injury rule above and avoid contraindicated movements in the main work.
 - If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
@@ -5453,7 +5478,16 @@ function apiUrl(path) {
   return isNativeApp() && API_BASE ? API_BASE + path : path;
 }
 
-async function callAI({ messages, system, maxTokens = 4000, model = "claude-sonnet-4-6" }) {
+// Program generation runs on Sonnet 5 because the prompt asks the model to hold
+// about ten constraints at once (warm-up counts, primers, the main-work cap,
+// injury targeting on every day, equipment filtering, phase ordering, strict
+// JSON) and cheaper models drop some of them. Chat passes model explicitly and
+// runs on Haiku: short replies, and unlike generation it is unbounded per user.
+// The server re-checks this against its own allowlist; this is only the default.
+const MODEL_PROGRAM = "claude-sonnet-5";
+const MODEL_CHAT = "claude-haiku-4-5";
+
+async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
@@ -5493,7 +5527,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
     try {
       const text = await callAI({
         messages: [{ role: "user", content: buildAIPrompt(intake) }],
-        maxTokens: 8192,
+        maxTokens: 16000,
       });
       const parsed = parseAIJson(text);
       setResult(parsed);
@@ -8002,9 +8036,9 @@ function CoachMessages({ state, setState, nav, myUserId }) {
 const PRIVACY_CONTACT = {
   business: "Trainedbythebest",
   app: "Trained.best",
-  email: "[YOUR CONTACT EMAIL]",
-  region: "[YOUR COUNTRY / STATE]",
-  updated: "[DATE YOU PUBLISH THIS]",
+  email: "z2ffitness@gmail.com",
+  region: "Niagara, Ontario, Canada",
+  updated: "September 23, 2026",
 };
 
 const PRIVACY_POLICY = [
@@ -12598,6 +12632,7 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         }, []);
 
       const replyText = await callAI({
+        model: MODEL_CHAT,
         system: `You are a knowledgeable, encouraging strength & conditioning AI assistant inside a coaching app. Keep responses concise (2-4 sentences) and practical. The athlete trains for ${state.me.sport}.`,
         messages: history.length ? history : [{ role: "user", content: userMsg.text }],
         maxTokens: 1000,
@@ -16818,7 +16853,7 @@ function AppInner() {
 
         // Don't regenerate for someone who already has a program. This path can
         // be re-entered (a retried signup, or finishing setup after email
-        // confirmation), and generating again would bill another 8192-token
+        // confirmation), and generating again would bill another 16000-token
         // call, insert a duplicate programs row, and repoint active_program_id
         // at it — orphaning the original along with any coach edits on it.
         if (savedProfile?.active_program_id) {
@@ -16830,7 +16865,7 @@ function AppInner() {
         try {
           const text = await callAI({
             messages: [{ role: "user", content: buildAIPrompt(data) }],
-            maxTokens: 8192,
+            maxTokens: 16000,
           });
           const parsed = parseAIJson(text);
           parsed.days = attachWeekdays(parsed.days, data.trainingDays);

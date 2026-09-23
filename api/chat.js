@@ -14,12 +14,23 @@
 //   3. a max_tokens ceiling       — one call can't be enormous
 //   4. a short per-user rate limit — one account can't hammer it
 
+// Sonnet 5 writes the programs (once per athlete per block - the quality-
+// critical call), Haiku 4.5 answers chat (unbounded, and a fifth of the price).
+// Sonnet 4.6 stays in the list as FALLBACK_MODEL: if the primary model id is
+// ever wrong or retired, Anthropic answers 404 and EVERY generation would fail
+// at once, so a 404 retries on a model we know exists rather than handing the
+// athlete "couldn't generate a program" with nothing they can do about it.
 const ALLOWED_MODELS = new Set([
+  "claude-sonnet-5",
   "claude-sonnet-4-6",
   "claude-haiku-4-5",
 ]);
-const DEFAULT_MODEL = "claude-sonnet-4-6";
-const MAX_TOKENS_CEILING = 8192;
+const DEFAULT_MODEL = "claude-sonnet-5";
+const FALLBACK_MODEL = "claude-sonnet-4-6";
+// A 12-week, 5-day program with the long injury-specific warm-ups runs past
+// 8192 tokens, and a truncated response is not partial JSON - it is unparseable
+// JSON, which surfaced to the athlete as "the AI returned an empty response".
+const MAX_TOKENS_CEILING = 16384;
 const MAX_BODY_BYTES = 100_000;
 
 // Per-user sliding window. Serverless instances get recycled, so this bounds
@@ -139,18 +150,28 @@ export default async function handler(req, res) {
   if (typeof body.system === "string") payload.system = body.system;
   if (typeof body.temperature === "number") payload.temperature = body.temperature;
 
-  try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(payload),
-    });
+  const askAnthropic = (body) => fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+  });
 
-    const data = await response.json();
+  try {
+    let response = await askAnthropic(payload);
+    let data = await response.json();
+
+    // A retired or mistyped model id comes back as 404 not_found_error. Retry
+    // once on the fallback rather than failing the athlete's generation.
+    if (response.status === 404 && payload.model !== FALLBACK_MODEL) {
+      console.error("Model", payload.model, "rejected - retrying on", FALLBACK_MODEL);
+      response = await askAnthropic({ ...payload, model: FALLBACK_MODEL });
+      data = await response.json();
+    }
+
     if (!response.ok) {
       console.error("Anthropic error", response.status, data?.error?.message);
       // Never pass Anthropic's own 401 straight through. The client reads 401
