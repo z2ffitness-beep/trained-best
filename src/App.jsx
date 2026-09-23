@@ -5044,36 +5044,60 @@ Return JSON in this exact shape:
 }`;
 }
 
+// Trims a reply that stopped mid-structure back to the last thing that was
+// complete, then closes whatever is still open.
+function repairTruncatedJson(text) {
+  let repaired = text.replace(/,\s*"[^"]*"?\s*:?\s*("[^"]*)?$/, ""); // drop a dangling property
+  repaired = repaired.replace(/,\s*$/, "");
+  const stack = [];
+  let inStr = false, esc = false;
+  for (const ch of repaired) {
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" && stack[stack.length - 1] === "{") stack.pop();
+    else if (ch === "]" && stack[stack.length - 1] === "[") stack.pop();
+  }
+  if (inStr) repaired += '"';
+  while (stack.length) repaired += stack.pop() === "{" ? "}" : "]";
+  return repaired;
+}
+
 function parseAIJson(text) {
   if (!text) throw new Error("No response content from AI");
+
   let clean = text.replace(/```json|```/g, "").trim();
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start !== -1 && end !== -1) clean = clean.slice(start, end + 1);
-  clean = clean.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
-  clean = clean.replace(/,(\s*[}\]])/g, "$1"); // strip trailing commas
-  try {
-    return JSON.parse(clean);
-  } catch (e) {
-    // Response likely got cut off mid-structure. Trim back to the last complete
-    // element and auto-close any open braces/brackets, then retry once.
-    let repaired = clean.replace(/,\s*"[^"]*"?\s*:?\s*("[^"]*)?$/, ""); // drop dangling trailing property
-    repaired = repaired.replace(/,\s*$/, "");
-    const stack = [];
-    let inStr = false, esc = false;
-    for (const ch of repaired) {
-      if (esc) { esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      if (ch === '"') { inStr = !inStr; continue; }
-      if (inStr) continue;
-      if (ch === "{" || ch === "[") stack.push(ch);
-      else if (ch === "}" && stack[stack.length - 1] === "{") stack.pop();
-      else if (ch === "]" && stack[stack.length - 1] === "[") stack.pop();
-    }
-    if (inStr) repaired += '"';
-    while (stack.length) repaired += stack.pop() === "{" ? "}" : "]";
-    return JSON.parse(repaired);
+
+  const dropTrailingCommas = (t) => t.replace(/,(\s*[}\]])/g, "$1");
+
+  // Curly quotes are LEGAL inside a JSON string, and the generator writes them
+  // - 'your "big three" lifts' comes back with typographic quotes. Rewriting
+  // them to straight quotes turns one valid string into three broken ones, and
+  // the browser reports that as "JSON Parse error: Unterminated string" - which
+  // is how a perfectly good program became an error message in front of someone
+  // standing in a gym. So the untouched text is tried FIRST, and the
+  // substitution survives only as a fallback for the rarer case of a model
+  // using a curly quote as a delimiter.
+  const attempts = [
+    dropTrailingCommas(clean),
+    dropTrailingCommas(clean.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')),
+  ];
+
+  for (const attempt of attempts) {
+    try { return JSON.parse(attempt); } catch { /* try the next reading */ }
   }
+  for (const attempt of attempts) {
+    try { return JSON.parse(repairTruncatedJson(attempt)); } catch { /* try the next reading */ }
+  }
+
+  // Every reading failed. Raising the parser's own words here is what put
+  // "Unterminated string" on screen; say what happened and what to do instead.
+  throw new Error("The program came back incomplete. Tap Try Again — this usually works on the second attempt.");
 }
 
 // Builds the day/exercise structure with local exerciseIds, matching by name
@@ -5491,7 +5515,7 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
-  const response = await fetch(apiUrl("/api/chat"), {
+  const post = () => fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -5499,6 +5523,24 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
     },
     body: JSON.stringify({ model, max_tokens: maxTokens, messages, ...(system ? { system } : {}) }),
   });
+
+  // Building a program is a single request that can run for a minute with
+  // nothing coming back down the wire, and a phone on one bar in a gym drops
+  // it - which fetch reports as the bare, unattributable "Load failed". One
+  // silent retry catches most of those; a second failure is a real connection
+  // problem and worth saying so plainly, because "Load failed" tells the
+  // athlete neither what broke nor what to do.
+  let response;
+  try {
+    response = await post();
+  } catch {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      response = await post();
+    } catch {
+      throw new Error("Your connection dropped before the program came back. Find better signal and tap Try Again — nothing was lost.");
+    }
+  }
 
   let data = null;
   try { data = await response.json(); } catch { /* non-JSON error page */ }
@@ -5527,7 +5569,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
     try {
       const text = await callAI({
         messages: [{ role: "user", content: buildAIPrompt(intake) }],
-        maxTokens: 16000,
+        maxTokens: 32000,
       });
       const parsed = parseAIJson(text);
       setResult(parsed);
@@ -6655,6 +6697,7 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
 // Coach view of one athlete: metrics, results, AND per-athlete program editing
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
+  const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
   const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
@@ -6711,9 +6754,14 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
     queueProgramSave(program.id, updated.days, state, setEditError);
   };
 
-  const addExerciseToDay = (dayId, exercise) => {
+  // Added from a section, it takes that section's phase - a Kettlebell Swing
+  // added under Conditioning is conditioning, whatever the library calls it.
+  // Added from the day's own button, it keeps the library's phase and lands in
+  // whichever section that belongs to.
+  const addExerciseToDay = (dayId, exercise, block) => {
+    const phase = (block && !block.phases.includes(exercise.phase)) ? block.phases[0] : exercise.phase;
     ensureCustom(prog => ({
-      ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: [...d.exercises, { id: "x" + Date.now(), exerciseId: exercise.id, phase: exercise.phase, sets: 3, reps: "10", rpe: 7, rest: "90s" }] } : d)
+      ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: [...d.exercises, { id: "x" + Date.now(), exerciseId: exercise.id, phase, sets: 3, reps: "10", rpe: 7, rest: "90s" }] } : d)
     }));
   };
   // Same snapshot-and-restore as the athlete side: the whole day list is kept
@@ -7043,6 +7091,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
                       <span className="text-[10px] uppercase tracking-wide font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
+                      <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                        aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
+                        <Plus size={14} style={{ color: b.accent }} />
+                      </button>
                       <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
                         aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
                         <Trash2 size={13} style={{ color: C.faint }} />
@@ -7075,7 +7127,26 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                   </div>
                   ))}
                 </div>
-                <button onClick={() => { setActiveDayId(day.id); setPickerOpen(true); }}
+                {(() => {
+                  const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
+                  const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
+                  if (!missing.length) return null;
+                  return (
+                    <div className="mt-3">
+                      <div className="text-[10px] uppercase tracking-wide font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
+                      <div className="flex gap-2 flex-wrap">
+                        {missing.map(b => (
+                          <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                            className="rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1"
+                            style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
+                            <Plus size={13} /> {b.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+                <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
                   className="w-full mt-3 rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
                   style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
                   <BookOpen size={15} /> Add From Library
@@ -7102,7 +7173,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         </p>
       </div>
 
-      <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises} onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
+      <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
+        exercises={state.exercises} defaultPhase={pickerBlock?.phases?.[0]}
+        onPick={(ex) => addExerciseToDay(activeDayId, ex, pickerBlock)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
       <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
@@ -7405,9 +7478,13 @@ function RemoveExerciseModal({ open, onClose, exerciseName, onRemoveFromDay, onD
   );
 }
 
-function ExercisePickerModal({ open, onClose, onPick, exercises }) {
+function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase }) {
   const [search, setSearch] = useState("");
-  const [phaseFilter, setPhaseFilter] = useState("all");
+  const [phaseFilter, setPhaseFilter] = useState(defaultPhase || "all");
+  // Opened from a section, it starts on that section's work. Opened from the
+  // day, it starts on everything. Re-applied per opening, or the filter from
+  // the last section would still be sitting there on the next one.
+  useEffect(() => { setPhaseFilter(defaultPhase || "all"); }, [defaultPhase, open]);
   const list = exercises.filter(e => e.name.toLowerCase().includes(search.toLowerCase()) && (phaseFilter === "all" || e.phase === phaseFilter));
 
   return (
@@ -9727,7 +9804,7 @@ function DeleteSegmentModal({ open, onClose, blockLabel, dayName, itemCount, oth
   );
 }
 
-function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock }) {
+function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock, onAdd }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-2xl overflow-hidden" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
@@ -9815,6 +9892,13 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
               </div>
             );
           })}
+          {onAdd && (
+            <button onClick={() => onAdd(block)}
+              className="w-full rounded-xl py-2.5 text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{ background: `${block.accent}14`, color: block.accent, border: `1px dashed ${block.accent}66` }}>
+              <Plus size={14} /> Add to {block.label}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -9912,6 +9996,7 @@ function AthleteProgram({ state, setState, nav }) {
   // ErrorBoundary would take over with a full-screen crash.
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
+  const [pickerFor, setPickerFor] = useState(null);   // { dayId, block } or { dayId }
   // Above the early return, like every other hook on this screen: React counts
   // hooks per render, and one that only runs when a program exists throws the
   // moment a program arrives while the tab is open.
@@ -9922,7 +10007,7 @@ function AthleteProgram({ state, setState, nav }) {
   // hard sessions out of it is the failure mode this prevents. Swapping stays
   // open to everyone - that's for equipment and injuries, and it tells the
   // coach why.
-  const canDelete = !!state.me.selfGuided;
+  const canEdit = !!state.me.selfGuided;
 
   if (!myProgram) {
     return (
@@ -10168,6 +10253,30 @@ function AthleteProgram({ state, setState, nav }) {
     }));
   };
 
+  // The section decides the phase, not the library entry: adding a Kettlebell
+  // Swing from the Conditioning section means conditioning, even though the
+  // library files it as power. Its own phase is kept when it already belongs
+  // to that section, so nothing is relabelled needlessly.
+  const phaseForBlock = (block, exercise) =>
+    (block && !block.phases.includes(exercise.phase)) ? block.phases[0] : exercise.phase;
+
+  const addExerciseToMyDay = (dayId, exercise, block) => {
+    persistMyDays(prog => ({
+      ...prog,
+      days: prog.days.map(d => d.id === dayId
+        ? {
+            ...d,
+            exercises: [...(d.exercises || []), {
+              id: "x" + Date.now(),
+              exerciseId: exercise.id,
+              phase: phaseForBlock(block, exercise),
+              sets: 3, reps: "10", rpe: 7, rest: "90s",
+            }],
+          }
+        : d),
+    }));
+  };
+
   const addDayToMyProgram = () => {
     persistMyDays(prog => ({ ...prog, days: [...prog.days, { id: "d" + Date.now(), name: `Day ${prog.days.length + 1}`, weekday: null, exercises: [] }] }));
     setActiveDayIdx(myProgram.days.length);
@@ -10332,10 +10441,12 @@ function AthleteProgram({ state, setState, nav }) {
               </div>
             </button>
           ))}
-          <button onClick={addDayToMyProgram} aria-label="Add training day" className="shrink-0 rounded-2xl w-10 h-10 flex items-center justify-center"
-            style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
-            <Plus size={16} style={{ color: C.sub }} />
-          </button>
+          {canEdit && (
+            <button onClick={addDayToMyProgram} aria-label="Add training day" className="shrink-0 rounded-2xl w-10 h-10 flex items-center justify-center"
+              style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
+              <Plus size={16} style={{ color: C.sub }} />
+            </button>
+          )}
         </div>
 
         {day && (
@@ -10357,7 +10468,7 @@ function AthleteProgram({ state, setState, nav }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {canDelete && (
+                {canEdit && (
                   <button onClick={() => setDeleteTarget(day)} aria-label="Delete session" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
                 )}
                 <button onClick={() => nav.go("athlete-workout", day.id)} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-sm" style={{ background: C.orange, color: "#fff" }}>
@@ -10391,6 +10502,31 @@ function AthleteProgram({ state, setState, nav }) {
             {/* Blocks, not a flat list. Warm-up and cool-down start collapsed:
                 they're the same every session and never the reason you opened
                 this screen. */}
+            {canEdit && (() => {
+              // A section only exists while something is in it, so "add a
+              // section" is really "add the first exercise to an empty one".
+              // Without this, deleting the Conditioning block was one-way:
+              // nothing on the screen referred to conditioning any more, so
+              // there was nothing to tap to get it back.
+              const present = new Set(blocks.map(b => b.key));
+              const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
+              if (!missing.length) return null;
+              return (
+                <div className="mb-3">
+                  <div className="text-[10px] uppercase tracking-wide font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
+                  <div className="flex gap-2 flex-wrap">
+                    {missing.map(b => (
+                      <button key={b.key} onClick={() => setPickerFor({ dayId: day.id, block: b })}
+                        className="rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1"
+                        style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
+                        <Plus size={13} /> {b.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="space-y-2.5">
               {blocks.map(b => (
                 <SessionBlock
@@ -10400,8 +10536,9 @@ function AthleteProgram({ state, setState, nav }) {
                   exById={exById}
                   onExerciseClick={setDetailExercise}
                   onSwap={(x) => setSwapTarget({ dayId: day.id, x })}
-                  onRemove={canDelete ? ((x) => removeExerciseFromMyProgram(day.id, x)) : null}
-                  onRemoveBlock={canDelete ? ((b) => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })) : null}
+                  onRemove={canEdit ? ((x) => removeExerciseFromMyProgram(day.id, x)) : null}
+                  onRemoveBlock={canEdit ? ((b) => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })) : null}
+                  onAdd={canEdit ? ((b) => setPickerFor({ dayId: day.id, block: b })) : null}
                   onMove={moveExercise}
                   groupOf={(x) => {
                     const all = groupSessionExercises(day.exercises || []);
@@ -10440,6 +10577,12 @@ function AthleteProgram({ state, setState, nav }) {
         otherDayCount={Math.max(0, myProgram.days.length - 1)}
         onThisSession={() => { removeSegment(segmentTarget.block, segmentTarget.dayId); setSegmentTarget(null); }}
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
+      <ExercisePickerModal
+        open={!!pickerFor}
+        onClose={() => setPickerFor(null)}
+        exercises={state.exercises}
+        defaultPhase={pickerFor?.block?.phases?.[0]}
+        onPick={(ex) => addExerciseToMyDay(pickerFor.dayId, ex, pickerFor.block)} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
     </div>
@@ -17220,7 +17363,7 @@ function AppInner() {
 
         // Don't regenerate for someone who already has a program. This path can
         // be re-entered (a retried signup, or finishing setup after email
-        // confirmation), and generating again would bill another 16000-token
+        // confirmation), and generating again would bill another full-program
         // call, insert a duplicate programs row, and repoint active_program_id
         // at it — orphaning the original along with any coach edits on it.
         if (savedProfile?.active_program_id) {
@@ -17232,7 +17375,7 @@ function AppInner() {
         try {
           const text = await callAI({
             messages: [{ role: "user", content: buildAIPrompt(data) }],
-            maxTokens: 16000,
+            maxTokens: 32000,
           });
           const parsed = parseAIJson(text);
           parsed.days = attachWeekdays(parsed.days, data.trainingDays);
