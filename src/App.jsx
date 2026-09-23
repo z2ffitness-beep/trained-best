@@ -150,7 +150,7 @@ const FEATURES = {
   programTemplates: false, // the coach's reusable template library + bulk assign
   athleteGroups: false,    // splitting the roster into named groups
   exerciseLibrary: false,  // the standalone browse-all-exercises screen
-  aiAssistant: false,      // the AI chat tab that sits beside the coach thread
+  aiAssistant: true,       // the AI chat tab that sits beside the coach thread
   nutrition: false,        // never actually built — a stub screen
   achievements: false,     // PR counters and badges with no real data behind them
 };
@@ -6544,6 +6544,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
+  const [segmentTarget, setSegmentTarget] = useState(null);
+  const { undo, offerUndo, runUndo, clearUndo } = useUndo();
   const [swapTarget, setSwapTarget] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
   const [editError, setEditError] = useState(null);
@@ -6600,14 +6602,34 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: [...d.exercises, { id: "x" + Date.now(), exerciseId: exercise.id, phase: exercise.phase, sets: 3, reps: "10", rpe: 7, rest: "90s" }] } : d)
     }));
   };
+  // Same snapshot-and-restore as the athlete side: the whole day list is kept
+  // before the edit, so Undo returns order and grouping exactly, not an
+  // approximation reassembled from what was deleted.
+  const editWithUndo = (label, updater) => {
+    const before = program ? JSON.parse(JSON.stringify(program.days)) : null;
+    ensureCustom(updater);
+    if (before) offerUndo(label, () => ensureCustom(prog => ({ ...prog, days: before })));
+  };
+
   const removeExercise = (dayId, xId) => {
-    ensureCustom(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.filter(x => x.id !== xId) } : d) }));
+    const name = exById(program?.days.find(d => d.id === dayId)?.exercises.find(x => x.id === xId)?.exerciseId)?.name || "Exercise";
+    editWithUndo(`Removed ${name}`, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.filter(x => x.id !== xId) } : d) }));
+  };
+
+  // A section, as the athlete sees it: "Conditioning" carries both the lactic
+  // and the aerobic work out with it rather than half of each.
+  const removeSegment = (block, dayId /* null = every session */) => {
+    const phases = new Set(block.phases);
+    const strip = d => ({ ...d, exercises: d.exercises.filter(x => !phases.has(x.phase)) });
+    const label = dayId ? `Removed ${block.label}` : `Removed ${block.label} from every session`;
+    editWithUndo(label, prog => ({ ...prog, days: prog.days.map(d => (dayId && d.id !== dayId) ? d : strip(d)) }));
   };
   const addDay = () => {
     ensureCustom(prog => ({ ...prog, days: [...prog.days, { id: "d" + Date.now(), name: `Day ${prog.days.length + 1}`, weekday: null, exercises: [] }] }));
   };
   const deleteDay = (dayId) => {
-    ensureCustom(prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
+    const name = program?.days.find(d => d.id === dayId)?.name || "Session";
+    editWithUndo(`Removed ${name}`, prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
   };
   const setDayWeekday = (dayId, weekday) => {
     ensureCustom(prog => ({ ...prog, days: reassignWeekday(prog.days, dayId, weekday) }));
@@ -6897,8 +6919,22 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                   <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
                 </div>
 
-                <div className="space-y-2 mt-3">
-                  {sortedExercises(day).map(x => {
+                {/* Grouped into the same sections the athlete sees, so a
+                    coach deleting "Conditioning" is looking at the same thing
+                    the athlete is, and so a whole section can go in one action
+                    instead of one exercise at a time. */}
+                <div className="space-y-3 mt-3">
+                  {buildSessionBlocks(sortedExercises(day)).map(b => (
+                  <div key={b.key} className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
+                      <span className="text-[10px] uppercase tracking-wide font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
+                      <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
+                        aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
+                        <Trash2 size={13} style={{ color: C.faint }} />
+                      </button>
+                    </div>
+                  {b.items.map(x => {
                     const ex = exById(x.exerciseId);
                     const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
                     return (
@@ -6922,6 +6958,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                       </div>
                     );
                   })}
+                  </div>
+                  ))}
                 </div>
                 <button onClick={() => { setActiveDayId(day.id); setPickerOpen(true); }}
                   className="w-full mt-3 rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
@@ -6958,6 +6996,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
         onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
         onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
+      <DeleteSegmentModal
+        open={!!segmentTarget}
+        onClose={() => setSegmentTarget(null)}
+        blockLabel={segmentTarget?.block?.label}
+        dayName={segmentTarget?.dayName}
+        itemCount={segmentTarget?.block?.items?.length || 0}
+        otherDayCount={Math.max(0, (program?.days.length || 1) - 1)}
+        onThisSession={() => { removeSegment(segmentTarget.block, segmentTarget.dayId); setSegmentTarget(null); }}
+        onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
+      <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
       <RemoveAthleteModal
         open={offRosterOpen}
@@ -9478,11 +9526,96 @@ function ProgramExplainer({ program, state }) {
 // One block of a session — its name, what it's for, how long it takes, and the
 // movements in it. Collapsible so a sixteen-movement day can be read as five
 // parts rather than scrolled as one undifferentiated column.
-function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext }) {
+// Deleting is instant and reversible rather than guarded by a dialog. Cutting
+// three exercises out of a session is ordinary editing, and a confirmation on
+// each one turns six taps into twelve; the risk isn't that a delete happens,
+// it's that it can't be taken back.
+//
+// Callers hand over a restore function rather than a description of what was
+// removed, so Undo puts the program back exactly as it was - same exercises,
+// same order, same day - instead of appending the survivors to the end.
+function useUndo(seconds = 7) {
+  const [undo, setUndo] = useState(null);   // { label, restore }
+  const timer = useRef(null);
+
+  const stopTimer = () => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+  };
+
+  const offerUndo = (label, restore) => {
+    stopTimer();
+    setUndo({ label, restore });
+    timer.current = setTimeout(() => { timer.current = null; setUndo(null); }, seconds * 1000);
+  };
+
+  // Not inside a setState updater: React invokes updaters twice in development,
+  // which would run the restore twice and undo an edit the athlete kept.
+  const runUndo = () => {
+    stopTimer();
+    if (undo?.restore) undo.restore();
+    setUndo(null);
+  };
+
+  const clearUndo = () => { stopTimer(); setUndo(null); };
+
+  // A pending timer outliving the screen would set state on a gone component.
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  return { undo, offerUndo, runUndo, clearUndo };
+}
+
+// Sits above the tab bar rather than over it, so the thing you just edited and
+// the way to take it back are both on screen.
+function UndoBar({ undo, onUndo, onDismiss }) {
+  if (!undo) return null;
+  return (
+    <div className="fixed left-0 right-0 z-40 px-5" style={{ bottom: "calc(84px + env(safe-area-inset-bottom, 0px))" }}>
+      <div className="mx-auto rounded-xl px-4 py-3 flex items-center gap-3" style={{ maxWidth: 440, background: C.panel, border: `1px solid ${C.border}`, boxShadow: "0 8px 24px rgba(0,0,0,0.35)" }}>
+        <span className="text-sm flex-1 min-w-0 truncate" style={{ color: C.text }}>{undo.label}</span>
+        <button onClick={onUndo} className="text-sm font-bold shrink-0" style={{ color: C.orange }}>Undo</button>
+        <button onClick={onDismiss} aria-label="Dismiss" className="shrink-0 p-1 -m-1"><X size={16} style={{ color: C.faint }} /></button>
+      </div>
+    </div>
+  );
+}
+
+// Removing a whole section is the one delete worth a question first: "drop the
+// conditioning" usually means from the program, not from Tuesday alone, and
+// guessing either way is wrong half the time.
+function DeleteSegmentModal({ open, onClose, blockLabel, dayName, itemCount, otherDayCount, onThisSession, onEverySession }) {
+  return (
+    <Modal open={open} onClose={onClose} title={`Delete ${blockLabel || "section"}`}>
+      <p className="text-sm mb-4" style={{ color: C.sub }}>
+        {itemCount} {itemCount === 1 ? "exercise" : "exercises"} in this section.
+      </p>
+      <div className="space-y-2.5">
+        <button onClick={onThisSession} className="w-full text-left rounded-lg p-3.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+          <div className="text-sm font-semibold" style={{ color: C.text }}>Just this session</div>
+          <div className="text-xs mt-0.5" style={{ color: C.sub }}>Removes it from {dayName || "this session"} and leaves the rest alone.</div>
+        </button>
+        <button onClick={onEverySession} disabled={!otherDayCount}
+          className="w-full text-left rounded-lg p-3.5"
+          style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, opacity: otherDayCount ? 1 : 0.45 }}>
+          <div className="text-sm font-semibold" style={{ color: C.red }}>Every session</div>
+          <div className="text-xs mt-0.5" style={{ color: C.sub }}>
+            {otherDayCount
+              ? `Removes ${blockLabel} from all ${otherDayCount + 1} sessions in the program.`
+              : "This is the only session in the program."}
+          </div>
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-2xl overflow-hidden" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-      <button onClick={() => setOpen(o => !o)} className="w-full text-left px-4 py-3">
+      {/* The toggle and the section delete sit SIDE BY SIDE. A button inside a
+          button is invalid markup, and browsers resolve it by firing both. */}
+      <div className="flex items-start">
+      <button onClick={() => setOpen(o => !o)} className="flex-1 min-w-0 text-left px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: block.accent }} />
           {/* Block names are the plain-English ones throughout — "Primary
@@ -9500,6 +9633,12 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
         </div>
         <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: C.sub }}>{block.why}</p>
       </button>
+      {onRemoveBlock && (
+        <button onClick={() => onRemoveBlock(block)} className="shrink-0 px-3 py-4" aria-label={`Delete the ${block.label} section`}>
+          <Trash2 size={15} style={{ color: C.sub }} />
+        </button>
+      )}
+      </div>
 
       {open && (
         <div className="px-3 pb-3 space-y-2">
@@ -9540,6 +9679,11 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
                   <button onClick={() => onSwap(x)} className="p-1.5" aria-label="Swap exercise">
                     <RotateCcw size={15} style={{ color: C.blue }} />
                   </button>
+                  {onRemove && (
+                    <button onClick={() => onRemove(x)} className="p-1.5" aria-label={`Remove ${exById(x.exerciseId)?.name || "exercise"}`}>
+                      <Trash2 size={15} style={{ color: C.sub }} />
+                    </button>
+                  )}
                   <div className="flex flex-col">
                     <button onClick={() => onMove(x._index, x._index - 1)} disabled={!canMoveUp(x._index)} className="p-1 disabled:opacity-25" aria-label="Move up">
                       <ChevronUp size={16} style={{ color: C.sub }} />
@@ -9648,7 +9792,18 @@ function AthleteProgram({ state, setState, nav }) {
   // while this tab was already mounted React would throw error #310 and the
   // ErrorBoundary would take over with a full-screen crash.
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [segmentTarget, setSegmentTarget] = useState(null);
+  // Above the early return, like every other hook on this screen: React counts
+  // hooks per render, and one that only runs when a program exists throws the
+  // moment a program arrives while the tab is open.
+  const { undo, offerUndo, runUndo, clearUndo } = useUndo();
   const exById = id => state.exercises.find(e => e.id === id);
+
+  // A coached athlete follows what their coach programmed; quietly deleting the
+  // hard sessions out of it is the failure mode this prevents. Swapping stays
+  // open to everyone - that's for equipment and injuries, and it tells the
+  // coach why.
+  const canDelete = !!state.me.selfGuided;
 
   if (!myProgram) {
     return (
@@ -9864,12 +10019,43 @@ function AthleteProgram({ state, setState, nav }) {
     }
   };
 
+  // Snapshots the whole day list before the edit and hands it to Undo. Cheaper
+  // to reason about than reversing each kind of delete, and exact: order,
+  // grouping and weekday assignments all come back untouched.
+  const mutateWithUndo = (label, updateDays) => {
+    const before = (state.me.customProgram || myProgram).days;
+    persistMyDays(updateDays);
+    offerUndo(label, () => persistMyDays(prog => ({ ...prog, days: before })));
+  };
+
+  const removeExerciseFromMyProgram = (dayId, x) => {
+    const name = exById(x.exerciseId)?.name || "Exercise";
+    mutateWithUndo(`Removed ${name}`, prog => ({
+      ...prog,
+      days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.filter(e => e.id !== x.id) } : d),
+    }));
+  };
+
+  // `block.phases` is the mapping from a section the athlete can see to the
+  // phase keys underneath it, so "Conditioning" takes both lactic and aerobic
+  // work with it rather than half of each.
+  const removeSegment = (block, dayId /* null = every session */) => {
+    const phases = new Set(block.phases);
+    const strip = d => ({ ...d, exercises: d.exercises.filter(e => !phases.has(e.phase)) });
+    const label = dayId ? `Removed ${block.label}` : `Removed ${block.label} from every session`;
+    mutateWithUndo(label, prog => ({
+      ...prog,
+      days: prog.days.map(d => (dayId && d.id !== dayId) ? d : strip(d)),
+    }));
+  };
+
   const addDayToMyProgram = () => {
     persistMyDays(prog => ({ ...prog, days: [...prog.days, { id: "d" + Date.now(), name: `Day ${prog.days.length + 1}`, weekday: null, exercises: [] }] }));
     setActiveDayIdx(myProgram.days.length);
   };
   const deleteDayFromMyProgram = (dayId) => {
-    persistMyDays(prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
+    const name = myProgram.days.find(d => d.id === dayId)?.name || "Session";
+    mutateWithUndo(`Removed ${name}`, prog => ({ ...prog, days: prog.days.filter(d => d.id !== dayId) }));
     setActiveDayIdx(i => Math.max(0, Math.min(i, myProgram.days.length - 2)));
   };
   const setMyDayWeekday = (dayId, weekday) => {
@@ -10052,7 +10238,9 @@ function AthleteProgram({ state, setState, nav }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <button onClick={() => setDeleteTarget(day)} aria-label="Delete day" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
+                {canDelete && (
+                  <button onClick={() => setDeleteTarget(day)} aria-label="Delete session" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
+                )}
                 <button onClick={() => nav.go("athlete-workout", day.id)} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-sm" style={{ background: C.orange, color: "#fff" }}>
                   <Play size={14} fill="#fff" /> Start
                 </button>
@@ -10093,6 +10281,8 @@ function AthleteProgram({ state, setState, nav }) {
                   exById={exById}
                   onExerciseClick={setDetailExercise}
                   onSwap={(x) => setSwapTarget({ dayId: day.id, x })}
+                  onRemove={canDelete ? ((x) => removeExerciseFromMyProgram(day.id, x)) : null}
+                  onRemoveBlock={canDelete ? ((b) => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })) : null}
                   onMove={moveExercise}
                   groupOf={(x) => {
                     const all = groupSessionExercises(day.exercises || []);
@@ -10122,7 +10312,17 @@ function AthleteProgram({ state, setState, nav }) {
         onSwap={(newEx) => swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
+      <DeleteSegmentModal
+        open={!!segmentTarget}
+        onClose={() => setSegmentTarget(null)}
+        blockLabel={segmentTarget?.block?.label}
+        dayName={segmentTarget?.dayName}
+        itemCount={segmentTarget?.block?.items?.length || 0}
+        otherDayCount={Math.max(0, myProgram.days.length - 1)}
+        onThisSession={() => { removeSegment(segmentTarget.block, segmentTarget.dayId); setSegmentTarget(null); }}
+        onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
     </div>
   );
 }
