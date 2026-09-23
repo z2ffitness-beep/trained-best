@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* The app writes this on <html> and <body> from the saved theme as soon as
+     it loads. The value here only covers the frame before that runs — it was a
+     hardcoded #000, which flashed black on every load in light mode and left a
+     black gutter under short pages and behind iOS overscroll. */
+  background: #000;
+  font-family: 'Inter', sans-serif;
+}
+
+html[data-theme="light"],
+html[data-theme="light"] body {
+  background: #E8EBF0;
+}
+
+* {
+  -webkit-overflow-scrolling: touch;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* No double-tap-to-zoom delay on buttons, and no rubber-band pull on the
+   whole page - on an iPhone that drags the header and nav bar with it. */
+html, body {
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+}
+
+/* The iPhone's notch/Dynamic Island and home indicator. Zero in a desktop
+   browser, so these change nothing there. */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+
+/* ---------- phone frame on a desktop screen ----------
+   See PhoneFrame in App.jsx. Everything here applies only while the frame is
+   on (html.tb-framed), so phones and the installed app never see it. */
+/* !important because the theme code writes the page background inline on
+   <html> and <body>, which would otherwise show as a strip around the desk. */
+html.tb-framed, html.tb-framed body { background: #0b0b0d !important; overflow: hidden; }
+
+.tb-desk {
+  position: fixed; inset: 0; overflow: auto;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; padding: 24px;
+  background: radial-gradient(circle at 50% 20%, #1a1c22 0%, #0b0b0d 70%);
+}
+.tb-phone {
+  position: relative; overflow: hidden; border-radius: 52px;
+  /* Makes this the containing block for position: fixed, so the nav bar and
+     sheets pin to the phone rather than to the browser window. */
+  transform: translateZ(0);
+  box-shadow: 0 0 0 11px #1c1c1e, 0 0 0 13px #3a3a3c, 0 30px 80px #000000cc;
+  flex-shrink: 0;
+}
+/* Short laptop screens: scale the whole phone down rather than clip it. */
+@media (max-height: 920px) {
+  .tb-phone { zoom: calc((100vh - 90px) / 844px); }
+}
+@supports not (zoom: 1) {
+  @media (max-height: 920px) { .tb-phone { transform: translateZ(0) scale(0.85); } }
+}
+.tb-phone-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; }
+
+/* Inside the frame, "the screen" is the phone, not the browser window. */
+html.tb-framed .min-h-screen,
+html.tb-framed [style*="min-height: 100vh"] { min-height: 844px !important; }
+html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
+
+.tb-desk-caption {
+  display: flex; align-items: center; gap: 14px;
+  font: 12px/1 Inter, system-ui, sans-serif; color: #7d766e;
+}
+.tb-desk-caption button, .tb-view-toggle {
+  font: 600 12px/1 Inter, system-ui, sans-serif; color: #b6b0a8;
+  background: #1c1917; border: 1px solid #2e2a26; border-radius: 999px;
+  padding: 7px 12px; cursor: pointer;
+}
+.tb-view-toggle { position: fixed; right: 14px; bottom: 90px; z-index: 60; }
