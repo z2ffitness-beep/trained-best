@@ -9655,30 +9655,38 @@ function AthleteProgram({ state, setState, nav }) {
       <div className="pb-28">
         <TopBar title="My Program" onLogout={nav.logout} />
         <div className="px-5 pt-10 text-center">
-          {state.me.selfGuided ? (
-            state.programGenerationError ? (
-              // Generation actually failed. Say so and offer a way forward,
-              // rather than the old permanent "being built" message that
-              // nothing would ever resolve.
-              <>
-                <AlertCircle size={28} style={{ color: C.red }} className="mx-auto mb-3" />
-                <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>We couldn't build your program</div>
-                <p className="text-xs mb-5" style={{ color: C.sub }}>{state.programGenerationError}</p>
-                <Btn icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Try again</Btn>
-              </>
-            ) : (
-              // No program and no error. Right after onboarding that means a
-              // build is genuinely running; for anyone else — an athlete who
-              // just left their coach, say — nothing is running and this said
-              // "being built… once it's ready" forever. Offer the button.
-              <>
-                <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
-                <p className="text-xs mb-5" style={{ color: C.sub }}>If you've just signed up, yours is being built and will appear here. Otherwise, start one now.</p>
-                <Btn icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Build my program</Btn>
-              </>
-            )
+          {/* The error branch is checked BEFORE the coached/self-guided split.
+              It used to sit inside the self-guided branch, so a coached athlete
+              whose generation failed saw only "waiting on your coach" - no
+              error, no retry, and nothing their coach could do either, because
+              signup is the only thing that builds a program. That is exactly
+              how it failed in the wild. */}
+          {state.programGenerationError ? (
+            <>
+              <AlertCircle size={28} style={{ color: C.red }} className="mx-auto mb-3" />
+              <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>We couldn't build your program</div>
+              <p className="text-xs mb-5" style={{ color: C.sub }}>{state.programGenerationError}</p>
+              <Btn icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Try again</Btn>
+            </>
+          ) : state.me.selfGuided ? (
+            // No program and no error. Right after onboarding that means a
+            // build is genuinely running; for anyone else — an athlete who
+            // just left their coach, say — nothing is running and this said
+            // "being built… once it's ready" forever. Offer the button.
+            <>
+              <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+              <p className="text-xs mb-5" style={{ color: C.sub }}>If you've just signed up, yours is being built and will appear here. Otherwise, start one now.</p>
+              <Btn icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Build my program</Btn>
+            </>
           ) : (
-            <p className="text-sm" style={{ color: C.sub }}>Waiting on your coach to assign a program.</p>
+            // A coached athlete still gets a way out. programGenerationError
+            // lives in React state, so a refresh loses it and this branch is
+            // where a failed build actually lands on the next visit.
+            <>
+              <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>Waiting on your coach</div>
+              <p className="text-xs mb-5" style={{ color: C.sub }}>If you've just signed up, yours is being built and will appear here. Your coach can adjust it once it lands.</p>
+              <Btn variant="secondary" icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Build one from my intake</Btn>
+            </>
           )}
         </div>
       </div>
@@ -11113,21 +11121,24 @@ function Workout({ state, setState, nav, dayId }) {
     <div className="pb-28">
       <TopBar title="Workout" onLogout={nav.logout} />
       <div className="px-5 pt-10 text-center">
-        {state.me.selfGuided
-          ? (
-            <>
-              <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
-              <p className="text-xs mb-5" style={{ color: C.sub }}>Generate a fully comprehensive program based on your sign-up screening.</p>
-              {saveError && (
-                <div className="rounded-lg p-3 mb-4 text-xs text-left" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
-                  {saveError}
-                </div>
-              )}
-              <Btn icon={Sparkles} onClick={() => setShowGenerator(true)}>Generate Program</Btn>
-            </>
-          )
-          : <p className="text-sm" style={{ color: C.sub }}>Waiting on your coach to assign a program.</p>
-        }
+        {/* Both roles reach the generator. A coached athlete's program is built
+            from the same intake answers - the coach edits it afterwards - so
+            locking them out of this button only ever meant a failed build had
+            no recovery path at all. */}
+        <>
+          <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+          <p className="text-xs mb-5" style={{ color: C.sub }}>
+            {state.me.selfGuided
+              ? "Generate a fully comprehensive program based on your sign-up screening."
+              : "Your coach can adjust this once it's built. Generate it from your sign-up screening."}
+          </p>
+          {saveError && (
+            <div className="rounded-lg p-3 mb-4 text-xs text-left" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+              {saveError}
+            </div>
+          )}
+          <Btn icon={Sparkles} onClick={() => setShowGenerator(true)}>Generate Program</Btn>
+        </>
       </div>
       {showGenerator && (
         <AIProgramGenerator

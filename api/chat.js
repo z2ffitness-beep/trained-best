@@ -67,8 +67,13 @@ async function getUser(req) {
   // this returns null — which is indistinguishable from a bad token, so every
   // legitimate user would get 401 "your session expired" with nothing in the
   // client to explain why. `misconfigured` lets the handler answer 500 instead.
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const anon = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  // Trimmed, and the URL stripped of a trailing slash. These are pasted into a
+  // dashboard by hand, and a stray newline or a copied trailing "/" produces a
+  // value that LOOKS right in the UI and fails every request - which surfaced
+  // to athletes as "your session expired", the one message that can never be
+  // fixed by doing what it says.
+  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const anon = (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "").trim();
   if (!url || !anon) {
     console.error("Supabase env vars missing — cannot authenticate AI requests");
     return { misconfigured: true };
@@ -78,11 +83,27 @@ async function getUser(req) {
     const r = await fetch(`${url}/auth/v1/user`, {
       headers: { Authorization: `Bearer ${token}`, apikey: anon },
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      // Supabase answers a bad PROJECT key and an expired USER token with the
+      // same 401, and the two mean opposite things: one is our server being
+      // misconfigured, which the athlete can do nothing about, the other
+      // genuinely means sign in again. Told apart, because conflating them
+      // sends every athlete into a sign-out/sign-in loop that cannot work.
+      if (/invalid api key|no api key/i.test(body)) {
+        console.error("Supabase rejected our project key — check SUPABASE_ANON_KEY", r.status, body.slice(0, 200));
+        return { misconfigured: true };
+      }
+      console.error("Supabase auth lookup failed", r.status, body.slice(0, 200));
+      return null;
+    }
     const user = await r.json();
     return user?.id ? user : null;
-  } catch {
-    return null;
+  } catch (err) {
+    // fetch only throws here for a malformed or unreachable SUPABASE_URL, not
+    // for a bad token, so this is a server problem rather than a stale session.
+    console.error("Supabase auth lookup threw — check SUPABASE_URL", err?.message);
+    return { misconfigured: true };
   }
 }
 
