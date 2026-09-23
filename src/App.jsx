@@ -6697,6 +6697,8 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
 // Coach view of one athlete: metrics, results, AND per-athlete program editing
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
   const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -6874,6 +6876,49 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
     setBuilding(false);
   };
 
+  // Saved through the same path as assigning a template, so the row gets a
+  // coach_id and the RPC sets it active - a coach's direct UPDATE on an
+  // athlete's profile matches zero rows under RLS and reports no error, which
+  // looks exactly like success.
+  const importProgram = async (parsed) => {
+    if (importing) return { ok: false, message: "Already saving." };
+    setImporting(true);
+    setEditError(null);
+
+    // The library has to know about any new movement BEFORE the program is
+    // written, because saving converts ids back to names - an unknown id is
+    // stored as "Unknown Exercise" and the athlete sees a nameless row.
+    const { days, newExercises } = buildDaysWithExerciseIds(parsed.days, state);
+    const withNew = { ...state, exercises: [...state.exercises, ...newExercises] };
+
+    const res = await assignTemplateToAthlete({
+      template: { name: parsed.programName || `${athlete.name.split(" ")[0]}'s Program`, weeks: parsed.weeks || 8, sport: athlete.sport || null, days },
+      athlete,
+      coachId: myUserId,
+      state: withNew,
+    });
+
+    if (!res.ok) {
+      setImporting(false);
+      return { ok: false, message: res.message || "Couldn't save that program." };
+    }
+
+    const created = res.created;
+    setState(s => {
+      const rebuilt = buildDaysWithExerciseIds(created.days, { ...s, exercises: [...s.exercises, ...newExercises] });
+      return {
+        ...s,
+        exercises: [...s.exercises, ...newExercises, ...rebuilt.newExercises],
+        // The auto-generated program from signup stays in the database as
+        // history; only the roster's pointer moves.
+        programs: [...s.programs, { id: created.id, name: created.name, weeks: created.weeks, sport: created.sport, rationale: created.rationale || null, startedOn: created.started_on || null, athleteId: athlete.id, assignedCount: 1, days: rebuilt.days }],
+        athletes: s.athletes.map(a => (a.id === athlete.id ? { ...a, program: created.id, customProgram: null } : a)),
+      };
+    });
+    setImporting(false);
+    return { ok: true };
+  };
+
   return (
     <div className="pb-28">
       <TopBar title={athlete.name} right={<button onClick={() => nav.go("coach-athletes")} style={{ color: C.sub }}><X size={20} /></button>} />
@@ -7049,6 +7094,13 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         </div>
 
         <ChalkDivider label="Assigned Program — Edit" />
+        {program && (
+          <button onClick={() => setImportOpen(true)}
+            className="w-full mb-3 rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+            style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
+            <ClipboardList size={15} /> Import a program from a doc
+          </button>
+        )}
         {!program && (
           <div className="rounded-2xl p-6 text-center" style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
             <ClipboardList size={26} style={{ color: C.faint }} className="mx-auto mb-3" />
@@ -7056,9 +7108,12 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             <p className="text-xs mb-4" style={{ color: C.sub }}>
               Start one and add their sessions and exercises here.
             </p>
-            <Btn icon={Plus} disabled={building} onClick={buildProgram}>
-              {building ? "Creating…" : "Build a program"}
-            </Btn>
+            <div className="flex gap-2.5">
+              <Btn variant="secondary" className="flex-1" icon={ClipboardList} onClick={() => setImportOpen(true)}>Import</Btn>
+              <Btn className="flex-1" icon={Plus} disabled={building} onClick={buildProgram}>
+                {building ? "Creating…" : "Build one"}
+              </Btn>
+            </div>
           </div>
         )}
         {program && (
@@ -7192,6 +7247,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         otherDayCount={Math.max(0, (program?.days.length || 1) - 1)}
         onThisSession={() => { removeSegment(segmentTarget.block, segmentTarget.dayId); setSegmentTarget(null); }}
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
+      <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
+        athlete={athlete} onImport={importProgram} saving={importing} />
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
       <RemoveAthleteModal
@@ -7476,6 +7533,182 @@ function RemoveExerciseModal({ open, onClose, exerciseName, onRemoveFromDay, onD
       <Btn variant="ghost" className="w-full mt-3" onClick={onClose}>Cancel</Btn>
     </Modal>
   );
+}
+
+// Turning a coach's existing program - a Google Doc, a spreadsheet, a note -
+// into the shape the app stores.
+//
+// Deliberately NOT the generator with different wording. The generator invents
+// prescriptions; this one must not. A coach who wrote 4x6 @ RPE 8 gets 4x6 @
+// RPE 8, and the single thing the model is actually asked to decide is which
+// section each movement belongs to - because that is the one piece of
+// information a document holds in its LAYOUT rather than its words.
+function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
+  const [raw, setRaw] = useState("");
+  const [status, setStatus] = useState("idle");   // idle | converting | preview | error
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+
+  // Reopening after a save must not show the last athlete's program.
+  useEffect(() => {
+    if (!open) { setRaw(""); setStatus("idle"); setResult(null); setError(""); }
+  }, [open]);
+
+  const convert = async () => {
+    const text = raw.trim();
+    if (text.length < 40) { setError("Paste the whole program - that looks like a line or two."); setStatus("error"); return; }
+    setStatus("converting"); setError("");
+    try {
+      const reply = await callAI({
+        messages: [{ role: "user", content: buildImportPrompt(text, athlete) }],
+        maxTokens: 32000,
+      });
+      const parsed = parseAIJson(reply);
+      if (!parsed?.days?.length) throw new Error("No training days were found in that text.");
+      setResult(parsed);
+      setStatus("preview");
+    } catch (err) {
+      setError(err.message || "Couldn't read that program.");
+      setStatus("error");
+    }
+  };
+
+  const totalExercises = (result?.days || []).reduce((n, d) => n + (d.exercises || []).length, 0);
+
+  return (
+    <Modal open={open} onClose={onClose} title="Import a program" wide>
+      {(status === "idle" || status === "error") && (
+        <div>
+          <p className="text-sm mb-1" style={{ color: C.text }}>Paste {athlete?.name?.split(" ")[0] || "their"} program.</p>
+          <p className="text-xs mb-3" style={{ color: C.sub }}>
+            Select all of it in your doc, copy, paste here. Sets, reps, RPE and rest come across exactly as you wrote them - nothing is rewritten or added.
+          </p>
+          <textarea
+            value={raw}
+            onChange={e => setRaw(e.target.value)}
+            rows={12}
+            placeholder={"Day 1 — Upper\nBarbell Bench Press 4x6 @ RPE 8, rest 2min\nBarbell Row 4x8\n..."}
+            style={{ ...inputStyle, minHeight: 220, fontFamily: "JetBrains Mono, monospace", fontSize: 12, lineHeight: 1.6 }} />
+          {error && (
+            <div className="rounded-lg p-3 mt-3 text-xs" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{error}</div>
+          )}
+          <Btn className="w-full mt-4" icon={Sparkles} disabled={!raw.trim()} onClick={convert}>Convert</Btn>
+        </div>
+      )}
+
+      {status === "converting" && (
+        <div className="text-center py-10">
+          <Loader2 size={30} className="animate-spin mx-auto mb-4" style={{ color: C.orange }} />
+          <p className="text-sm" style={{ color: C.text }}>Reading your program...</p>
+          <p className="text-xs mt-1" style={{ color: C.sub }}>Keeping your numbers, working out which section each movement belongs to.</p>
+        </div>
+      )}
+
+      {status === "preview" && result && (
+        <div>
+          {/* Nothing is saved until this has been looked at. The one thing the
+              conversion genuinely decides is which section each movement goes
+              in, and that is the thing worth a coach's eye before it lands in
+              front of the athlete. */}
+          <div className="rounded-lg p-3 mb-3" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55` }}>
+            <div className="text-sm font-semibold" style={{ color: C.text }}>{result.programName}</div>
+            <div className="text-xs mt-0.5" style={{ color: C.sub }}>
+              {result.weeks} weeks · {result.days.length} {result.days.length === 1 ? "session" : "sessions"} · {totalExercises} exercises
+            </div>
+          </div>
+          <p className="text-xs mb-3" style={{ color: C.sub }}>Check the numbers against your doc. You can edit anything after saving.</p>
+          <div className="space-y-3 max-h-80 overflow-y-auto mb-4">
+            {result.days.map((d, i) => (
+              <div key={i} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                <div className="text-sm font-semibold mb-1.5" style={{ color: C.text, fontFamily: "Inter" }}>{d.name}</div>
+                <div className="space-y-1">
+                  {(d.exercises || []).map((x, j) => (
+                    <div key={j} className="text-xs flex items-center justify-between gap-2" style={{ color: C.sub }}>
+                      <span className="min-w-0 flex items-center gap-1.5">
+                        <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>
+                          {PHASES.find(ph => ph.key === x.phase)?.short || "?"}
+                        </span>
+                        <span className="truncate">{x.name}</span>
+                      </span>
+                      <span className="font-mono shrink-0">{x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe}{x.rest ? ` · ${x.rest}` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {error && (
+            <div className="rounded-lg p-3 mb-3 text-xs" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{error}</div>
+          )}
+          <div className="flex gap-2.5">
+            <Btn variant="secondary" className="flex-1" icon={RefreshCw} disabled={saving} onClick={() => setStatus("idle")}>Edit the text</Btn>
+            <Btn className="flex-1" icon={Check} disabled={saving}
+              onClick={async () => {
+                const res = await onImport(result);
+                if (res?.ok === false) { setError(res.message || "Couldn't save that program."); return; }
+                onClose();
+              }}>
+              {saving ? "Saving..." : "Use This Program"}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function buildImportPrompt(raw, athlete) {
+  const who = athlete?.name ? `for ${athlete.name}` : "";
+  return `You are converting a strength coach's existing written program ${who} into structured JSON. Respond ONLY with valid JSON, no markdown fences, no preamble.
+
+THE PROGRAM AS THEY WROTE IT:
+"""
+${raw}
+"""
+
+RULES - these matter more than anything else:
+- TRANSCRIBE, DO NOT PROGRAM. Every exercise, every set, every rep, every load cue and every rest period comes from the text above. You are not improving this program, correcting it, balancing it or completing it.
+- Sets, reps, RPE and rest are copied EXACTLY as written. "4x6" is sets 4, reps "6". "3x8-10" is sets 3, reps "8-10". "5x5 @ 80%" is sets 5, reps "5" and the 80% belongs in reps as "5 @ 80%" if there is nowhere else for it. Never round, never normalise, never convert.
+- If a value genuinely is not in the document, use these and nothing more inventive: sets 3, reps "10", rpe 7, rest "90s". Do not guess a number that looks plausible for that exercise.
+- Keep the coach's exercise names as written, only tidied to a standard form a library would recognise ("BB Bench" -> "Barbell Bench Press", "RDLs" -> "Romanian Deadlift"). Never substitute a different movement.
+- Do not add warm-ups, cool-downs, accessories or conditioning that the document does not contain. A program with no warm-up imports with no warm-up.
+- Do not drop anything either. If a line is an exercise, it appears in the output.
+
+WHAT YOU DO DECIDE - the phase of each exercise, from where it sits and what it is:
+- "warmup_general": mobility, dynamic work, activation at the start
+- "warmup_specific": ramp-up or primer sets before the first working lift
+- "explosive": jumps, throws, med ball, Olympic derivatives
+- "compound": the main barbell/heavy lifts - squat, hinge, press, row, pull-up
+- "hypertrophy": accessory and isolation work
+- "lactic": intervals, finishers, hard conditioning
+- "aerobic": steady-state work
+- "cooldown": stretching, breathing, decompression at the end
+When the document already groups things under headings, follow its headings. When it doesn't, use position in the session and the nature of the movement.
+
+DAYS:
+- One entry per training session in the document. Keep the coach's day names when they have them ("Upper A", "Push Day"), otherwise "Day 1", "Day 2".
+- If the document describes a weekly split, that is the day list. Do not multiply it out by the number of weeks.
+- "weeks": use the number the document states. If it states none, use 8.
+
+SUPERSETS: if the document pairs movements (A1/A2, "superset with", a brace), give those CONSECUTIVE exercises the same short "groupId" and the same sets.
+
+RATIONALE: one short paragraph, plainly stating that this program was imported from the coach's own document and what it appears to be built around. Do not editorialise on the programming or suggest changes.
+
+Return JSON in this exact shape:
+{
+  "programName": "string - the document's own title, or <Athlete>'s Program",
+  "weeks": number,
+  "rationale": "one short paragraph",
+  "days": [
+    {
+      "name": "Day 1 — <the coach's own name for it>",
+      "why": "one sentence describing what this session covers, from the document",
+      "exercises": [
+        { "phase": "warmup_general|warmup_specific|explosive|compound|hypertrophy|lactic|aerobic|cooldown", "name": "string", "sets": number, "reps": "string", "rpe": number, "rest": "string", "groupId": "string or null" }
+      ]
+    }
+  ]
+}`;
 }
 
 function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase }) {
