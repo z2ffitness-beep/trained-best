@@ -4057,6 +4057,133 @@ function endDateFromWeeks(startStr, weeks) {
 // A day repeats every week on its assigned weekday, forever, unless a
 // cleared range covers this date — one single mechanism for "not scheduled
 // here" rather than two overlapping ones.
+// The program as it stands on a given date.
+//
+// Every screen that shows an athlete their training goes through this, so the
+// dashboard, the program list, the workout logger and the calendar can never
+// disagree about what this week's session is. A program with no weekly plan is
+// returned UNCHANGED - same object - so nothing about an existing flat program
+// moves, and the only cost is one identity check.
+function programForDate(program, dateIso) {
+  if (!program || !programHasWeeklyPlan(program)) return program;
+  const week = programWeekFor(program, dateIso);
+  if (!week) return program;
+  return {
+    ...program,
+    currentWeek: week,
+    days: (program.days || []).map((d) => resolveDayForWeek(d, week)),
+  };
+}
+
+// ---------- which week of the program is it? ----------
+//
+// Every serious program is written as weeks, and until now the app could only
+// hold one of them. Lia's camp says "from week 3 swap Depth Drop for Depth Drop
+// Jump" and "W1: 8x10s, W2: 9x8s, W3: 2 series of 5x12s"; the 26-week plan
+// moves the squat from 65% to 90% and then changes the movement itself six
+// times. Both were imported as their first week and then repeated forever,
+// which makes a periodised program look like a flat one - the coach's own
+// reaction to seeing it was that the program was bad.
+//
+// A week is counted from `started_on`, not from the first logged session: a
+// program that starts on a Monday is in week 1 all that week whether or not
+// anyone trained, and an athlete who misses a week does not get to rewind it.
+function programWeekFor(program, dateIso) {
+  const start = program?.startedOn || program?.started_on;
+  if (!start || !dateIso) return null;
+  const a = new Date(start + "T00:00:00");
+  const b = new Date(dateIso + "T00:00:00");
+  if (isNaN(a) || isNaN(b)) return null;
+  // Before the start date the program reads as its first week rather than as
+  // week zero or a negative, so a coach previewing next month's plan sees
+  // something sensible instead of nothing.
+  const days = Math.floor((b - a) / 86400000);
+  return days < 0 ? 1 : Math.floor(days / 7) + 1;
+}
+
+// ---------- what an exercise becomes in a given week ----------
+//
+// An exercise may carry `byWeek`: { "3": { name, sets, reps, rpe, rest, skip } }.
+// An entry applies FROM its week until the next one, which is what lets the
+// same mechanism express both shapes a real program uses:
+//
+//   * a block - one entry at the week the block starts, changing the movement
+//   * a weekly wave - an entry per week, changing only the numbers
+//
+// Anything the entry does not mention keeps its base value, so a week that only
+// changes the load does not have to restate the movement, and a program with no
+// byWeek at all behaves exactly as it does today.
+function weekEntryFor(exercise, week) {
+  const map = exercise?.byWeek;
+  if (!map || !week) return null;
+  let bestWeek = 0;
+  let best = null;
+  Object.keys(map).forEach((k) => {
+    const n = Number(k);
+    if (!Number.isFinite(n) || n < 1 || n > week) return;
+    if (n > bestWeek) { bestWeek = n; best = map[k]; }
+  });
+  return best;
+}
+
+// Returns null when the week drops the movement entirely - a deload that omits
+// Nordics, a fight week that cuts the conditioning. Callers must treat null as
+// "not in this session" rather than as an error.
+function resolveExerciseForWeek(exercise, week) {
+  if (!exercise) return exercise;
+  const entry = weekEntryFor(exercise, week);
+  if (!entry) return exercise;
+  if (entry.skip) return null;
+  const out = { ...exercise };
+  ["name", "sets", "reps", "rpe", "rest", "phase"].forEach((k) => {
+    if (entry[k] !== undefined && entry[k] !== null) out[k] = entry[k];
+  });
+  // The resolved exercise keeps its identity: same id, so a log written against
+  // it still lines up week to week, and `byWeek` stays attached so the coach's
+  // editor can still see the whole arc.
+  return out;
+}
+
+function resolveDayForWeek(day, week) {
+  if (!day || !week) return day;
+  const exercises = (day.exercises || [])
+    .map((e) => resolveExerciseForWeek(e, week))
+    .filter(Boolean);
+  return { ...day, exercises };
+}
+
+// True when anything at all in this day changes across the program. Drives
+// whether a week strip is worth showing: a program written as one repeating
+// week should not grow a control that does nothing.
+function dayHasWeeklyPlan(day) {
+  return (day?.exercises || []).some(e => e && e.byWeek && Object.keys(e.byWeek).length > 0);
+}
+
+function programHasWeeklyPlan(program) {
+  return (program?.days || []).some(dayHasWeeklyPlan);
+}
+
+// What changed between two weeks, for the "this week vs last week" line an
+// athlete actually reads. Compares the RESOLVED exercises, so a movement that
+// is unchanged in a week with no entry correctly reports nothing.
+function weekChanges(day, week) {
+  if (!day || !week || week < 2) return [];
+  const now = resolveDayForWeek(day, week).exercises || [];
+  const before = resolveDayForWeek(day, week - 1).exercises || [];
+  const byId = {};
+  before.forEach((e, i) => { byId[e.id != null ? e.id : "i" + i] = e; });
+  const out = [];
+  now.forEach((e, i) => {
+    const was = byId[e.id != null ? e.id : "i" + i];
+    if (!was) { out.push({ kind: "added", now: e }); return; }
+    if (was.name !== e.name) { out.push({ kind: "movement", was, now: e }); return; }
+    if (String(was.sets) !== String(e.sets) || String(was.reps) !== String(e.reps)) {
+      out.push({ kind: "load", was, now: e });
+    }
+  });
+  return out;
+}
+
 function isDayScheduledOn(day, ds) {
   if (!day?.weekday) return false;
   const wd = WEEKDAY_ORDER[(new Date(ds + "T00:00:00").getDay() + 6) % 7];
@@ -10045,7 +10172,12 @@ function CoachProfile({ state, setState, nav }) {
 // ============================================================
 
 function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
-  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  // Displayed only. The raw program is what any editor and every save
+  // path must see: resolving a week and then writing it back would burn
+  // this week's numbers into the program and destroy the other 25.
+  const myProgram = programForDate(
+    state.me.customProgram || state.programs.find(p => p.id === state.me.program),
+    todayISO());
   // The day actually scheduled for today. This was hardcoded to days[0], so
   // "Today's Focus" announced Day 1 every day of the week regardless of the
   // weekday each day is pinned to.
@@ -12117,7 +12249,12 @@ function LastSessionRecap({ session }) {
 }
 
 function Workout({ state, setState, nav, dayId }) {
-  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  // Displayed only. The raw program is what any editor and every save
+  // path must see: resolving a week and then writing it back would burn
+  // this week's numbers into the program and destroy the other 25.
+  const myProgram = programForDate(
+    state.me.customProgram || state.programs.find(p => p.id === state.me.program),
+    todayISO());
   // Run the day the athlete actually chose. This used to be hardcoded to
   // days[0], so tapping Start on Day 3 handed you Day 1's exercises and there
   // was no way to run any day but the first. Falls back to the day scheduled
