@@ -1815,12 +1815,14 @@ function daysBetweenISO(fromIso, toIso) {
 }
 
 function currentProgramWeek(program, todayStr = todayISO()) {
+  // Delegates to programWeekFor so there is exactly one answer in the app to
+  // "which week is it". This wrapper keeps the contract its callers rely on:
+  // an unstarted program reads as week 1 rather than nothing, and nothing runs
+  // past the final week.
   const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
-  const start = program?.startedOn;
-  if (!start) return 1;
-  const days = daysBetweenISO(start, todayStr);
-  if (days == null || days < 0) return 1;
-  return Math.min(total, Math.floor(days / 7) + 1);
+  const week = programWeekFor(program, todayStr);
+  if (!week) return 1;
+  return Math.min(total, week);
 }
 
 // The same count with no clamp, and null rather than 1 for a date outside the
@@ -1832,11 +1834,15 @@ function currentProgramWeek(program, todayStr = todayISO()) {
 // people. It also ignores `weeks`, so a program missing that field still has
 // working history instead of being frozen at week 1 forever.
 function absoluteProgramWeek(program, dateStr) {
+  // Its own contract: a date before the program started is NOT week 1 here,
+  // it is nothing, because this one answers "which week was that session in"
+  // and a session before the start belongs to no week. The arithmetic itself
+  // is programWeekFor's, so the app has one definition of a week.
   const start = program?.startedOn;
   if (!start || !dateStr) return null;
   const days = daysBetweenISO(start, dateStr);
   if (days == null || days < 0) return null;
-  return Math.floor(days / 7) + 1;
+  return programWeekFor(program, dateStr);
 }
 
 // ---------- putting the program on a real calendar ----------
@@ -2074,7 +2080,16 @@ function applyProgression(exercise, weekInfo) {
 // deload. Order matters — the deload backs off from the week's own target
 // rather than from the phase peak, so a deload after a hard week is a real
 // drop rather than a nominal one.
-function prescribeForWeek(exercise, plan, week) {
+function prescribeForWeek(exercise, plan, week, authored = false) {
+  // When the coach has written the weeks out, they are the authority and the
+  // generated progression below is switched off entirely. Running both would
+  // ramp an authored 3 x 8 @ 65% into a number nobody prescribed, which is
+  // worse than showing week 1 forever: it looks deliberate.
+  //
+  // Returns null when the authored plan drops the movement that week. Callers
+  // filter those out.
+  if (authored) return resolveExerciseForWeek(exercise, week);
+
   const info = weekWithinPhase(plan, week);
   if (!info) return exercise;
 
@@ -4210,12 +4225,26 @@ function persistMyProgramDays(state, setState, updateDays) {
   }
 }
 
+// A readable message out of whatever shape an error arrives in - a Supabase
+// error, a thrown network failure, a bare string - so the screen never shows a
+// blank "{}" again. Module level because the login screen needs it as much as
+// the app shell does, and two copies would drift.
+function errText(e) {
+  if (!e) return "Something went wrong. Please try again.";
+  if (typeof e === "string") return e;
+  if (e.message) return e.message;
+  if (e.error_description) return e.error_description;
+  try { const s = JSON.stringify(e); return s === "{}" ? "Unknown error — check your connection and try again." : s; }
+  catch { return String(e); }
+}
+
 function LoginScreen({ onLogin, onSwitchToSignup }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [sendingReset, setSendingReset] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   const submit = async () => {
@@ -4227,15 +4256,28 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
   };
 
   const forgotPassword = async () => {
+    if (sendingReset) return;
     if (!/\S+@\S+\.\S+/.test(email)) { setError("Enter your email above first, then tap 'Forgot password?'"); return; }
     setError(null);
-    // Sent back to this same app, where the recovery link opens the "choose a
-    // new password" screen. Without a redirect and a screen to land on, the
-    // link just signed the person in and never asked for a new password - so
-    // the next time they signed out they were locked out all over again.
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
-    if (error) setError(error.message);
-    else setResetSent(true);
+    setResetSent(false);
+    setSendingReset(true);
+    try {
+      // Sent back to this same app, where the recovery link opens the "choose a
+      // new password" screen. Without a redirect and a screen to land on, the
+      // link just signed the person in and never asked for a new password - so
+      // the next time they signed out they were locked out all over again.
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+      if (error) setError(errText(error));
+      else setResetSent(true);
+    } catch (err) {
+      // Without this the whole thing was silent. resetPasswordForEmail rejects
+      // on a dropped connection, and the mail provider returning 500 - which is
+      // what a sending account still in test mode does for every address but
+      // its owner's - surfaced as absolutely nothing happening on the screen.
+      setError(errText(err));
+    } finally {
+      setSendingReset(false);
+    }
   };
 
   return (
@@ -4263,8 +4305,9 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
           {loading ? "Logging in..." : "Log In"}
         </Btn>
 
-        <button onClick={forgotPassword} className="w-full text-center text-sm mt-4" style={{ color: C.sub }}>
-          Forgot password?
+        <button onClick={forgotPassword} disabled={sendingReset}
+          className="w-full text-center text-sm mt-4" style={{ color: C.sub, opacity: sendingReset ? 0.6 : 1 }}>
+          {sendingReset ? "Sending…" : "Forgot password?"}
         </button>
         <button onClick={onSwitchToSignup} className="w-full text-center text-sm mt-3" style={{ color: C.sub }}>
           New here? <span style={{ color: C.orange, fontWeight: 600 }}>Create an account</span>
@@ -11004,7 +11047,10 @@ function AthleteProgram({ state, setState, nav }) {
   // The ramp AND the deload, for whichever week is on screen. This used to
   // apply only the deload, so weeks 1, 2 and 3 of a phase all showed the
   // phase's peak difficulty and the program appeared never to progress.
-  const weekExercises = sortedExercises.map(x => prescribeForWeek(x, plan, shownWeek));
+  const authoredWeeks = programHasWeeklyPlan(myProgram);
+  const weekExercises = sortedExercises
+    .map(x => prescribeForWeek(x, plan, shownWeek, authoredWeeks))
+    .filter(Boolean);
 
   const blocks = buildSessionBlocks(weekExercises);
   const dayMinutes = blocks.reduce((sum, b) => sum + b.minutes, 0);
@@ -12249,12 +12295,7 @@ function LastSessionRecap({ session }) {
 }
 
 function Workout({ state, setState, nav, dayId }) {
-  // Displayed only. The raw program is what any editor and every save
-  // path must see: resolving a week and then writing it back would burn
-  // this week's numbers into the program and destroy the other 25.
-  const myProgram = programForDate(
-    state.me.customProgram || state.programs.find(p => p.id === state.me.program),
-    todayISO());
+  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   // Run the day the athlete actually chose. This used to be hardcoded to
   // days[0], so tapping Start on Day 3 handed you Day 1's exercises and there
   // was no way to run any day but the first. Falls back to the day scheduled
@@ -12594,7 +12635,10 @@ function Workout({ state, setState, nav, dayId }) {
   // walks one list rather than needing separate navigation, counting and
   // rendering for grouped and ungrouped work.
   const blocks = groupSessionExercises(
-    sortedExercises.map(raw => prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks), currentProgramWeek(myProgram, sessionDay)))
+    sortedExercises
+      .map(raw => prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks),
+                                   currentProgramWeek(myProgram, sessionDay), programHasWeeklyPlan(myProgram)))
+      .filter(Boolean)
   );
   const safeIdx = Math.min(Math.max(0, exIdx), blocks.length - 1);
   const block = blocks[safeIdx];
@@ -12745,7 +12789,11 @@ function Workout({ state, setState, nav, dayId }) {
       // Logged against the week's own prescription, ramp included. Recording
       // the phase peak instead would mark an early week as a failure — three
       // of five sets at an intensity that week never asked for.
-      const item = prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks), programWeek);
+      const item = prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks), programWeek,
+                                    programHasWeeklyPlan(myProgram));
+      // The authored plan can drop a movement this week - a deload that omits
+      // Nordics. Nothing was prescribed, so nothing is logged against it.
+      if (!item) return null;
       const resolved = exById(swappedMap[item.id] || item.exerciseId);
       const checked = setChecks[item.id] || [];
       const typed = setWeights[item.id] || [];
@@ -12792,7 +12840,7 @@ function Workout({ state, setState, nav, dayId }) {
         sets,
         topWeight: topSetWeight(sets),
       };
-    });
+    }).filter(Boolean);
     const setsCompleted = exerciseDetail.reduce((n, e) => n + e.setsCompleted, 0);
     const setsPrescribed = exerciseDetail.reduce((n, e) => n + e.setsPrescribed, 0);
 
@@ -18198,19 +18246,6 @@ function AppInner() {
     await supabase.from("notifications").delete().eq("id", id);
   }, []);
 
-
-  // Returns an error string on failure, or undefined on success (caller navigates away on success).
-  // Extracts a readable message no matter what shape the error comes in —
-  // a Supabase error, a network failure, or anything else — so we never show
-  // a blank "{}" again.
-  const errText = (e) => {
-    if (!e) return "Something went wrong. Please try again.";
-    if (typeof e === "string") return e;
-    if (e.message) return e.message;
-    if (e.error_description) return e.error_description;
-    try { const s = JSON.stringify(e); return s === "{}" ? "Unknown error — check your connection and try again." : s; }
-    catch { return String(e); }
-  };
 
   // Signup is two phases because email confirmation may sit between them:
   // create the auth account, then (once a session exists) write the profile.
