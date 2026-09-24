@@ -107,9 +107,108 @@ const EXERCISE_IMAGE_INDEX = (() => {
   return index;
 })();
 
+// Photos the coach has shot, keyed by normalised name.
+//
+// A plain module-level object rather than React state, because exerciseImage()
+// is called from a dozen components that have no reason to know where a
+// picture came from - the workout screen, the program editor, the generator's
+// preview, the library. Threading a map through all of them to answer "is
+// there a picture" would be a worse app for no gain. `photoVersion` in state
+// is what makes the tree re-render after an upload.
+const UPLOADED_EXERCISE_PHOTOS = {};
+const EXERCISE_PHOTO_BUCKET = "exercise-photos";
+
+// A coach's own photo wins over the built-in one: if they went and shot a
+// better Back Squat than the stock image, that is the one their athletes
+// should see.
 function exerciseImage(name) {
   if (!name) return null;
-  return EXERCISE_IMAGES[name] || EXERCISE_IMAGE_INDEX[normalizeExerciseName(name)] || null;
+  const key = normalizeExerciseName(name);
+  return UPLOADED_EXERCISE_PHOTOS[key] || EXERCISE_IMAGES[name] || EXERCISE_IMAGE_INDEX[key] || null;
+}
+
+// Every photo in one query at sign-in. They are public URLs, so the browser
+// and the CDN cache them and a second athlete opening the same exercise pays
+// nothing - which is the whole reason this bucket is public rather than
+// minting a signed URL per picture per screen.
+async function loadExercisePhotos() {
+  const { data, error } = await supabase
+    .from("exercise_photos")
+    .select("name_key, storage_path");
+  if (error) {
+    console.error("Couldn't load exercise photos:", error.message);
+    return 0;
+  }
+  (data || []).forEach(row => {
+    const { data: pub } = supabase.storage.from(EXERCISE_PHOTO_BUCKET).getPublicUrl(row.storage_path);
+    if (pub?.publicUrl) UPLOADED_EXERCISE_PHOTOS[row.name_key] = pub.publicUrl;
+  });
+  return (data || []).length;
+}
+
+// Phone cameras produce 3-6MB images and a demonstration photo needs none of
+// that. Resized and re-encoded in the browser BEFORE upload, so a coach
+// shooting forty of these on gym wifi isn't sending 200MB.
+function shrinkImage(file, maxEdge = 900, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        blob => (blob ? resolve(blob) : reject(new Error("Couldn't process that image."))),
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file isn't an image we can read.")); };
+    img.src = url;
+  });
+}
+
+// Upload, then record it. A random file name rather than the exercise name:
+// the bucket is public, and a guessable URL would make the library browsable
+// by anyone who could guess a movement.
+// Coaches curate; athletes read. A photo is shared by every athlete with that
+// movement in their program, so one athlete replacing it changes what everyone
+// else sees. coachProfile.id is set only for a coach account - the athlete
+// hydrate explicitly nulls it - and that holds true for a coach who is in
+// training mode, which is correct: still their library.
+function canCurateExercisePhotos(state) {
+  return !!state?.coachProfile?.id;
+}
+
+async function uploadExercisePhoto(name, file, userId) {
+  const key = normalizeExerciseName(name);
+  if (!key) throw new Error("That exercise has no name to attach a photo to.");
+
+  const blob = await shrinkImage(file);
+  const path = `${key.replace(/\s+/g, "-")}/${crypto.randomUUID()}.jpg`;
+
+  const { error: upErr } = await supabase.storage
+    .from(EXERCISE_PHOTO_BUCKET)
+    .upload(path, blob, { contentType: "image/jpeg", upsert: false });
+  if (upErr) throw new Error(upErr.message || "Couldn't upload that photo.");
+
+  const { error: rowErr } = await supabase
+    .from("exercise_photos")
+    .upsert({ name_key: key, display_name: name, storage_path: path, uploaded_by: userId, updated_at: new Date().toISOString() },
+            { onConflict: "name_key" });
+  if (rowErr) {
+    // Don't leave the file orphaned in the bucket when the row didn't land.
+    await supabase.storage.from(EXERCISE_PHOTO_BUCKET).remove([path]);
+    throw new Error(rowErr.message || "Uploaded, but couldn't save it against the exercise.");
+  }
+
+  const { data: pub } = supabase.storage.from(EXERCISE_PHOTO_BUCKET).getPublicUrl(path);
+  if (pub?.publicUrl) UPLOADED_EXERCISE_PHOTOS[key] = pub.publicUrl;
+  return pub?.publicUrl || null;
 }
 
 function hasExerciseImage(name) {
@@ -7250,7 +7349,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
         athlete={athlete} onImport={importProgram} saving={importing} />
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
-      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       <RemoveAthleteModal
         open={offRosterOpen}
         onClose={() => setOffRosterOpen(false)}
@@ -7978,7 +8079,9 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
         <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
           onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
-        <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+        <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       </div>
     );
   }
@@ -10816,7 +10919,9 @@ function AthleteProgram({ state, setState, nav }) {
         exercises={state.exercises}
         defaultPhase={pickerFor?.block?.phases?.[0]}
         onPick={(ex) => addExerciseToMyDay(pickerFor.dayId, ex, pickerFor.block)} />
-      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
     </div>
   );
@@ -14005,9 +14110,28 @@ function AthleteProfile({ state, setState, nav }) {
 // SHARED PAGES
 // ============================================================
 
-function ExerciseDetailModal({ open, onClose, exercise }) {
+function ExerciseDetailModal({ open, onClose, exercise, canAddPhoto, userId, onPhotoAdded }) {
+  // Hooks before the early return, or the count changes with `exercise`.
+  const fileRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [photoError, setPhotoError] = useState("");
+
   if (!exercise) return null;
   const img = exerciseImage(exercise.name);
+
+  const pickPhoto = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";                 // re-picking the same file must fire again
+    if (!file) return;
+    setUploading(true); setPhotoError("");
+    try {
+      await uploadExercisePhoto(exercise.name, file, userId);
+      onPhotoAdded?.();
+    } catch (err) {
+      setPhotoError(err.message || "Couldn't add that photo.");
+    }
+    setUploading(false);
+  };
   const phaseLabel = PHASES.find(p => p.key === exercise.phase)?.label || exercise.phase;
   const phaseColors = {
     warmup_general: "#5B8DEF", warmup_specific: "#9CAA7A", compound: "#3B6FED",
@@ -14030,6 +14154,22 @@ function ExerciseDetailModal({ open, onClose, exercise }) {
             </div>
           )}
       </div>
+      {canAddPhoto && (
+        <div className="mb-3">
+          {/* capture is deliberately absent: a coach is as likely to be
+              picking a shot from Friday as taking one right now. */}
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickPhoto} />
+          <button onClick={() => fileRef.current?.click()} disabled={uploading}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+            style={{ background: img ? C.panel : `${C.orange}18`, color: img ? C.sub : C.orange, border: `1px dashed ${img ? C.border : C.orange + "66"}` }}>
+            <ImageIcon size={15} />
+            {uploading ? "Uploading…" : img ? "Replace photo" : "Add photo"}
+          </button>
+          {photoError && (
+            <div className="rounded-lg p-2.5 mt-2 text-xs" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{photoError}</div>
+          )}
+        </div>
+      )}
       <div className="mb-1 text-xl font-bold" style={{ fontFamily: "Inter", color: C.text }}>{exercise.name}</div>
       <div className="flex flex-wrap gap-2 mt-2 mb-4">
         <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${accent}22`, color: accent }}>{phaseLabel}</span>
@@ -14273,7 +14413,9 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
       </div>
 
       {isCoach && <AddExerciseModal open={addOpen} onClose={() => setAddOpen(false)} onAdd={addExercise} />}
-      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
 
       <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete Exercise">
         <p className="text-sm mb-5" style={{ color: C.text }}>
@@ -14537,7 +14679,9 @@ function CalendarViewPage({ state, setState, nav }) {
         onRemoveSkip={removeSkip}
         colorOf={(id) => programDayColor(myProgram, id)}
       />
-      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise} />
+      <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       <ClearScheduleModal open={clearOpen} onClose={() => setClearOpen(false)} days={(myProgram?.days || []).filter(d => d.weekday)} onApply={bulkClear} />
     </div>
   );
@@ -16780,6 +16924,10 @@ const initialState = () => ({
   // and on a coach account (where `me` is never populated) that literal "a1"
   // was being sent to Postgres as a uuid and rejected.
   me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, trainingDays: [] },
+  // Bumped after a photo upload. exerciseImage() reads a module-level map that
+  // React cannot see, so without this the picture appears only on the next
+  // navigation.
+  photoVersion: 0,
   coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS },
   payments: { rates: [], clientBilling: {}, methods: [] },
   groups: [], // coach's roster groups (pro team / amateur / youth / gen-pop)
@@ -17037,6 +17185,12 @@ function AppInner() {
         return additions.length ? { ...s, exercises: [...s.exercises, ...additions] } : s;
       });
     }
+
+    // Before the coach/athlete split, because both sides show the same photos:
+    // an athlete needs them in their workout, a coach needs them to see which
+    // movements still have none.
+    const photoCount = await loadExercisePhotos();
+    if (photoCount) setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }));
 
     // Follows the user across devices. localStorage only knows what THIS
     // browser last chose; the profile is the record that travels.
