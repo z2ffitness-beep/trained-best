@@ -180,6 +180,57 @@ function shrinkImage(file, maxEdge = 900, quality = 0.82) {
 // else sees. coachProfile.id is set only for a coach account - the athlete
 // hydrate explicitly nulls it - and that holds true for a coach who is in
 // training mode, which is correct: still their library.
+// One-time move of the built-in photos out of the code and into the bucket.
+//
+// It runs from the BROWSER rather than from a migration, because uploading
+// needs a signed-in coach - storage policies are written against auth.uid(),
+// and there is no service key anywhere near this app on purpose. Once every
+// photo is across, the base64 block comes out of the source and the app file
+// loses about two thirds of its weight.
+async function migrateBuiltInPhotos(userId, onProgress) {
+  const names = Object.keys(EXERCISE_IMAGES);
+  let moved = 0, skipped = 0, failed = 0;
+
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const key = normalizeExerciseName(name);
+    // Already uploaded - a coach's own shot, or a half-finished earlier run.
+    // Never overwrite: their photo is better than the stock one by definition.
+    if (!key || UPLOADED_EXERCISE_PHOTOS[key]) { skipped++; onProgress?.(i + 1, names.length); continue; }
+
+    try {
+      // These are data: URIs; fetch turns one into a Blob without any decoding
+      // by hand. They are already about 29KB, so no resizing.
+      const blob = await (await fetch(EXERCISE_IMAGES[name])).blob();
+      const path = `${key.replace(/\s+/g, "-")}/${crypto.randomUUID()}.jpg`;
+
+      const { error: upErr } = await supabase.storage
+        .from(EXERCISE_PHOTO_BUCKET)
+        .upload(path, blob, { contentType: "image/jpeg", upsert: false });
+      if (upErr) throw upErr;
+
+      const { error: rowErr } = await supabase
+        .from("exercise_photos")
+        .upsert({ name_key: key, display_name: name, storage_path: path, uploaded_by: userId, updated_at: new Date().toISOString() },
+                { onConflict: "name_key" });
+      if (rowErr) {
+        await supabase.storage.from(EXERCISE_PHOTO_BUCKET).remove([path]);
+        throw rowErr;
+      }
+
+      const { data: pub } = supabase.storage.from(EXERCISE_PHOTO_BUCKET).getPublicUrl(path);
+      if (pub?.publicUrl) UPLOADED_EXERCISE_PHOTOS[key] = pub.publicUrl;
+      moved++;
+    } catch (err) {
+      console.error("Couldn't move", name, err?.message || err);
+      failed++;
+    }
+    onProgress?.(i + 1, names.length);
+  }
+
+  return { total: names.length, moved, skipped, failed };
+}
+
 function canCurateExercisePhotos(state) {
   return !!state?.coachProfile?.id;
 }
@@ -3709,7 +3760,23 @@ function HeightDial({ unit, valueCm, onChange }) {
 
 const SPORTS = ["MMA", "General Fitness", "New to training (weightlifting focus)"];
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
-const INJURY_AREAS = ["None currently", "Shoulder", "Knee", "Low back", "Ankle", "Hip", "Elbow / Wrist"];
+// Head to toe, so someone scanning for their own complaint finds it where they
+// expect. Neck, thigh/hamstring and shin were missing entirely: a fighter with
+// neck issues could only tick Shoulder and type the rest into the notes box,
+// and the generator reads the TICKED AREAS, not the note - so the neck work
+// never made it into a single warm-up. The prompt already knew how to handle
+// all of these; only the picker didn't offer them.
+const INJURY_AREAS = [
+  "None currently",
+  "Neck",
+  "Shoulder",
+  "Elbow / Wrist",
+  "Low back",
+  "Hip / Groin",
+  "Thigh / Hamstring",
+  "Knee",
+  "Ankle / Foot / Shin",
+];
 const WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const WEEKDAY_SHORT = { Monday: "M", Tuesday: "T", Wednesday: "W", Thursday: "T", Friday: "F", Saturday: "S", Sunday: "S" };
 
@@ -5083,8 +5150,9 @@ WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
   • Shoulder: Shoulder CARs, light-band External Rotation, Band Pull Aparts, Scapular Push Ups, Wall Slides.
   • Knee: Banded Terminal Knee Extension, Spanish Squat isometric hold, slow Step Downs, Knee CARs.
   • Low back: Cat-Cow + Bird Dog, Dead Bugs, Glute Bridge, Hip Hinge drill with a dowel.
-  • Ankle / foot / shin: Ankle CARs, Ankle Banded Dorsiflexion Drill, slow Calf Raises, Single Leg Balance Reach, toe yoga.
-  • Hip / groin / hamstring: Hip CARs, 90/90 Hip Switch, Banded Lateral Walks, Adductor Rockbacks, Leg Swings.
+  • Ankle / Foot / Shin: Ankle CARs, Ankle Banded Dorsiflexion Drill, slow Calf Raises, Single Leg Balance Reach, toe yoga.
+  • Hip / Groin: Hip CARs, 90/90 Hip Switch, Banded Lateral Walks, Adductor Rockbacks, Leg Swings.
+  • Thigh / Hamstring: Leg Swings, Hamstring Sliders, Single Leg RDL with a dowel for position, Adductor Rockbacks, Cossack Squat to depth.
   • Elbow / wrist: Wrist CARs, light Band Wrist Flexion/Extension, Forearm Pronation/Supination with a light weight.
   • Neck: Neck CARs, Chin Tucks, Banded Neck Iso Holds.
 - This is performance training, not physiotherapy: the targeted drills are mobility and activation to prepare the area, never rehab protocols or treatment claims. For a CURRENT injury, keep the drills easy and pain-free and mention in the rationale that pain during a drill means skip it and check with a physio.
@@ -9266,6 +9334,14 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
 function CoachProfile({ state, setState, nav }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [settingError, setSettingError] = useState(null);
+  // One-time move of the built-in exercise thumbnails out of the bundle and
+  // into storage. They are 1.9MB of base64 sitting in the JS file, which every
+  // athlete downloads on every fresh load whether or not they ever open an
+  // exercise. Once they live in the bucket the block comes out of the code and
+  // the app loads in a fraction of the time on gym wifi.
+  const [migrating, setMigrating] = useState(false);
+  const [migrateDone, setMigrateDone] = useState(null);
+  const [migrateAt, setMigrateAt] = useState(0);
   const totalAthletes = state.athletes.length;
   // Counts programs that are actually with an athlete. This used to count
   // TEMPLATES, which meant a coach with twelve athletes all training saw the
@@ -9349,6 +9425,34 @@ function CoachProfile({ state, setState, nav }) {
     }
   };
 
+
+  // Recomputed whenever a photo lands, because UPLOADED_EXERCISE_PHOTOS is a
+  // plain module-level map - it changes without React knowing, so photoVersion
+  // is what actually drives this.
+  const builtInNames = Object.keys(EXERCISE_IMAGES);
+  const stillInCode = useMemo(
+    () => builtInNames.filter(n => !UPLOADED_EXERCISE_PHOTOS[normalizeExerciseName(n)]).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.photoVersion, builtInNames.length]
+  );
+
+  const runMigration = async () => {
+    if (migrating || !coach.id) return;
+    setMigrating(true);
+    setMigrateDone(null);
+    setMigrateAt(0);
+    try {
+      const result = await migrateBuiltInPhotos(coach.id, (done) => setMigrateAt(done));
+      setMigrateDone(result);
+    } catch (err) {
+      setMigrateDone({ total: builtInNames.length, moved: 0, skipped: 0, failed: builtInNames.length });
+      setSettingError("Couldn't move the photos. Check your connection and tap it again — anything already moved stays moved.");
+    } finally {
+      setMigrating(false);
+      // Force every screen holding an exercise image to re-read the map.
+      setState(s2 => ({ ...s2, photoVersion: (s2.photoVersion || 0) + 1 }));
+    }
+  };
   // Each athlete carries their own `checkins` map, loaded with the roster.
   // There used to be a single shared value here taken from the coach's own
   // state, which is never populated on a coach account.
@@ -9556,6 +9660,52 @@ function CoachProfile({ state, setState, nav }) {
             </button>
           ))}
         </div>
+
+        {/* Maintenance, not a setting. Shown only while there is something left
+            to move, so it disappears for good once the job is done rather than
+            sitting on the profile forever inviting a pointless second run. */}
+        {stillInCode > 0 && (
+          <div className="rounded-xl p-4 mt-6" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.blue}22` }}>
+                <ImageIcon size={18} style={{ color: C.blue }} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold" style={{ color: C.text }}>Speed up the app</div>
+                <div className="text-xs mt-0.5 leading-relaxed" style={{ color: C.sub }}>
+                  {migrating
+                    ? `Moving photos… ${migrateAt} of ${builtInNames.length}`
+                    : `${stillInCode} exercise photo${stillInCode === 1 ? "" : "s"} are still stored inside the app itself. Moving them makes the app load much faster for you and your athletes. One tap, about a minute, safe to leave and come back to.`}
+                </div>
+              </div>
+            </div>
+
+            {migrating && (
+              <div className="h-1.5 rounded-full mt-3 overflow-hidden" style={{ background: C.border }}>
+                <div className="h-full rounded-full transition-all"
+                  style={{ background: C.blue, width: `${Math.round((migrateAt / Math.max(1, builtInNames.length)) * 100)}%` }} />
+              </div>
+            )}
+
+            {migrateDone && !migrating && (
+              <div className="text-xs mt-3 flex items-start gap-2" style={{ color: migrateDone.failed ? C.orange : C.olive }}>
+                {migrateDone.failed
+                  ? <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                  : <CheckCircle2 size={13} className="shrink-0 mt-0.5" />}
+                <span>
+                  Moved {migrateDone.moved}.
+                  {migrateDone.skipped ? ` ${migrateDone.skipped} were already done.` : ""}
+                  {migrateDone.failed ? ` ${migrateDone.failed} didn't make it — tap again to finish those.` : ""}
+                </span>
+              </div>
+            )}
+
+            <Btn variant="secondary" className="w-full mt-3" icon={migrating ? Loader2 : RefreshCw}
+              disabled={migrating || !coach.id} onClick={runMigration}>
+              {migrating ? "Moving…" : migrateDone?.failed ? "Finish the rest" : "Move photos to storage"}
+            </Btn>
+          </div>
+        )}
 
         <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
