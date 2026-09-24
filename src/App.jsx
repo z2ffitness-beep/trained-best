@@ -319,8 +319,8 @@ const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;6
 // suffixes: the file is full of `${C.orange}22` to make a tinted background,
 // and "var(--orange)22" is not a colour. Hex strings keep that working.
 const DARK_PALETTE = {
-  bg: "#000000", panel: "#111214", panelAlt: "#0A0A0B", border: "#222428",
-  text: "#FFFFFF", sub: "#9BA1AA", faint: "#5C6066",
+  bg: "#070910", panel: "#10131A", panelAlt: "#0B0E15", border: "#1E242F",
+  text: "#FFFFFF", sub: "#9BA1AA", faint: "#767E8C",
   orange: "#3B6FED", blue: "#5B8DEF", steel: "#2A3A52", olive: "#34C77B", oliveDeep: "#1F8F58",
   amber: "#F0A93C", red: "#FF5C5C",
   gradFrom: "#3B6FED", gradTo: "#6E9AF8",
@@ -342,7 +342,7 @@ const LIGHT_PALETTE = {
   // flat white sheet: the cards never lifted off the page and the insets never
   // sank into the cards. A proper grey gives the layout its structure back.
   bg: "#E8EBF0", panel: "#FFFFFF", panelAlt: "#F1F3F7", border: "#CFD6E0",
-  text: "#0B0D12", sub: "#4E555F", faint: "#79808B",
+  text: "#0B0D12", sub: "#4E555F", faint: "#6A717C",
   orange: "#2A5FD9", blue: "#3B6FED", steel: "#C6D3E8", olive: "#15855A", oliveDeep: "#0E6343",
   amber: "#9A6100", red: "#CE3434",
   gradFrom: "#3B6FED", gradTo: "#6E9AF8",
@@ -371,6 +371,20 @@ function resolveTheme(mode) {
   if (mode === "dark") return "dark";
   return prefersLight() ? "light" : "dark";
 }
+
+// The display face. Every heading, screen title, avatar initial and big
+// number uses it; body copy and form text stay on Inter, which is easier to
+// read at 13px. Archivo is wider and more industrial in its heavy weights, so
+// a title reads as a title without having to be bigger.
+const DISPLAY = "Archivo, Inter, system-ui, sans-serif";
+
+// The exercise photos are instructional cards shot on a near-white sweep, with
+// the movement name and the step captions printed into the image. Two things
+// follow. They must never be cropped to fill a tile - object-cover eats the
+// title and the captions, which are the half that teaches. And the tile behind
+// one has to be near-white in BOTH themes, or a white photo sits in a dark
+// letterbox and reads as a broken image rather than a photograph.
+const PHOTO_TILE = "#F2F4F8";
 
 const C = { ...DARK_PALETTE };
 
@@ -3545,7 +3559,7 @@ function ChalkDivider({ label }) {
   return (
     <div className="flex items-center gap-3 my-6">
       <div className="h-px flex-1" style={{ background: `linear-gradient(90deg, transparent, ${C.border}, transparent)` }} />
-      {label && <span className="text-xs uppercase tracking-[0.2em] font-semibold shrink-0" style={{ color: C.sub, fontFamily: "Inter" }}>{label}</span>}
+      {label && <span className="text-xs uppercase tracking-[0.2em] font-semibold shrink-0" style={{ color: C.sub, fontFamily: DISPLAY }}>{label}</span>}
       <div className="h-px flex-1" style={{ background: `linear-gradient(90deg, transparent, ${C.border}, transparent)` }} />
     </div>
   );
@@ -3576,7 +3590,7 @@ function Avatar({ initials, size = 40, accent = C.orange, photoUrl }) {
   }
   return (
     <div className="rounded-full flex items-center justify-center font-bold shrink-0"
-      style={{ width: size, height: size, background: `${accent}22`, color: accent, fontFamily: "Inter", fontSize: size * 0.36 }}>
+      style={{ width: size, height: size, background: `${accent}22`, color: accent, fontFamily: DISPLAY, fontSize: size * 0.36 }}>
       {initials}
     </div>
   );
@@ -3646,7 +3660,7 @@ function Modal({ open, onClose, title, children, wide }) {
         // pushed the bottom of tall sheets off screen.
         style={{ background: C.panel, border: `1px solid ${C.border}`, paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div className="flex items-center justify-between px-5 py-4 shrink-0" style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}>
-          <h3 className="font-semibold text-lg" style={{ fontFamily: "Inter", color: C.text }}>{title}</h3>
+          <h3 className="font-semibold text-lg" style={{ fontFamily: DISPLAY, color: C.text }}>{title}</h3>
           <button onClick={onClose} style={{ color: C.sub }}><X size={20} /></button>
         </div>
         <div className="p-5 overflow-y-auto">{children}</div>
@@ -3952,7 +3966,7 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
       <Dumbbell size={40} style={{ color: C.orange }} />
-      <h1 className="mt-4 text-3xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>WELCOME BACK</h1>
+      <h1 className="mt-4 text-3xl tracking-tight text-center" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>WELCOME BACK</h1>
 
       <div className="mt-10 w-full max-w-sm">
         <Field label="Email">
@@ -4021,7 +4035,7 @@ function SetNewPasswordScreen({ onDone }) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
       <Shield size={40} style={{ color: C.orange }} />
-      <h1 className="mt-4 text-2xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>
+      <h1 className="mt-4 text-2xl tracking-tight text-center" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>
         {done ? "PASSWORD CHANGED" : "CHOOSE A NEW PASSWORD"}
       </h1>
       <div className="mt-8 w-full max-w-sm">
@@ -4219,8 +4233,8 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
         <Dumbbell size={40} style={{ color: C.orange }} />
-        <h1 className="mt-4 text-4xl tracking-tight text-center" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>TRAINED.BEST</h1>
-        <p className="mt-2 text-sm" style={{ color: C.sub }}>Beyourownhero</p>
+        <h1 className="mt-4 text-4xl tracking-tight text-center" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>TRAINED.BEST</h1>
+        <p className="mt-2 text-sm" style={{ color: C.sub }}>Be your own hero</p>
 
         <div className="mt-12 w-full max-w-sm space-y-3">
           <button onClick={() => chooseRole("coach")}
@@ -4229,7 +4243,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
             <div className="flex items-center gap-3">
               <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Shield size={22} style={{ color: C.orange }} /></div>
               <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I'M A COACH</div>
+                <div className="font-semibold" style={{ color: C.text, fontFamily: DISPLAY }}>I'M A COACH</div>
                 <div className="text-xs mt-0.5" style={{ color: C.sub }}>Build programs, track athletes, message your roster</div>
               </div>
             </div>
@@ -4240,7 +4254,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
             <div className="flex items-center gap-3">
               <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.steel}55` }}><Users size={22} style={{ color: C.blue }} /></div>
               <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>I HAVE A COACH</div>
+                <div className="font-semibold" style={{ color: C.text, fontFamily: DISPLAY }}>I HAVE A COACH</div>
                 <div className="text-xs mt-0.5" style={{ color: C.sub }}>Join your coach's roster with an invite code</div>
               </div>
             </div>
@@ -4251,7 +4265,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
             <div className="flex items-center gap-3">
               <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Zap size={22} style={{ color: C.olive }} /></div>
               <div className="min-w-0">
-                <div className="font-semibold" style={{ color: C.text, fontFamily: "Inter" }}>SELF-GUIDED ATHLETE</div>
+                <div className="font-semibold" style={{ color: C.text, fontFamily: DISPLAY }}>SELF-GUIDED ATHLETE</div>
                 <div className="text-xs mt-0.5" style={{ color: C.sub }}>Get an AI-generated program instantly, train on your own</div>
               </div>
             </div>
@@ -4284,7 +4298,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
       </div>
 
       <div className="flex-1 px-6 overflow-y-auto pb-4">
-        <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: "Inter", color: C.text }}>{stepName}</h2>
+        <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: DISPLAY, color: C.text }}>{stepName}</h2>
         <OnboardingStepBody role={role} stepName={stepName} data={data} setData={setData} />
       </div>
 
@@ -4589,7 +4603,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           {["Male", "Female"].map(opt => (
             <button key={opt} onClick={() => set("sex", opt)} className="rounded-xl p-5 text-center"
               style={{ background: data.sex === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data.sex === opt ? C.orange : C.border}` }}>
-              <span className="font-semibold" style={{ color: data.sex === opt ? C.orange : C.text, fontFamily: "Inter" }}>{opt.toUpperCase()}</span>
+              <span className="font-semibold" style={{ color: data.sex === opt ? C.orange : C.text, fontFamily: DISPLAY }}>{opt.toUpperCase()}</span>
             </button>
           ))}
         </div>
@@ -4903,7 +4917,7 @@ function TopBar({ title, onLogout, right, hideBell = false }) {
   const notif = React.useContext(NotificationContext);
   return (
     <div className="sticky top-0 z-20 flex items-center justify-between gap-3 px-5 py-4 safe-top" style={{ background: `${C.bg}ee`, backdropFilter: "blur(8px)", borderBottom: `1px solid ${C.border}` }}>
-      <h1 className="text-xl font-bold tracking-tight truncate" style={{ fontFamily: "Inter", color: C.text }}>{title}</h1>
+      <h1 className="text-xl font-bold tracking-tight truncate" style={{ fontFamily: DISPLAY, color: C.text }}>{title}</h1>
       <div className="flex items-center gap-3 shrink-0">
         {right}
         {!hideBell && notif?.open && <NotificationBell count={notif.count} onClick={notif.open} />}
@@ -5035,7 +5049,7 @@ function ExerciseSwapModal({ open, onClose, currentExercise, exercises, onSwap, 
     <button onClick={() => { onSwap(exercise, reason); onClose(); }}
       className="w-full text-left rounded-lg p-3 flex items-center gap-3"
       style={{ background: C.bg, border: `1px solid ${highlight ? `${C.olive}66` : C.border}` }}>
-      <div className="rounded-md w-9 h-9 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: C.border }}>
+      <div className="rounded-md w-9 h-9 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: exerciseImage(exercise.name) ? PHOTO_TILE : C.panelAlt }}>
         {exerciseImage(exercise.name)
           ? <img src={exerciseImage(exercise.name)} alt={exercise.name} loading="lazy" className="w-full h-full object-contain" />
           : <Dumbbell size={15} style={{ color: C.faint }} />}
@@ -5815,7 +5829,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
           <div className="space-y-3 max-h-72 overflow-y-auto mb-4">
             {(result.days || []).map((d, i) => (
               <div key={i} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                <div className="text-sm font-semibold mb-1.5" style={{ color: C.text, fontFamily: "Inter" }}>{d.name}</div>
+                <div className="text-sm font-semibold mb-1.5" style={{ color: C.text, fontFamily: DISPLAY }}>{d.name}</div>
                 <div className="space-y-1">
                   {(d.exercises || []).map((x, j) => (
                     <div key={j} className="text-xs flex items-center justify-between gap-2" style={{ color: C.sub }}>
@@ -6133,7 +6147,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
-        <div className="text-2xl" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>Your training</div>
+        <div className="text-2xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>Your training</div>
         <div className="text-sm mt-0.5" style={{ color: C.sub }}>
           The same screening your athletes answer. Once, then your program builds from it.
         </div>
@@ -7288,7 +7302,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             {program.days.map(day => (
               <div key={day.id} className="rounded-xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
                 <div className="flex items-center justify-between mb-1">
-                  <div className="font-semibold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+                  <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
                   <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
                 </div>
                 <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
@@ -7536,7 +7550,7 @@ function WeekAtAGlance({ days, colorOf }) {
                 border: `1px solid ${day ? tone : C.border}`,
               }}>
               <span style={{
-                fontFamily: "Inter", fontWeight: 800, fontSize: 12, lineHeight: 1,
+                fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, lineHeight: 1,
                 color: day ? "#fff" : C.faint,
               }}>
                 {w.slice(0, 3).toUpperCase()}
@@ -7573,7 +7587,7 @@ function WeekdayBlock({ weekday, tone, filled, muted }) {
         // palette's colours are all mid-dark, so white holds up on every one.
         color: filled ? "#fff" : muted ? C.faint : tone,
       }}>
-      <span style={{ fontFamily: "Inter", fontWeight: 800, fontSize: 15, lineHeight: 1, letterSpacing: "0.02em" }}>
+      <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, lineHeight: 1, letterSpacing: "0.02em" }}>
         {label}
       </span>
     </span>
@@ -7789,7 +7803,7 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
           <div className="space-y-3 max-h-80 overflow-y-auto mb-4">
             {result.days.map((d, i) => (
               <div key={i} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                <div className="text-sm font-semibold mb-1.5" style={{ color: C.text, fontFamily: "Inter" }}>{d.name}</div>
+                <div className="text-sm font-semibold mb-1.5" style={{ color: C.text, fontFamily: DISPLAY }}>{d.name}</div>
                 <div className="space-y-1">
                   {(d.exercises || []).map((x, j) => (
                     <div key={j} className="text-xs flex items-center justify-between gap-2" style={{ color: C.sub }}>
@@ -7902,7 +7916,7 @@ function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase })
       <div className="space-y-2 max-h-80 overflow-y-auto">
         {list.map(ex => (
           <button key={ex.id} onClick={() => { onPick(ex); onClose(); }} className="w-full text-left rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-            <div className="rounded-md w-10 h-10 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: C.border }}>{exerciseImage(ex.name) ? <img src={exerciseImage(ex.name)} alt={ex.name} loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={16} style={{ color: C.faint }} />}</div>
+            <div className="rounded-md w-10 h-10 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: exerciseImage(ex.name) ? PHOTO_TILE : C.panelAlt }}>{exerciseImage(ex.name) ? <img src={exerciseImage(ex.name)} alt={ex.name} loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={16} style={{ color: C.faint }} />}</div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium truncate" style={{ color: C.text }}>{ex.name}</div>
               <div className="text-xs truncate" style={{ color: C.sub }}>{ex.pattern}</div>
@@ -8113,7 +8127,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           {prog.days.map(day => (
             <div key={day.id} className="rounded-xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
               <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+                <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
                 <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
               </div>
               <div className="space-y-2">
@@ -8181,7 +8195,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
               <div key={p.id} className="rounded-xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
                 <button onClick={() => setEditing(p.id)} className="w-full text-left">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-semibold truncate" style={{ color: C.text, fontFamily: "Inter" }}>{p.name}</div>
+                    <div className="font-semibold truncate" style={{ color: C.text, fontFamily: DISPLAY }}>{p.name}</div>
                     <ChevronRight size={18} style={{ color: C.faint }} className="shrink-0" />
                   </div>
                   <div className="text-xs mt-1.5" style={{ color: C.sub }}>
@@ -8775,7 +8789,7 @@ function PrivacyPolicyPage({ nav, onBack }) {
             <ChevronLeft size={14} /> Back
           </button>
         )}
-        <h1 className="text-2xl font-bold leading-tight" style={{ fontFamily: "Inter", color: C.text }}>
+        <h1 className="text-2xl font-bold leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>
           Trained.best privacy and your data
         </h1>
         <p className="text-xs mt-1.5" style={{ color: C.faint }}>
@@ -9472,7 +9486,7 @@ function CoachProfile({ state, setState, nav }) {
         )}
         <div className="flex flex-col items-center mb-6">
           <EditableAvatar initials={coach.avatar} size={84} photoUrl={coach.photoUrl} onChange={setPhoto} />
-          <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: "Inter", color: C.text }}>{coach.name}</div>
+          <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{coach.name}</div>
           <div className="text-sm" style={{ color: C.sub }}>{totalAthletes} athletes · {activePrograms} programs</div>
         </div>
 
@@ -9836,7 +9850,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
       <div className="px-5 pt-6 pb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-base" style={{ color: C.sub }}>{greeting} 👋</div>
-          <div className="text-3xl mt-0.5 truncate" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>{state.me.name.split(" ")[0]}</div>
+          <div className="text-3xl mt-0.5 truncate" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{state.me.name.split(" ")[0]}</div>
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {/* This screen builds its own header rather than using TopBar, so it
@@ -9895,7 +9909,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           <div className="relative w-full text-left rounded-3xl p-6 mb-6 overflow-hidden" style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
             <div className="absolute rounded-full" style={{ width: 200, height: 200, right: -60, top: -60, background: "#ffffff14" }} />
             <div className="text-xs font-semibold uppercase tracking-wider relative" style={{ color: "#ffffffb0" }}>Today's Focus</div>
-            <div className="text-3xl mt-1.5 truncate relative" style={{ fontFamily: "Inter", fontWeight: 800, color: "#fff" }}>{todayDay.name}</div>
+            <div className="text-3xl mt-1.5 truncate relative" style={{ fontFamily: DISPLAY, fontWeight: 800, color: "#fff" }}>{todayDay.name}</div>
             <div className="text-sm mt-1 relative flex items-center gap-2 flex-wrap" style={{ color: "#ffffffcc" }}>
               <span>{todayDay.exercises.length} exercises</span>
               {/* On the gradient, so it carries its own contrast rather than
@@ -9992,7 +10006,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           );
         })()}
 
-        <div className="text-lg mb-3" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>Quick Access</div>
+        <div className="text-lg mb-3" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>Quick Access</div>
         <div className="grid grid-cols-2 gap-3 mb-6">
           <button onClick={() => nav.go("calendar")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
             <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Calendar size={18} style={{ color: C.orange }} /></div>
@@ -10305,7 +10319,7 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
               jargon — so someone who has never been coached can tell at a
               glance which part of the session matters most on a day they're
               short on time. */}
-          <span className="text-sm font-bold flex-1 min-w-0" style={{ color: block.accent, fontFamily: "Inter" }}>
+          <span className="text-sm font-bold flex-1 min-w-0" style={{ color: block.accent, fontFamily: DISPLAY }}>
             {block.label}
           </span>
           <span className="text-[11px] font-mono shrink-0" style={{ color: C.sub }}>
@@ -10330,7 +10344,7 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
               <div key={x.id} className="rounded-xl p-2.5 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
                 <button onClick={() => onExerciseClick({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
                   className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                  <div className="rounded-lg w-11 h-11 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: C.panel }}>
+                  <div className="rounded-xl w-14 h-14 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: exerciseImage(ex?.name) ? PHOTO_TILE : C.panelAlt }}>
                     {exerciseImage(ex?.name)
                       ? <img src={exerciseImage(ex.name)} alt={ex.name} loading="lazy" className="w-full h-full object-contain" />
                       : <Dumbbell size={16} style={{ color: C.faint }} />}
@@ -10779,7 +10793,7 @@ function AthleteProgram({ state, setState, nav }) {
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
-        <div className="text-2xl" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>My Program</div>
+        <div className="text-2xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>My Program</div>
         <div className="text-sm mt-0.5" style={{ color: C.sub }}>AI-generated for your goals</div>
       </div>
 
@@ -10787,7 +10801,7 @@ function AthleteProgram({ state, setState, nav }) {
         <div className="relative rounded-3xl p-6 mb-5 overflow-hidden" style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
           <div className="absolute rounded-full" style={{ width: 180, height: 180, right: -50, top: -50, background: "#ffffff14" }} />
           <div className="text-xs font-semibold uppercase tracking-wider relative" style={{ color: "#ffffffb0" }}>Active Program</div>
-          <div className="text-2xl mt-1.5 relative" style={{ fontFamily: "Inter", fontWeight: 800, color: "#fff" }}>{myProgram.name}</div>
+          <div className="text-2xl mt-1.5 relative" style={{ fontFamily: DISPLAY, fontWeight: 800, color: "#fff" }}>{myProgram.name}</div>
           <div className="text-sm mt-2 relative leading-relaxed" style={{ color: "#ffffffd0" }}>
             {myProgram.weeks}-week program with {myProgram.days.length} training days per cycle, built around {state.me.goals?.join(" + ") || "your goals"}.
           </div>
@@ -10939,7 +10953,7 @@ function AthleteProgram({ state, setState, nav }) {
           <>
             <div className="flex items-center justify-between mb-1">
               <div className="min-w-0">
-                <div className="text-xl" style={{ fontFamily: "Inter", fontWeight: 800, color: C.text }}>{day.name}</div>
+                <div className="text-xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{day.name}</div>
                 {(() => {
                   const dateIso = sessionDate(myProgram, shownWeek, day.weekday);
                   const isToday = dateIso === todayISO();
@@ -11203,7 +11217,7 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
       <Trophy size={48} style={{ color: C.orange }} />
-      <h2 className="text-2xl font-bold mt-4 text-center" style={{ fontFamily: "Inter", color: C.text }}>SESSION LOGGED</h2>
+      <h2 className="text-2xl font-bold mt-4 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>SESSION LOGGED</h2>
       <p className="text-sm mt-1 text-center" style={{ color: C.sub }}>{dayName} complete. Nice work.</p>
 
       {queued && (
@@ -11688,7 +11702,7 @@ function SessionTimerCountdown({ n }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none" style={{ background: "#00000099" }}>
       <div className="rounded-full flex items-center justify-center"
         style={{ width: 140, height: 140, background: C.olive, boxShadow: `0 0 0 10px ${C.olive}33` }}>
-        <span style={{ fontFamily: "Inter", fontWeight: 800, fontSize: 64, color: "#fff", lineHeight: 1 }}>{n}</span>
+        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 64, color: "#fff", lineHeight: 1 }}>{n}</span>
       </div>
     </div>
   );
@@ -12629,7 +12643,7 @@ function Workout({ state, setState, nav, dayId }) {
           </div>
           <div className="p-5">
             <div className="text-xs uppercase tracking-wider font-semibold" style={{ color: C.orange }}>{phaseLabel}</div>
-            <div className="text-2xl font-bold mt-1" style={{ fontFamily: "Inter", color: C.text }}>{ex?.name}</div>
+            <div className="text-2xl font-bold mt-1" style={{ fontFamily: DISPLAY, color: C.text }}>{ex?.name}</div>
             {!hasExerciseImage(ex?.name) && (
               <p className="text-xs mt-2 leading-relaxed" style={{ color: C.amber }}>
                 No demonstration photo for this one yet. If you are not sure of the movement, ask your
@@ -13109,7 +13123,7 @@ function StrengthProgressPanel({ logs, nav }) {
           <ChevronLeft size={14} /> All movements
         </button>
 
-        <h2 className="text-xl font-bold leading-tight" style={{ fontFamily: "Inter", color: C.text }}>{openName}</h2>
+        <h2 className="text-xl font-bold leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>{openName}</h2>
         <p className="text-xs mt-1" style={{ color: C.sub }}>
           {summary.sessions} session{summary.sessions === 1 ? "" : "s"} logged
           {summary.change != null && summary.change !== 0 && (
@@ -13253,7 +13267,7 @@ function MiniStat({ label, value, unit, accent }) {
     <div className="rounded-xl px-3 py-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
       <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: C.faint }}>{label}</div>
       <div className="mt-1 flex items-baseline gap-1">
-        <span className="text-lg font-bold leading-none" style={{ fontFamily: "Inter", color: accent || C.text }}>{value}</span>
+        <span className="text-lg font-bold leading-none" style={{ fontFamily: DISPLAY, color: accent || C.text }}>{value}</span>
         <span className="text-[10px] font-mono" style={{ color: C.faint }}>{unit}</span>
       </div>
     </div>
@@ -13996,7 +14010,7 @@ function TimeTrainedPanel({ logs }) {
   const Column = ({ title, week, dim }) => (
     <div className="flex-1 min-w-0">
       <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: C.faint }}>{title}</div>
-      <div className="text-xl font-bold mt-0.5" style={{ fontFamily: "Inter", color: dim ? C.sub : C.text }}>
+      <div className="text-xl font-bold mt-0.5" style={{ fontFamily: DISPLAY, color: dim ? C.sub : C.text }}>
         {week.timed ? describeElapsed(week.avgSeconds) : "—"}
       </div>
       <div className="text-[10px] mt-0.5" style={{ color: C.faint }}>
@@ -14110,7 +14124,7 @@ function AthleteProfile({ state, setState, nav }) {
       <div className="px-5 pt-5">
         <div className="flex flex-col items-center mb-6">
           <EditableAvatar initials={m.avatar} size={84} photoUrl={m.photoUrl} onChange={setPhoto} />
-          <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: "Inter", color: C.text }}>{m.name}</div>
+          <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{m.name}</div>
           <div className="text-sm" style={{ color: C.sub }}>{m.sport} · {m.sex === "male" ? "Male" : "Female"}</div>
           {m.goals?.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2.5 justify-center">
@@ -14320,7 +14334,7 @@ function ExerciseDetailModal({ open, onClose, exercise, canAddPhoto, userId, onP
           )}
         </div>
       )}
-      <div className="mb-1 text-xl font-bold" style={{ fontFamily: "Inter", color: C.text }}>{exercise.name}</div>
+      <div className="mb-1 text-xl font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>{exercise.name}</div>
       <div className="flex flex-wrap gap-2 mt-2 mb-4">
         <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${accent}22`, color: accent }}>{phaseLabel}</span>
         {exercise.pattern && <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.border}`, color: C.sub }}>{exercise.pattern}</span>}
@@ -14459,7 +14473,7 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
           <Trash2 size={13} style={{ color: "#fff" }} />
         </button>
       )}
-      <div className="h-24 flex items-center justify-center overflow-hidden" style={{ background: C.border }}>
+      <div className="h-24 flex items-center justify-center overflow-hidden" style={{ background: exerciseImage(ex.name) ? PHOTO_TILE : C.panelAlt }}>
         {exerciseImage(ex.name)
           ? <img src={exerciseImage(ex.name)} alt={ex.name} loading="lazy" className="w-full h-full object-contain" />
           : (
@@ -14669,7 +14683,7 @@ function CalendarViewPage({ state, setState, nav }) {
                 style={{ background: `linear-gradient(135deg, ${programDayColor(myProgram, todaysDay.id)}, ${programDayColor(myProgram, todaysDay.id)}bb)` }}>
                 <div className="absolute rounded-full" style={{ width: 150, height: 150, right: -50, top: -50, background: "#ffffff14" }} />
                 <div className="text-[10px] font-semibold uppercase tracking-widest relative" style={{ color: "#ffffffb0" }}>Due today</div>
-                <div className="text-2xl mt-1 truncate relative" style={{ fontFamily: "Inter", fontWeight: 800, color: "#fff" }}>{todaysDay.name}</div>
+                <div className="text-2xl mt-1 truncate relative" style={{ fontFamily: DISPLAY, fontWeight: 800, color: "#fff" }}>{todaysDay.name}</div>
                 <div className="text-xs mt-0.5 relative flex items-center gap-2 flex-wrap" style={{ color: "#ffffffcc" }}>
                   <span>{todaysDay.exercises.length} exercises</span>
                   <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
@@ -14698,7 +14712,7 @@ function CalendarViewPage({ state, setState, nav }) {
         <div className="rounded-xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div className="flex items-center justify-between mb-4">
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() - 1); return d; })}><ChevronLeft size={18} style={{ color: C.sub }} /></button>
-            <div className="font-semibold" style={{ fontFamily: "Inter", color: C.text }}>{monthLabel.toUpperCase()}</div>
+            <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{monthLabel.toUpperCase()}</div>
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() + 1); return d; })}><ChevronRight size={18} style={{ color: C.sub }} /></button>
           </div>
           <div className="grid grid-cols-7 gap-1.5">
@@ -14952,7 +14966,7 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
               background: `${colorOf ? colorOf(day.id) : C.blue}14`,
               border: `1px solid ${colorOf ? colorOf(day.id) : C.blue}55`,
             }}>
-            <div className="text-lg font-bold" style={{ fontFamily: "Inter", color: C.text }}>{day.name}</div>
+            <div className="text-lg font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
             <div className="text-xs mt-0.5" style={{ color: C.sub }}>
               {day.exercises.length} exercises · ~{sessionMinutes(day.exercises)} min
             </div>
@@ -14985,7 +14999,7 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
               <div key={b.key}>
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
-                  <span className="text-xs font-bold flex-1 min-w-0 truncate" style={{ color: b.accent, fontFamily: "Inter" }}>{b.label}</span>
+                  <span className="text-xs font-bold flex-1 min-w-0 truncate" style={{ color: b.accent, fontFamily: DISPLAY }}>{b.label}</span>
                   <span className="text-[10px] font-mono shrink-0" style={{ color: C.faint }}>{b.items.length} · ~{b.minutes}m</span>
                 </div>
                 <div className="space-y-2">
@@ -16383,7 +16397,7 @@ function AthleteBooking({ state, setState, nav }) {
         <div className="rounded-2xl p-4 mb-5 flex items-center gap-4"
           style={{ background: C.panel, border: `1px solid ${credits > 0 ? C.border : C.amber}` }}>
           <div className="text-center shrink-0" style={{ minWidth: 56 }}>
-            <div className="font-bold tabular-nums" style={{ fontFamily: "Inter", fontSize: 32, lineHeight: 1, color: credits > 0 ? C.text : C.amber }}>
+            <div className="font-bold tabular-nums" style={{ fontFamily: DISPLAY, fontSize: 32, lineHeight: 1, color: credits > 0 ? C.text : C.amber }}>
               {credits}
             </div>
             <div className="text-[10px] uppercase tracking-wide font-semibold mt-1" style={{ color: C.faint }}>left</div>
@@ -18065,7 +18079,7 @@ function AppInner() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ background: C.bg }}>
         <Mail size={40} style={{ color: C.orange }} />
-        <h2 className="mt-4 text-2xl font-bold" style={{ fontFamily: "Inter", color: C.text }}>Check your email</h2>
+        <h2 className="mt-4 text-2xl font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>Check your email</h2>
         <p className="mt-2 text-sm" style={{ color: C.sub }}>We sent a confirmation link to {pendingConfirmEmail}. Confirm it, then come back and log in.</p>
         <button onClick={() => { setPendingConfirmEmail(null); setAuthMode("login"); }} className="mt-6 text-sm font-semibold" style={{ color: C.orange }}>Back to login</button>
       </div>
@@ -18077,7 +18091,7 @@ function AppInner() {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
           <Loader2 size={40} className="animate-spin mb-6" style={{ color: C.orange }} />
-          <h2 className="text-2xl font-bold text-center" style={{ fontFamily: "Inter", color: C.text }}>Building your program</h2>
+          <h2 className="text-2xl font-bold text-center" style={{ fontFamily: DISPLAY, color: C.text }}>Building your program</h2>
           <p className="text-sm mt-2 text-center" style={{ color: C.sub }}>AI is creating a personalized plan based on your goals, sport, schedule, and equipment.</p>
         </div>
       );
