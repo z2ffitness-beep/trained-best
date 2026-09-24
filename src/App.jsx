@@ -98,6 +98,125 @@ function normalizeExerciseName(name) {
 
 // Built once. Rebuilding this per render would walk every image key on every
 // paint of every exercise row.
+// ---------- finding the photo for a name a coach actually typed ----------
+//
+// The exact-name index below only fires when the program spells a movement the
+// same way the library does, and coaches don't. Lia's program says "KB Swings"
+// where the library says "Kettlebell Swing Complex"; a generated program says
+// "Dumbbell Single-Arm Row" where the library says "Single Arm Dumbbell Row".
+// Same movement, same photo, no match - which is why most of a real program
+// shows a blank tile.
+//
+// Three cheap, conservative rules close most of that gap. Nothing here guesses:
+// a wrong photo teaches the wrong movement, which is worse than no photo.
+
+// Abbreviations coaches type. Expanded before anything is compared.
+const EXERCISE_ABBREV = {
+  kb: "kettlebell", db: "dumbbell", bb: "barbell",
+  rdl: "romanian deadlift", ohp: "overhead press",
+};
+
+// Words that say how a movement is dosed, not which movement it is.
+const EXERCISE_FILLER = new Set([
+  "the", "a", "an", "with", "and", "to", "of", "for", "or",
+  "complex", "variation", "progression", "regression", "optional",
+  "hold", "holds", "series", "flow",
+]);
+
+// Words that change the movement enough that a generic photo would teach the
+// wrong thing. A single-leg RDL shown as a two-leg RDL is not a near miss - the
+// athlete loads it wrong. If the written name carries one of these and the
+// library name does not, the loose match is refused and the tile stays empty.
+// Equipment words ("dumbbell", "banded") are deliberately NOT here: they change
+// what is in your hands, not what your body does.
+const EXERCISE_QUALIFIERS = new Set([
+  "single", "unilateral", "split", "staggered", "deficit",
+  "seated", "standing", "kneeling", "prone", "supine",
+  "reverse", "eccentric", "isometric", "iso", "paused", "tempo",
+  "jump", "jumping", "overhead", "incline", "decline",
+]);
+
+function exerciseTokens(name) {
+  let s = String(name || "").toLowerCase();
+  s = s.split(/\s+or\s+/)[0];      // "Sled Push or Wall ISO" is a sled push
+  s = s.split(":")[0];              // "Standing Sequence: Knee Hugs, Skips, ..."
+  s = s.replace(/\(.*?\)/g, " ");   // "(Heavy)", "(speed emphasis - 75% 1RM)"
+  s = s.replace(/[^a-z0-9]+/g, " ");
+  const out = [];
+  s.split(/\s+/).forEach((raw) => {
+    if (!raw) return;
+    const words = EXERCISE_ABBREV[raw] ? EXERCISE_ABBREV[raw].split(" ") : [raw];
+    words.forEach((w) => {
+      if (!w || EXERCISE_FILLER.has(w)) return;
+      // "swings" -> "swing", "ups" -> "up". Never "press" -> "pres", which is
+      // why the double-s ending is left alone.
+      if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
+      out.push(w);
+    });
+  });
+  return out;
+}
+
+// Sorted, so word order stops mattering: "Dumbbell Single-Arm Row" and
+// "Single Arm Dumbbell Row" are the same movement written two ways.
+function exerciseMatchKey(name) {
+  return exerciseTokens(name).slice().sort().join(" ");
+}
+
+// Rebuilt only when the uploaded map grows, which is once per hydrate.
+let PHOTO_MATCH_CACHE = null;
+let PHOTO_MATCH_COUNT = -1;
+function photoMatchIndex() {
+  const uploaded = Object.keys(UPLOADED_EXERCISE_PHOTOS);
+  if (PHOTO_MATCH_CACHE && PHOTO_MATCH_COUNT === uploaded.length) return PHOTO_MATCH_CACHE;
+  const byKey = {};
+  const entries = [];
+  const add = (label, url) => {
+    if (!url) return;
+    const tokens = exerciseTokens(label);
+    if (!tokens.length) return;
+    const key = tokens.slice().sort().join(" ");
+    if (!byKey[key]) byKey[key] = url;
+    entries.push({ tokens, url });
+  };
+  // The coach's own photos are registered FIRST so that on a tie they win,
+  // exactly as they do in the exact-name lookup.
+  uploaded.forEach((k) => add(k, UPLOADED_EXERCISE_PHOTOS[k]));
+  Object.keys(EXERCISE_IMAGES).forEach((n) => add(n, EXERCISE_IMAGES[n]));
+  PHOTO_MATCH_CACHE = { byKey, entries };
+  PHOTO_MATCH_COUNT = uploaded.length;
+  return PHOTO_MATCH_CACHE;
+}
+
+function findExercisePhoto(name) {
+  const tokens = exerciseTokens(name);
+  if (!tokens.length) return null;
+  const { byKey, entries } = photoMatchIndex();
+
+  const exact = byKey[tokens.slice().sort().join(" ")];
+  if (exact) return exact;
+
+  // A library name wholly contained in this one - "Dead Bugs" inside "Banded
+  // Dead Bugs", "Romanian Deadlift" inside "Dumbbell Romanian Deadlift". Only
+  // in that direction: "Push Ups" must NOT reach "Scapular Push Ups", which is
+  // a different exercise. Two words minimum, so one generic word can't claim
+  // everything it appears in, and the longest match wins.
+  const have = new Set(tokens);
+  const qualifiers = tokens.filter((t) => EXERCISE_QUALIFIERS.has(t));
+  let best = null;
+  let bestLen = 1;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.tokens.length <= bestLen) continue;
+    if (!e.tokens.every((t) => have.has(t))) continue;
+    // Every qualifier on the written name has to be on the library name too.
+    if (!qualifiers.every((q) => e.tokens.indexOf(q) !== -1)) continue;
+    best = e.url;
+    bestLen = e.tokens.length;
+  }
+  return best;
+}
+
 const EXERCISE_IMAGE_INDEX = (() => {
   const index = {};
   Object.keys(EXERCISE_IMAGES).forEach(key => {
@@ -124,7 +243,11 @@ const EXERCISE_PHOTO_BUCKET = "exercise-photos";
 function exerciseImage(name) {
   if (!name) return null;
   const key = normalizeExerciseName(name);
-  return UPLOADED_EXERCISE_PHOTOS[key] || EXERCISE_IMAGES[name] || EXERCISE_IMAGE_INDEX[key] || null;
+  // The first three are the exact-name paths and keep their old priority, so a
+  // name that already resolved still resolves to the same picture. The loose
+  // match is only ever a last resort before giving up.
+  return UPLOADED_EXERCISE_PHOTOS[key] || EXERCISE_IMAGES[name] || EXERCISE_IMAGE_INDEX[key]
+    || findExercisePhoto(name) || null;
 }
 
 // Every photo in one query at sign-in. They are public URLs, so the browser
@@ -3250,6 +3373,31 @@ function setDayDefaultMode(days, dayId, mode) {
   return (days || []).map(d => (d.id === dayId ? { ...d, mode } : d));
 }
 
+// Every session in the program at once.
+//
+// The per-day control has been there all along, but the default is in person,
+// so a client coached entirely online arrived with every session labelled
+// wrongly and the coach had to correct each one. Most athletes are all one or
+// all the other; the mixed case is the minority and is still served by changing
+// a day afterwards.
+//
+// Single-date overrides are deliberately LEFT ALONE. They record a specific
+// decision about a specific date - "she's away that Thursday, do it online" -
+// and wiping them because the default changed would silently undo it.
+function setAllDayModes(days, mode) {
+  return (days || []).map(d => ({ ...d, mode }));
+}
+
+// What the program runs as overall: a mode if every day agrees, otherwise null
+// for mixed. Drives the highlight on the all-days control, which must not claim
+// "online" when only two of three days are.
+function programSessionMode(days) {
+  const list = days || [];
+  if (!list.length) return null;
+  const first = list[0].mode || DEFAULT_SESSION_MODE;
+  return list.every(d => (d.mode || DEFAULT_SESSION_MODE) === first) ? first : null;
+}
+
 // Passing null for `mode` clears the override and hands the date back to the
 // day's normal setting, rather than freezing today's value in place forever.
 //
@@ -5530,6 +5678,23 @@ function useMessageThread(athleteId, myUserId) {
 // cleanup, both of which were bugs the first time round.
 //
 // Returns { ok: true, created } or { ok: false, message }.
+// Is there actually a program here?
+//
+// A generation that came back empty - truncated by the token ceiling, or JSON
+// that repaired into `{days:[]}` - used to save anyway. The athlete then had a
+// program row with nothing in it, active_program_id pointed at it, and every
+// screen that reads the program showed a blank. There is one such row on the
+// coach's own account right now, which is how this was found.
+//
+// Refusing the save is the right failure: the caller already handles "couldn't
+// save" by keeping the generated program on screen with a Try Again, so the
+// athlete loses nothing and the coach is told rather than discovering it in a
+// gym three days later.
+function programHasContent(days) {
+  if (!Array.isArray(days) || days.length === 0) return false;
+  return days.some(d => Array.isArray(d?.exercises) && d.exercises.length > 0);
+}
+
 async function assignTemplateToAthlete({ template, athlete, coachId, state }) {
   // Each athlete gets their own row rather than pointing at the coach's
   // template: the RLS policy on `programs` only lets an athlete read rows where
@@ -5539,6 +5704,10 @@ async function assignTemplateToAthlete({ template, athlete, coachId, state }) {
     denormalizeDays(template.days, state),
     trainingDays.length ? trainingDays : WEEKDAY_ORDER
   );
+
+  if (!programHasContent(scheduled)) {
+    return { ok: false, message: "That program came through empty. Nothing was saved — try the import again." };
+  }
 
   const { data: created, error: createError } = await supabase
     .from("programs")
@@ -5599,6 +5768,13 @@ async function resolveCoachInvite(code) {
 // forever — and every later edit fired updateProgramRow() against a
 // non-existent id, silently losing those too.
 async function createProgramRow(athleteId, name, weeks, sport, rawDays, rationale = null) {
+  // Checked before the insert, not after: an empty program that reaches the
+  // table also gets pointed at by active_program_id, and then the athlete has
+  // to be rescued rather than simply asked to tap Try Again.
+  if (!programHasContent(rawDays)) {
+    console.error("Refused to save a program with no exercises in it.");
+    return null;
+  }
   const { data, error } = await supabase.from("programs").insert({ athlete_id: athleteId, name, weeks, sport, days: rawDays, rationale }).select().single();
   if (error || !data) {
     console.error("Failed to save generated program:", error);
@@ -7001,6 +7177,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const setDayMode = (dayId, mode) => {
     ensureCustom(prog => ({ ...prog, days: setDayDefaultMode(prog.days, dayId, mode) }));
   };
+  const setEveryDayMode = (mode) => {
+    ensureCustom(prog => ({ ...prog, days: setAllDayModes(prog.days, mode) }));
+  };
   // A single date, overriding the day's usual setting. Passing null puts the
   // date back under the day's normal mode rather than pinning today's value.
   const setDayDateMode = (dayId, dateIso, mode) => {
@@ -7295,6 +7474,19 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                 {building ? "Creating…" : "Build one"}
               </Btn>
             </div>
+          </div>
+        )}
+        {program && program.days.length > 0 && (
+          <div className="rounded-xl p-4 mb-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="text-[10px] uppercase tracking-wide font-semibold mb-1.5" style={{ color: C.sub }}>
+              How they train with you
+            </div>
+            <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
+            <p className="text-[10px] mt-2 leading-snug" style={{ color: C.faint }}>
+              {programSessionMode(program.days) === null
+                ? "Mixed — set per session below."
+                : "Applies to every session. Change any single one below."}
+            </p>
           </div>
         )}
         {program && (
