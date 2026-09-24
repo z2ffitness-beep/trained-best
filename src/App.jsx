@@ -7603,6 +7603,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
 
       <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
         exercises={state.exercises} defaultPhase={pickerBlock?.phases?.[0]}
+        ownerId={myUserId}
+        onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
         onPick={(ex) => addExerciseToDay(activeDayId, ex, pickerBlock)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
@@ -8086,14 +8088,81 @@ Return JSON in this exact shape:
 }`;
 }
 
-function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase }) {
+// Save a movement nobody has written down yet.
+//
+// Standing in the gym looking at a warm-up and wanting a Scorpion in it is the
+// normal case, not an edge case - no library covers every coach's vocabulary.
+// This is the one place a new exercise is created, so the library screen and
+// the in-session picker cannot drift apart on what "adding" means.
+//
+// The row is owned by whoever created it. An athlete adding a movement to their
+// own session owns it themselves, which is what the RLS policy expects.
+async function createCustomExercise({ name, phase, pattern, ownerId }) {
+  const clean = (name || "").trim();
+  if (!clean) return { ok: false, message: "Give it a name first." };
+  if (!ownerId) return { ok: false, message: "Sign in again to add exercises." };
+
+  const { data, error } = await supabase
+    .from("exercises")
+    .insert({ owner_id: ownerId, name: clean, phase: phase || PHASES[0].key,
+              pattern: pattern || "Mobility", has_media: false })
+    .select()
+    .single();
+
+  if (error) {
+    // The unique index on (owner, lower(name)) makes a duplicate an expected
+    // answer rather than a failure - say so plainly instead of "try again".
+    return {
+      ok: false,
+      message: error.code === "23505"
+        ? `"${clean}" is already in your library.`
+        : "Couldn't save that exercise. Check your connection and try again.",
+    };
+  }
+  return {
+    ok: true,
+    exercise: { id: data.id, name: data.name, phase: data.phase, pattern: data.pattern,
+                hasMedia: false, custom: true },
+  };
+}
+
+function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase, ownerId, onCreated }) {
   const [search, setSearch] = useState("");
   const [phaseFilter, setPhaseFilter] = useState(defaultPhase || "all");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
   // Opened from a section, it starts on that section's work. Opened from the
   // day, it starts on everything. Re-applied per opening, or the filter from
   // the last section would still be sitting there on the next one.
   useEffect(() => { setPhaseFilter(defaultPhase || "all"); }, [defaultPhase, open]);
+  useEffect(() => { if (!open) { setSearch(""); setCreateError(null); } }, [open]);
   const list = exercises.filter(e => e.name.toLowerCase().includes(search.toLowerCase()) && (phaseFilter === "all" || e.phase === phaseFilter));
+
+  // Offered only once what was typed matches nothing already there, compared
+  // across the WHOLE library rather than the filtered list - otherwise a
+  // movement that exists under another section reads as missing and gets
+  // created a second time.
+  const typed = search.trim();
+  const existsAlready = typed
+    ? exercises.some(e => normalizeExerciseName(e.name) === normalizeExerciseName(typed))
+    : false;
+  const canCreate = !!typed && !existsAlready && !!onCreated && !!ownerId;
+
+  const createAndPick = async () => {
+    if (creating || !canCreate) return;
+    setCreating(true);
+    setCreateError(null);
+    // A section was open, so its phase is the right one. From the whole day
+    // there is no section to infer, and warm-up is where an unlisted movement
+    // most often belongs - it is also the cheapest to correct.
+    const phase = phaseFilter !== "all" ? phaseFilter : (defaultPhase || PHASES[0].key);
+    const res = await createCustomExercise({ name: typed, phase, pattern: "Mobility", ownerId });
+    setCreating(false);
+    if (!res.ok) { setCreateError(res.message); return; }
+    onCreated(res.exercise);
+    onPick(res.exercise);
+    onClose();
+  };
 
   return (
     <Modal open={open} onClose={onClose} title="Exercise Library" wide>
@@ -8105,7 +8174,31 @@ function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase })
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.faint }} />
         <input style={{ ...inputStyle, paddingLeft: 36 }} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
+      {createError && (
+        <div className="rounded-lg p-2.5 mb-2 text-xs flex items-start gap-2"
+          style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+          <AlertCircle size={13} className="shrink-0 mt-0.5" />
+          <span>{createError}</span>
+        </div>
+      )}
       <div className="space-y-2 max-h-80 overflow-y-auto">
+        {canCreate && (
+          <button onClick={createAndPick} disabled={creating}
+            className="w-full text-left rounded-lg p-3 flex items-center gap-3"
+            style={{ background: `${C.orange}12`, border: `1px dashed ${C.orange}`, opacity: creating ? 0.6 : 1 }}>
+            <div className="rounded-md w-10 h-10 flex items-center justify-center shrink-0" style={{ background: `${C.orange}22` }}>
+              <Plus size={17} style={{ color: C.orange }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold truncate" style={{ color: C.orange }}>
+                {creating ? "Adding…" : `Add "${typed}"`}
+              </div>
+              <div className="text-xs truncate" style={{ color: C.sub }}>
+                New movement · saved to your library
+              </div>
+            </div>
+          </button>
+        )}
         {list.map(ex => (
           <button key={ex.id} onClick={() => { onPick(ex); onClose(); }} className="w-full text-left rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
             <div className="rounded-md w-10 h-10 flex items-center justify-center shrink-0 overflow-hidden" style={{ background: exerciseImage(ex.name) ? PHOTO_TILE : C.panelAlt }}>{exerciseImage(ex.name) ? <img src={exerciseImage(ex.name)} alt={ex.name} loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={16} style={{ color: C.faint }} />}</div>
@@ -8347,7 +8440,10 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           ))}
           <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
         </div>
-        <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises} onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
+        <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises}
+          ownerId={myUserId}
+          onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
+          onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
         <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
           onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
           onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
@@ -11274,6 +11370,8 @@ function AthleteProgram({ state, setState, nav }) {
         onClose={() => setPickerFor(null)}
         exercises={state.exercises}
         defaultPhase={pickerFor?.block?.phases?.[0]}
+        ownerId={state.me.id}
+        onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
         onPick={(ex) => addExerciseToMyDay(pickerFor.dayId, ex, pickerFor.block)} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
@@ -14608,28 +14706,10 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
       setLibraryError("Sign in again to add exercises.");
       return;
     }
-    const { data, error } = await supabase
-      .from("exercises")
-      .insert({ owner_id: ownerId, name: ex.name, phase: ex.phase, pattern: ex.pattern, has_media: false })
-      .select()
-      .single();
-
-    if (error) {
-      // The unique index on (owner, lower(name)) makes duplicates a real,
-      // expected outcome rather than an unexpected failure.
-      setLibraryError(
-        error.code === "23505"
-          ? `"${ex.name}" is already in your library.`
-          : "Couldn't save that exercise. Check your connection and try again."
-      );
-      return;
-    }
-
+    const res = await createCustomExercise({ name: ex.name, phase: ex.phase, pattern: ex.pattern, ownerId });
+    if (!res.ok) { setLibraryError(res.message); return; }
     setLibraryError(null);
-    setState(s => ({
-      ...s,
-      exercises: [...s.exercises, { id: data.id, name: data.name, phase: data.phase, pattern: data.pattern, hasMedia: false, custom: true }],
-    }));
+    setState(s => ({ ...s, exercises: [...s.exercises, res.exercise] }));
   };
 
   // The confirmation says the exercise "will also disappear from any program
