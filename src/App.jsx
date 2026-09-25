@@ -10093,6 +10093,7 @@ function CoachProfile({ state, setState, nav }) {
         )}
 
         <ThemePicker state={state} setState={setState} />
+        <ChangePasswordCard />
 
         <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>More</div>
         <div className="grid grid-cols-2 gap-3 mb-5">
@@ -14323,6 +14324,107 @@ async function saveProfileSetting(setState, userId, key, value) {
   return error || null;
 }
 
+// Change your password while signed in.
+//
+// The only password screen in the app used to be the one a reset EMAIL lands
+// on, so if the mail never arrived - which is exactly what happens while the
+// sending domain is unverified - there was no way to change a password at all.
+// This path needs no email and works whatever the mail provider is doing. It is
+// also the flow the coach described from the start: hand a client credentials,
+// they sign in, they change it to something of their own.
+function ChangePasswordCard() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(false);
+
+  const reset = () => { setCurrent(""); setNext(""); setConfirm(""); setError(null); };
+
+  const save = async () => {
+    if (busy) return;
+    if (next.length < 8) { setError("Use at least 8 characters."); return; }
+    if (next !== confirm) { setError("Those two don't match."); return; }
+    if (next === current) { setError("That's the password you already have."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      // Supabase lets any signed-in session set a new password WITHOUT proving
+      // the old one. On a phone somebody else has picked up unlocked that is an
+      // account takeover, so the current password is checked first by signing
+      // in with it. The email comes from the session rather than from app
+      // state, which can be stale after a profile edit.
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const email = userData?.user?.email;
+      if (userErr || !email) { setError("Sign in again, then change your password."); setBusy(false); return; }
+
+      const { error: authErr } = await supabase.auth.signInWithPassword({ email, password: current });
+      if (authErr) { setError("That current password isn't right."); setBusy(false); return; }
+
+      const { error: upErr } = await supabase.auth.updateUser({ password: next });
+      if (upErr) { setError(errText(upErr)); setBusy(false); return; }
+
+      reset();
+      setDone(true);
+      setOpen(false);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>Password</div>
+      <div className="rounded-2xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+        {done && !open && (
+          <p className="text-xs mb-3" style={{ color: C.olive }}>
+            Password changed. Use the new one next time you sign in.
+          </p>
+        )}
+        {!open ? (
+          <Btn variant="secondary" className="w-full" onClick={() => { setDone(false); setOpen(true); }}>
+            Change my password
+          </Btn>
+        ) : (
+          <>
+            <Field label="Current password">
+              <input type={show ? "text" : "password"} value={current} autoComplete="current-password"
+                onChange={e => setCurrent(e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="New password">
+              <input type={show ? "text" : "password"} value={next} autoComplete="new-password"
+                onChange={e => setNext(e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Confirm new password">
+              <input type={show ? "text" : "password"} value={confirm} autoComplete="new-password"
+                onChange={e => setConfirm(e.target.value)} style={inputStyle}
+                onKeyDown={e => e.key === "Enter" && save()} />
+            </Field>
+            <button onClick={() => setShow(v => !v)} className="text-xs font-semibold mb-3" style={{ color: C.blue }}>
+              {show ? "Hide passwords" : "Show passwords"}
+            </button>
+            {error && (
+              <p className="text-xs mb-3" style={{ color: C.red }}>{error}</p>
+            )}
+            <div className="flex gap-2">
+              <Btn variant="secondary" className="flex-1" disabled={busy}
+                onClick={() => { reset(); setOpen(false); }}>Cancel</Btn>
+              <Btn className="flex-1" disabled={busy || !current || !next || !confirm} onClick={save}>
+                {busy ? "Saving…" : "Save"}
+              </Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 // Light / dark / follow-the-device. Used by athletes and coaches alike.
 function ThemePicker({ state, setState }) {
   const [theme, setTheme] = useState(() => storedTheme());
@@ -14387,6 +14489,7 @@ function AthletePreferences({ state, setState }) {
   return (
     <>
       <ThemePicker state={state} setState={setState} />
+      <ChangePasswordCard />
 
       {/* The athlete's own switch. Turning it off means no prompt, no badge,
           and every session logged as "not timed" — which is what the coach
