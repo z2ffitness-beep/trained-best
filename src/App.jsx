@@ -4178,6 +4178,65 @@ function programHasWeeklyPlan(program) {
   return (program?.days || []).some(dayHasWeeklyPlan);
 }
 
+// ---------- blocks and deloads, read from the plan rather than invented ----------
+//
+// `buildProgramPlan` makes up regular blocks and deloads from the week COUNT
+// alone. For an authored program that is wrong twice over: the 26-week plan
+// runs blocks of 4, 4, 5, 4, 5, 4, and its deloads sit where the coach put
+// them. Showing generated ones would tell an athlete week 12 is a deload when
+// the coach wrote week 13, which is worse than saying nothing.
+
+// A block starts wherever a movement CHANGES. That is what a block is in a
+// written program - the week the exercises turn over - so it needs no extra
+// authoring to find. Week 1 always starts one.
+function authoredBlockStarts(program) {
+  const starts = new Set([1]);
+  (program?.days || []).forEach((d) => (d.exercises || []).forEach((e) => {
+    const by = e && e.byWeek;
+    if (!by) return;
+    Object.keys(by).forEach((k) => {
+      const n = Number(k);
+      if (Number.isFinite(n) && n > 1 && by[k] && by[k].name) starts.add(n);
+    });
+  }));
+  return Array.from(starts).sort((a, b) => a - b);
+}
+
+function authoredBlocks(program) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const starts = authoredBlockStarts(program).filter(w => w <= total);
+  return starts.map((startWeek, i) => ({
+    index: i + 1,
+    startWeek,
+    endWeek: i + 1 < starts.length ? starts[i + 1] - 1 : total,
+    isFinal: i === starts.length - 1,
+  }));
+}
+
+// Total prescribed sets across every session in a week.
+function weekSetVolume(program, week) {
+  return (program?.days || []).reduce((sum, d) => sum
+    + (resolveDayForWeek(d, week).exercises || [])
+        .reduce((n, e) => n + (Number(e.sets) || 0), 0), 0);
+}
+
+// A deload is a real drop in work, not any drop at all - a week that trades one
+// set of rows for one set of presses is not a deload. 15% is low enough to
+// catch a genuine back-off week and high enough to ignore ordinary variation.
+const DELOAD_DROP = 0.85;
+
+function authoredDeloadWeeks(program) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const out = [];
+  let prev = weekSetVolume(program, 1);
+  for (let w = 2; w <= total; w++) {
+    const v = weekSetVolume(program, w);
+    if (prev > 0 && v < prev * DELOAD_DROP) out.push(w);
+    prev = v;
+  }
+  return out;
+}
+
 // What changed between two weeks, for the "this week vs last week" line an
 // athlete actually reads. Compares the RESOLVED exercises, so a movement that
 // is unchanged in a week with no entry correctly reports nothing.
@@ -11028,7 +11087,14 @@ function AthleteProgram({ state, setState, nav }) {
   const activeDayColor = dayColor(day?.id);
 
   // ---- block structure: the super tabs, and the weeks inside each one ----
-  const plan = buildProgramPlan(myProgram.weeks);
+  // A written plan describes its own blocks and its own back-off weeks. The
+  // generated plan below only knows the week COUNT, so for an authored program
+  // it would tell the athlete the wrong weeks are deloads.
+  const authoredWeeks = programHasWeeklyPlan(myProgram);
+  const generated = buildProgramPlan(myProgram.weeks);
+  const plan = authoredWeeks
+    ? { ...generated, blocks: authoredBlocks(myProgram), deloadWeeks: authoredDeloadWeeks(myProgram) }
+    : generated;
   const liveWeek = currentProgramWeek(myProgram);
   // Null until the athlete picks a week, so "today" keeps following the
   // calendar instead of freezing on whatever week the page first rendered.
@@ -11048,7 +11114,6 @@ function AthleteProgram({ state, setState, nav }) {
   // The ramp AND the deload, for whichever week is on screen. This used to
   // apply only the deload, so weeks 1, 2 and 3 of a phase all showed the
   // phase's peak difficulty and the program appeared never to progress.
-  const authoredWeeks = programHasWeeklyPlan(myProgram);
   const weekExercises = sortedExercises
     .map(x => prescribeForWeek(x, plan, shownWeek, authoredWeeks))
     .filter(Boolean);
@@ -11353,9 +11418,10 @@ function AthleteProgram({ state, setState, nav }) {
           <div className="rounded-xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
             <RotateCcw size={15} className="shrink-0 mt-0.5" style={{ color: C.amber }} />
             <div className="text-xs leading-relaxed" style={{ color: C.sub }}>
-              <span className="font-semibold" style={{ color: C.amber }}>Week {shownWeek} is a deload. </span>
-              Same sessions, about 40% fewer sets, taken a couple of points easier. The numbers below
-              already reflect that.
+              <span className="font-semibold" style={{ color: C.amber }}>Week {shownWeek} is a back-off week. </span>
+              {authoredWeeks
+                ? "Fewer sets than last week. That's what your coach wrote, not a mistake — the numbers below are this week's."
+                : "Same sessions, about 40% fewer sets, taken a couple of points easier. The numbers below already reflect that."}
             </div>
           </div>
         )}
@@ -11364,7 +11430,7 @@ function AthleteProgram({ state, setState, nav }) {
             numbers below just look like different numbers — the athlete has no
             way to tell that an easier week is the plan rather than a mistake,
             or that this week is the one everything was building towards. */}
-        {!shownIsDeload && (() => {
+        {!shownIsDeload && !authoredWeeks && (() => {
           const line = describeWeekProgression(plan, shownWeek);
           if (!line) return null;
           const atPeak = progressionStep(
