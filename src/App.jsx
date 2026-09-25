@@ -2710,6 +2710,81 @@ const toLocalISO = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const todayISO = () => toLocalISO(new Date());
 
+// ---------- birthday & age ----------
+// Stored as the birthday, never the age. An age written down today is wrong by
+// next year and there is no way to tell from the stored value whether it is
+// stale — a date is true forever and the age falls out of it on every render.
+//
+// Everything here is string arithmetic on YYYY-MM-DD, deliberately. Building a
+// Date from a birthday and comparing it to `new Date()` reintroduces exactly the
+// timezone bug the log dates already had: a birthday parsed as UTC midnight is
+// the previous evening in Niagara, so on the morning of someone's birthday the
+// app would still show them a year younger.
+// Youth athletes are real clients, so the floor is low; past the ceiling it is
+// a typo, not a client.
+const AGE_MIN = 5;
+const AGE_MAX = 100;
+
+function parseDateParts(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  // Round-trip through UTC to reject dates that match the shape but don't exist
+  // (2001-02-30, 2001-13-01). All-UTC, so no local timezone can shift it.
+  const probe = new Date(Date.UTC(y, mo - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+  return { y, mo, d };
+}
+
+// Whole years completed, by the calendar. Returns null for anything unusable —
+// missing, malformed, or in the future — so every caller renders a dash rather
+// than "NaN" or a negative age.
+function ageFromBirthday(birthday, todayStr = todayISO()) {
+  const b = parseDateParts(birthday);
+  const t = parseDateParts(todayStr);
+  if (!b || !t) return null;
+  let age = t.y - b.y;
+  // Birthday hasn't come round yet this year.
+  if (t.mo < b.mo || (t.mo === b.mo && t.d < b.d)) age -= 1;
+  return age < 0 ? null : age;
+}
+
+// The gate the signup step uses. A plausible age, not just a parseable date.
+function isUsableBirthday(birthday, todayStr = todayISO()) {
+  const age = ageFromBirthday(birthday, todayStr);
+  return age !== null && age >= AGE_MIN && age <= AGE_MAX;
+}
+
+// min/max for <input type="date"> so the picker itself refuses the typos.
+//
+// These must agree with isUsableBirthday to the day. A picker stricter than the
+// gate greys out a date that would have been accepted; a picker looser than it
+// lets someone choose a date and then leaves the Next button dead with nothing
+// on screen saying why.
+function birthdayBounds(todayStr = todayISO()) {
+  const t = parseDateParts(todayStr);
+  if (!t) return { min: undefined, max: undefined };
+  const pad = n => String(n).padStart(2, "0");
+  const fmt = d => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+
+  // Today's date, N years back. Feb 29 has no counterpart in a common year, and
+  // Date rolls it to Mar 1 — emitting "2023-02-29" instead would give the input
+  // an unparseable limit, which browsers treat as no limit at all.
+  const yearsBack = (n) => {
+    const probe = new Date(Date.UTC(t.y - n, t.mo - 1, t.d));
+    if (probe.getUTCMonth() !== t.mo - 1) return new Date(Date.UTC(t.y - n, t.mo - 1, 28));
+    return probe;
+  };
+
+  // Someone stays AGE_MAX right up to the day before their next birthday, so
+  // the floor is the day AFTER the AGE_MAX+1 birthday, not the AGE_MAX one.
+  const floor = yearsBack(AGE_MAX + 1);
+  floor.setUTCDate(floor.getUTCDate() + 1);
+
+  return { min: fmt(floor), max: fmt(yearsBack(AGE_MIN)) };
+}
+
+
 // Rest is authored as a human string on the program ("90s", "2min", "3 min").
 // The workout runner needs seconds.
 function parseRestSeconds(rest, fallback = 90) {
@@ -4501,7 +4576,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   const coachSteps = ["👤 Your Name", "🏅 Background", "📩 Invite Athletes", "📸 Profile Photo", "🔐 Create Account"];
   const athleteSteps = [
     "👤 Your Name", "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
-    "🩹 Injuries", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment", "📸 Profile Photo", "🔐 Create Account"
+    "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment", "📸 Profile Photo", "🔐 Create Account"
   ];
   const coachedAthleteSteps = ["👤 Your Name", "🔑 Coach Invite Code", ...athleteSteps.slice(1)];
   const allSteps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
@@ -4552,6 +4627,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
       case "🎯 Goals": return (data.goals || []).length > 0;
       case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
       case "🩹 Injuries": return (data.injuries || []).length > 0;
+      case "🎂 Birthday": return isUsableBirthday(data.birthday);
       case "📏 Height": return !!data.heightCm;
       case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
       case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
@@ -5079,7 +5155,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           </Field>
           {data.timeframe === "Competition date" && (
             <Field label="Pick your competition date">
-              <input type="date" style={{ ...inputStyle, colorScheme: "dark" }} min={todayISO()}
+              <input type="date" style={inputStyle} min={todayISO()}
                 value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value)} />
               {weeksOut !== null && weeksOut > 0 && (
                 <div className="mt-3 rounded-lg p-3.5 flex items-start gap-2.5" style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}55` }}>
@@ -5127,6 +5203,39 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 value={data.injuryNotes || ""} onChange={e => set("injuryNotes", e.target.value)} />
             </Field>
           )}
+        </div>
+      );
+    }
+    case "🎂 Birthday": {
+      // The date is what gets stored; the age underneath is only a read-back so
+      // the person can see the picker landed on the year they meant. A mistyped
+      // year is otherwise invisible until a coach wonders why their 34-year-old
+      // client reads as 134.
+      const bounds = birthdayBounds();
+      const age = ageFromBirthday(data.birthday);
+      const typed = !!(data.birthday || "").trim();
+      return (
+        <div>
+          <Field label="When were you born?">
+            <input type="date" style={inputStyle}
+              min={bounds.min} max={bounds.max}
+              value={data.birthday || ""} onChange={e => set("birthday", e.target.value)} />
+          </Field>
+          {age !== null && (
+            <div className="mt-3 rounded-lg p-3.5 text-center" style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}55` }}>
+              <div className="font-semibold" style={{ fontSize: 30, fontFamily: "JetBrains Mono", color: C.orange }}>{age}</div>
+              <div className="text-xs mt-0.5" style={{ color: C.text }}>years old</div>
+            </div>
+          )}
+          {typed && age === null && (
+            <div className="mt-3 text-xs" style={{ color: C.red }}>That date is in the future — check the year.</div>
+          )}
+          {age !== null && !isUsableBirthday(data.birthday) && (
+            <div className="mt-3 text-xs" style={{ color: C.red }}>That doesn't look right — check the year.</div>
+          )}
+          <p className="text-xs mt-3" style={{ color: C.faint }}>
+            Your coach sees your age, not your birthday. It shapes how hard and how often you're programmed to train.
+          </p>
         </div>
       );
     }
@@ -5516,6 +5625,7 @@ Athlete intake:
 - Sport/focus: ${intake["🥊 Sport / Focus"] || "General Fitness"}
 - Fighter status: ${intake.isFighter ? "Competing fighter" : "Training only"}
 - Discipline: ${intake.discipline || "n/a"}
+- Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
 - Training experience: ${intake.experience || "Beginner"}
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
 - Goal notes: ${intake.goalNotes || "n/a"}
@@ -6498,7 +6608,7 @@ function ModeSwitch({ training, onChange }) {
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
   "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
-  "🩹 Injuries", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment",
+  "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment",
 ];
 
 function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
@@ -6523,6 +6633,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
       case "🎯 Goals": return (data.goals || []).length > 0;
+      case "🎂 Birthday": return isUsableBirthday(data.birthday);
       case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
       case "🏋️ Equipment": return (data.equipment || []).length > 0;
       default: return true;
@@ -7526,7 +7637,14 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             {/* sex can be null for an athlete who hasn't filled it in; the old
                 ternary labelled every such athlete "Female". */}
             <div className="text-xs" style={{ color: C.sub }}>
+              {/* Age is derived from the stored birthday on every render, never
+                  stored, so it can't go stale. Athletes who signed up before the
+                  birthday step exists have no date and simply show nothing here. */}
               {athlete.sport}{athlete.sex ? ` · ${athlete.sex === "male" ? "Male" : "Female"}` : ""}
+              {(() => {
+                const age = ageFromBirthday(athlete.intake?.birthday);
+                return age === null ? "" : ` · ${age} yrs`;
+              })()}
             </div>
             <div className="flex flex-wrap gap-1.5 mt-1.5">
               {(athlete.goals || []).map(g => <span key={g} className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: `${C.blue}22`, color: C.blue }}>{g}</span>)}
@@ -14491,6 +14609,60 @@ function ChangePasswordCard() {
   );
 }
 
+
+// Birthday, for anyone who signed up before the birthday step existed.
+//
+// Signup asks for it now, but every athlete already on a roster has an empty
+// one, and their coach's screen just shows no age. This is the only way that
+// gets filled in — without it the feature only ever works for new clients.
+function BirthdayCard({ state, setState }) {
+  const saved = state.me.intake?.birthday || "";
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState(null);
+
+  const bounds = birthdayBounds();
+  const age = ageFromBirthday(value);
+  const valid = isUsableBirthday(value);
+  const changed = value !== saved;
+
+  const save = async () => {
+    if (busy || !valid) return;
+    setBusy(true); setError(null); setDone(false);
+    try {
+      const err = await saveProfileSetting(setState, state.me.id, "birthday", value);
+      if (err) setError(errText(err)); else setDone(true);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>Birthday</div>
+      <div className="rounded-2xl p-3.5 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+        <div className="text-[11px] mb-2.5" style={{ color: C.sub }}>
+          {age === null
+            ? "Your coach can't see your age until this is set."
+            : `Your coach sees you as ${age}. Your birthday itself stays private.`}
+        </div>
+        <input type="date" style={inputStyle} min={bounds.min} max={bounds.max}
+          value={value} onChange={e => { setValue(e.target.value); setDone(false); setError(null); }} />
+        {error && <div className="text-xs mt-2" style={{ color: C.red }}>{error}</div>}
+        {done && !changed && <div className="text-xs mt-2" style={{ color: C.olive }}>Saved.</div>}
+        {changed && (
+          <Btn className="w-full mt-2.5" disabled={busy || !valid} onClick={save}>
+            {busy ? "Saving…" : "Save"}
+          </Btn>
+        )}
+      </div>
+    </>
+  );
+}
+
 // Light / dark / follow-the-device. Used by athletes and coaches alike.
 function ThemePicker({ state, setState }) {
   const [theme, setTheme] = useState(() => storedTheme());
@@ -14555,6 +14727,7 @@ function AthletePreferences({ state, setState }) {
   return (
     <>
       <ThemePicker state={state} setState={setState} />
+      <BirthdayCard state={state} setState={setState} />
       <ChangePasswordCard />
 
       {/* The athlete's own switch. Turning it off means no prompt, no badge,
