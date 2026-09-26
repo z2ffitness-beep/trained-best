@@ -1876,6 +1876,84 @@ function buildProgramPlan(totalWeeks) {
   return { weeks, blocks, deloadWeeks };
 }
 
+// ---------- fight camp: the taper ----------
+//
+// The coach's rule, in his words: power work is always in the program, but as
+// the fight approaches the strength work converts and then stops. Maximal
+// strength far out; around six weeks it becomes speed-strength derivatives;
+// three to four weeks out those get progressively lighter and the point is
+// speed, not load; and at two weeks out the weights are "pretty much fully out
+// of the picture".
+//
+// Measured in DAYS to the fight, not weeks, because a week boundary invites an
+// argument about rounding and a date does not. Fourteen days is the line where
+// loading stops, whatever weekday it lands on.
+const TAPER_STAGES = [
+  // Everything from here in: no loaded strength work at all. Plyometrics,
+  // ballistics, speed and conditioning only.
+  { key: "peak", maxDaysOut: 14, label: "Fight week", lifting: "none",
+    note: "Weights are out. Plyos, ballistics, speed and sharpening only." },
+  // Speed-strength, getting lighter week on week.
+  { key: "speed", maxDaysOut: 28, label: "Speed", lifting: "speed-strength",
+    note: "Speed-strength getting progressively lighter — the bar moves fast or it does not go on." },
+  // The conversion: maximal work gives way to speed-strength derivatives.
+  { key: "convert", maxDaysOut: 42, label: "Conversion", lifting: "speed-strength",
+    note: "Maximal work converts to speed-strength derivatives. Strength is maintained, not chased." },
+  // Far enough out to still be building. maxDaysOut Infinity = the default.
+  { key: "base", maxDaysOut: Infinity, label: "Base", lifting: "maximal",
+    note: "Maximal strength, with power work alongside it. This is where the numbers get built." },
+];
+
+// The stage a given date falls in, or null when there is no fight to taper to.
+// A fight already in the past is also null — the camp is over, and an athlete
+// who never updated their date should not be stuck in fight week forever.
+function taperStageOn(fightDate, dateIso = todayISO()) {
+  // parseDateParts is NOT redundant with the daysBetweenISO check below.
+  // Date.parse accepts "2027-02-30" and quietly rolls it to 2 March, so a
+  // mistyped fight date would become a real one and silently taper an athlete
+  // to the wrong day. parseDateParts round-trips through UTC and rejects it.
+  if (!fightDate || !parseDateParts(fightDate) || !parseDateParts(dateIso)) return null;
+  const days = daysBetweenISO(dateIso, fightDate);
+  if (days === null || days < 0) return null;
+  return TAPER_STAGES.find(s => days <= s.maxDaysOut) || null;
+}
+
+// The stage for a given WEEK of a program, judged from the Monday that week
+// starts on. Needs the program's start date; without one there is no way to
+// say which calendar week a program week is.
+function taperStageForWeek(program, week, fightDate) {
+  const start = program?.startedOn || program?.started_on;
+  if (!start || !fightDate || !(week >= 1)) return null;
+  const weekStart = addDaysISO(start, (week - 1) * 7);
+  return weekStart ? taperStageOn(fightDate, weekStart) : null;
+}
+
+// Does this program taper at all? Only when a fight date is set AND it falls
+// inside the program. A date two years out is not a camp.
+function programHasTaper(program, fightDate) {
+  if (!program || !fightDate) return false;
+  const weeks = Math.max(1, Math.round(Number(program.weeks) || 0) || 1);
+  for (let w = 1; w <= weeks; w++) {
+    const stage = taperStageForWeek(program, w, fightDate);
+    if (stage && stage.key !== "base") return true;
+  }
+  return false;
+}
+
+// The block deload and the taper are two answers to the same question, and on
+// a camp they disagree: the deload fires on whichever week the 4-week grid
+// lands on, which has nothing to do with when the fight is. The taper wins.
+// It already backs the athlete off, on the schedule that actually matters.
+function planForFight(plan, program, fightDate) {
+  if (!programHasTaper(program, fightDate)) return plan;
+  const taper = [];
+  for (let w = 1; w <= plan.weeks; w++) {
+    const stage = taperStageForWeek(program, w, fightDate);
+    if (stage) taper.push({ week: w, ...stage });
+  }
+  return { ...plan, deloadWeeks: [], taper, fightDate };
+}
+
 function isDeloadWeek(totalWeeks, week) {
   return buildProgramPlan(totalWeeks).deloadWeeks.includes(week);
 }
@@ -1896,6 +1974,12 @@ function daysBetweenISO(fromIso, toIso) {
   const b = Date.parse(String(toIso) + "T00:00:00Z");
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / 86400000);
+}
+
+function addDaysISO(iso, days) {
+  const at = Date.parse(String(iso) + "T00:00:00Z");
+  if (!Number.isFinite(at) || !Number.isFinite(days)) return null;
+  return new Date(at + days * 86400000).toISOString().slice(0, 10);
 }
 
 function currentProgramWeek(program, todayStr = todayISO()) {
@@ -2244,6 +2328,91 @@ function exerciseBudget(minutes) {
   const main = b.strength + b.accessory + 1;
   // Whole-day ceiling, used by the "this session is too long" warning.
   return { ...b, main, total: b.warmup + b.primer + main + 1 };
+}
+
+// ---------- how a training week is laid out ----------
+//
+// The coach's rule, and the default for everyone who does not ask for
+// something else: every session is a full-body session. Not a leg day, not an
+// upper day. Two to four days a week is what most of his fighters train, and
+// splitting qualities across more days than someone has means each quality
+// gets trained too rarely to move.
+//
+// What rotates is not WHETHER you press and pull — you do both, every session
+// — it is which variant. Squat and hinge alternate as the day's lower-body
+// lift; push and pull each alternate between horizontal and vertical, offset
+// from one another so every day pairs one horizontal with one vertical. Over a
+// week nobody benches twice and every pattern and plane gets covered.
+//
+// Lunge is a priority pattern but not a main lift: it belongs in Secondary
+// Movements, which is where the coach's own programs put it.
+const SPLIT_STYLES = [
+  { key: "full_body", label: "Full body every session",
+    hint: "Every session covers a lower-body lift, a press and a pull. Best for 2–4 days a week." },
+  { key: "upper_lower", label: "Upper / lower",
+    hint: "Alternating upper-body and lower-body days." },
+  { key: "push_pull_legs", label: "Push / pull / legs",
+    hint: "One pressing day, one pulling day, one lower-body day." },
+];
+const DEFAULT_SPLIT = "full_body";
+
+// Read the athlete's choice, defaulting to full body. An account that predates
+// the question, or one that answered nothing, gets the default — which is the
+// whole point of the default being this one.
+function splitStyleOf(intake) {
+  const key = intake?.splitStyle;
+  return SPLIT_STYLES.some(s => s.key === key) ? key : DEFAULT_SPLIT;
+}
+
+// The main-lift slots for each day of a full-body week, in order.
+//
+// mainSlots comes from the session length (exerciseBudget.strength): two on a
+// short session, up to four on a long one. The slot order is the priority
+// order — a lower-body lift first, then a press, then a pull — so a day that
+// only has room for two still gets the two that matter most.
+function fullBodyPatternPlan(dayCount, mainSlots) {
+  // Both clamps are belt-and-braces and mutation testing confirms neither
+  // changes any output today: a negative day count just means the loop below
+  // never runs, and `ordered` only ever holds four entries so a slot count
+  // above four slices to the same thing. They are kept because the day a fifth
+  // slot is added, the cap is what stops it appearing in a 30-minute session.
+  const days = Math.max(0, Math.round(Number(dayCount) || 0));
+  const slots = Math.min(4, Math.max(1, Math.round(Number(mainSlots) || 0) || 1));
+  const plan = [];
+  for (let i = 0; i < days; i++) {
+    // Alternate the lower-body pattern, and the plane of each upper-body one.
+    const lower = i % 2 === 0 ? "Squat" : "Hinge";
+    const push = i % 2 === 0 ? "Horizontal Push" : "Vertical Push";
+    // Offset from the push so each day is one horizontal and one vertical.
+    const pull = i % 2 === 0 ? "Vertical Pull" : "Horizontal Pull";
+    // A fourth slot takes the OTHER lower-body pattern, which is what makes a
+    // long session a genuinely full-body one rather than a longer upper day.
+    const otherLower = lower === "Squat" ? "Hinge" : "Squat";
+
+    // With only two slots there is room for one upper-body lift a day, so it
+    // cycles through all four press/pull-by-plane combinations instead of
+    // alternating on the same parity as the lower lift — which would have left
+    // a three-day week with no vertical work in it at all. The coach's own
+    // short-session example is the first two days of this cycle: box squat +
+    // bench, then RDL + pull-up.
+    const upperCycle = ["Horizontal Push", "Vertical Pull", "Vertical Push", "Horizontal Pull"];
+    const ordered = slots === 2
+      ? [lower, upperCycle[i % 4]]
+      : [lower, push, pull, otherLower];
+    plan.push({ day: i + 1, patterns: ordered.slice(0, slots) });
+  }
+  return plan;
+}
+
+// The same plan as a line per day, for the generator prompt. Handing the model
+// an explicit assignment is enforceable in a way that describing the rule in
+// prose is not — it defaulted to upper/lower for every program built so far,
+// because the prompt said nothing either way and that is the commonest
+// convention in its training data.
+function fullBodyPlanText(dayCount, mainSlots) {
+  return fullBodyPatternPlan(dayCount, mainSlots)
+    .map(d => `- Day ${d.day} main lifts: ${d.patterns.join(", ")}`)
+    .join("\n");
 }
 
 // ---------- movement patterns (for accurate swapping) ----------
@@ -4660,7 +4829,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   const coachSteps = ["👤 Your Name", "🏅 Background", "📩 Invite Athletes", "📸 Profile Photo", "🔐 Create Account"];
   const athleteSteps = [
     "👤 Your Name", "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
-    "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment", "📸 Profile Photo", "🔐 Create Account"
+    "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment", "📸 Profile Photo", "🔐 Create Account"
   ];
   const coachedAthleteSteps = ["👤 Your Name", "🔑 Coach Invite Code", ...athleteSteps.slice(1)];
   const allSteps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
@@ -4715,6 +4884,7 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
       case "📏 Height": return !!data.heightCm;
       case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
       case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
+      case "🧩 Session Style": return true; // defaults to full body
       case "🏋️ Equipment": return (data.equipment || []).length > 0;
       case "📸 Profile Photo": return true; // optional by design
       case "🔐 Create Account": return /\S+@\S+\.\S+/.test(data.email || "") && (data.password || "").length >= 6;
@@ -5290,6 +5460,36 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
         </div>
       );
     }
+    case "🧩 Session Style": {
+      const chosen = splitStyleOf(data);
+      return (
+        <div className="grid grid-cols-1 gap-2.5">
+          {SPLIT_STYLES.map(opt => {
+            const active = chosen === opt.key;
+            return (
+              <button key={opt.key} onClick={() => set("splitStyle", opt.key)}
+                className="text-left rounded-xl p-4"
+                style={{ background: active ? `${C.orange}18` : C.panel, border: `1px solid ${active ? C.orange : C.border}` }}>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold flex-1" style={{ color: active ? C.orange : C.text }}>{opt.label}</span>
+                  {opt.key === DEFAULT_SPLIT && (
+                    <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0"
+                      style={{ background: `${C.olive}22`, color: C.olive }}>Recommended</span>
+                  )}
+                  {active && <Check size={16} style={{ color: C.orange }} className="shrink-0" />}
+                </div>
+                <div className="text-[11px] mt-1" style={{ color: C.sub }}>{opt.hint}</div>
+              </button>
+            );
+          })}
+          <p className="text-xs mt-1" style={{ color: C.faint }}>
+            Full body means every session covers a lower-body lift, a press and a pull, with the
+            variations rotating week to week. On a small number of training days it trains everything
+            often enough to matter — which a split can't.
+          </p>
+        </div>
+      );
+    }
     case "🎂 Birthday": {
       // The date is what gets stored; the age underneath is only a read-back so
       // the person can see the picker landed on the year they meant. A mistyped
@@ -5750,6 +5950,20 @@ BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - So do NOT write separate deload days or deload weeks into the days themselves, and do not mention deloads in the day names. Write the normal hard-week prescription; the app handles backing it off.
 - DO mention the block structure and the deload in the rationale, in plain language, so the athlete knows it is coming and why.
 
+${(() => {
+  const stage = taperStageOn(intake.fightDate);
+  if (!stage || stage.key === "base") {
+    return `NO EVENT TO TAPER TO — so the program peaks on its own schedule. Each block builds to its hardest week and then the app deloads it. Write the FINAL week as a TEST WEEK: the same main lifts, low reps, and an instruction in that week's notes to attempt a personal record on them. That is what the whole program was building toward, so say so in the rationale.`;
+  }
+  return `THIS ATHLETE IS IN A FIGHT CAMP — ${daysBetweenISO(todayISO(), intake.fightDate)} days out, which is the "${stage.label}" stage. Build the program for THAT stage, not for a generic training block:
+- ${stage.note}
+${stage.lifting === "none" ? `- NO LOADED STRENGTH WORK AT ALL. No barbell, dumbbell, kettlebell or machine work for strength. This close to a fight the weights are out entirely. The session is plyometrics, ballistics, med ball, sprint and short conditioning work, plus warm-up and cooldown. Leave the "compound" phase EMPTY and put the day's real work in "explosive" and "lactic".` : ""}
+${stage.lifting === "speed-strength" ? `- Main lifts are SPEED-STRENGTH, not maximal strength: jumps with load, Olympic-lift derivatives, trap bar jumps, speed squats and speed pulls done at moderate load with maximal intent. Target RPE 6-7 on those, never 9-10 — the bar moves fast or it does not go on. Do not program grinding triples or heavy singles.` : ""}
+${stage.lifting === "maximal" ? `- Main lifts are maximal strength, and this is where the numbers get built.` : ""}
+- Jumps, throws and power work are in EVERY session regardless of stage — they are never the thing that gets cut. Closer to the fight they get MORE emphasis, not less.
+- Nothing in this program may leave the athlete sore for skill training. That is the constraint that outranks everything else in a camp.`;
+})()}
+
 Rules:
 - Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply to that day): dynamic warmup (see WARM-UP above), 2-3 primer exercises (movement prep, including the injury-specific drills required above), plyometrics/med ball throws, strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
 - If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
@@ -5758,6 +5972,22 @@ Rules:
 - If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
+
+${splitStyleOf(intake) !== "full_body" ? `HOW TO SPLIT THE WEEK — the athlete asked for a ${SPLIT_STYLES.find(x => x.key === splitStyleOf(intake))?.label} split, so build that. Keep every session's structure (warm-up, power, main lifts, accessories, conditioning) exactly as specified elsewhere in these instructions.` : `HOW TO SPLIT THE WEEK — THIS IS NOT OPTIONAL AND IT IS THE INSTRUCTION MOST OFTEN GOT WRONG.
+
+EVERY SESSION IS A FULL-BODY SESSION. There are no leg days, no upper days, no push days and no pull days. A day built around one half of the body is a FAILED response, however well it is otherwise put together.
+
+Why, so you apply it rather than approximate it: this athlete trains a small number of days a week. Splitting qualities across more days than they have means each quality gets trained too rarely to improve. A lower-body lift, a press and a pull, every session, is what moves all three.
+
+The main-lift slots for each day are ASSIGNED below. Use exactly these movement patterns, in this order, for the main compound lifts ("compound" phase) of each day:
+
+${fullBodyPlanText((intake.trainingDays || []).length || 4, exerciseBudget(intake.sessionMinutes).strength)}
+
+Rules on top of that assignment:
+- A pattern that appears on more than one day MUST use a DIFFERENT exercise each time. Back squat one day and front or box squat another; bench press one day and incline or close-grip another. Never the same lift twice in a week.
+- LUNGE is a priority pattern but NOT a main lift. Split squats, walking lunges, step-ups and Bulgarians belong in Secondary Movements ("hypertrophy" phase), where they should appear most weeks.
+- Carries, rotational and anti-rotation work, and core also belong in Secondary Movements.
+- Do not rename the sections or add a focus word to the day names that implies a split. "Day 1 — Full Body" or "Day 1 — Squat + Press" is fine; "Day 1 — Lower Body" is not, because it is not true.`}
 
 EXERCISE SELECTION — prefer the names below, which already have demonstration photos in the app.
 An athlete who can see the movement performs it correctly; one reading a name they have never heard is guessing, and guessing under load is how people get hurt. So when a listed exercise does the job, use it, and use its name EXACTLY as written here so the photo is found.
@@ -5904,6 +6134,11 @@ function buildDaysWithExerciseIds(rawDays, state, { sortByPhase = false } = {}) 
         id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id,
         phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest,
         groupId: x.groupId || null, groupKind: x.groupKind || null, groupRounds: x.groupRounds || null,
+        // The per-week plan. Missing from this list, every program loaded as
+        // its first week repeated forever — 22 weekly entries sitting in the
+        // row for a single squat and none of them reaching the screen. It is
+        // why a 26-week program looked like it had no progression in it.
+        byWeek: x.byWeek || null,
       };
     }).sort((a, b) => (sortByPhase ? phaseIndex(a.phase) - phaseIndex(b.phase) : 0))
   }));
@@ -5926,6 +6161,11 @@ function denormalizeDays(days, state) {
       return {
         name: ex?.name || "Unknown Exercise", phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest,
         groupId: x.groupId || null, groupKind: x.groupKind || null, groupRounds: x.groupRounds || null,
+        // Missing here, the first save from inside the app wiped the per-week
+        // plan out of the database for good. A coach reordering one warm-up
+        // would have destroyed six months of authored progression and had no
+        // way of knowing.
+        byWeek: x.byWeek || null,
       };
     })
   }));
@@ -6697,7 +6937,7 @@ function ModeSwitch({ training, onChange }) {
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
   "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
-  "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🏋️ Equipment",
+  "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
 ];
 
 function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
@@ -6724,6 +6964,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       case "🎯 Goals": return (data.goals || []).length > 0;
       case "🎂 Birthday": return isUsableBirthday(data.birthday);
       case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
+      case "🧩 Session Style": return true; // defaults to full body
       case "🏋️ Equipment": return (data.equipment || []).length > 0;
       default: return true;
     }
@@ -11447,9 +11688,14 @@ function AthleteProgram({ state, setState, nav }) {
   // it would tell the athlete the wrong weeks are deloads.
   const authoredWeeks = programHasWeeklyPlan(myProgram);
   const generated = buildProgramPlan(myProgram.weeks);
-  const plan = authoredWeeks
+  const base = authoredWeeks
     ? { ...generated, blocks: authoredBlocks(myProgram), deloadWeeks: authoredDeloadWeeks(myProgram) }
     : generated;
+  // A fight date replaces the block deload with the taper. The two are
+  // answers to the same question and on a camp they disagree — the deload
+  // fires wherever the 4-week grid lands, which has nothing to do with when
+  // the fight is.
+  const plan = planForFight(base, myProgram, state.me.intake?.fightDate);
   const liveWeek = currentProgramWeek(myProgram);
   // Null until the athlete picks a week, so "today" keeps following the
   // calendar instead of freezing on whatever week the page first rendered.
