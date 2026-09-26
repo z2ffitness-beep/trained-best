@@ -5689,6 +5689,7 @@ Explanation requirements — this is the first thing the athlete reads, and it i
 
 - "rationale": EXACTLY TWO PARAGRAPHS, separated by a blank line. Plain language, second person ("you"). Be thorough — this is the one place the thinking gets explained — but stay inside two paragraphs.
   * Paragraph 1 — THE OBJECTIVE AND THE GAME PLAN. What this program is built to achieve for this specific athlete, and how it is arranged to get there: why this split, why this many sessions, what each session is for, and how the phases progress from the first to the last.
+    * ITS FIRST SENTENCE IS THE SYNOPSIS, and it is the only part most athletes will read — the app shows it alone and keeps the rest behind a tap. Under 40 words. It must stand on its own with no sentence before or after it: what this program is for and how it is set up, in the plainest words you have. No "this program is built around three things at once" throat-clearing, no colon-then-list, no restating their intake. Then carry on with the rest of the paragraph as normal.
   * Paragraph 2 — THE REASONING. WHY that plan produces the result: the actual physiology, in plain words. Explain the mechanism — what adaptation you are chasing, what stimulus drives it, why the ordering and the frequency matter, and why the deload is there. Name the real trade-off you made for this athlete (their available days, equipment, injuries or experience) and what you chose to prioritise over what.
   * Define any technical term the moment you use it, in the same sentence. No hype, no restating their intake back at them, no "as an elite coach". If you would not say it out loud to the person in front of you, don't write it.
 - Each day's "why": ONE sentence on what that specific session is for and why it sits where it does in the week.
@@ -6306,7 +6307,9 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
         <div>
           <div className="rounded-lg p-3.5 mb-4" style={{ background: `${C.olive}18`, border: `1px solid ${C.olive}55` }}>
             <div className="font-semibold text-sm" style={{ color: C.olive }}>{result.programName}</div>
-            <div className="text-xs mt-1" style={{ color: C.text }}>{result.rationale}</div>
+            {/* The synopsis only: this card is a yes/no on the program, not
+                the place to read the whole explanation. */}
+            <div className="text-xs mt-1" style={{ color: C.text }}>{programSynopsis(result.rationale).synopsis}</div>
           </div>
 
           {/* Said before the program is accepted, not discovered later. The
@@ -10757,6 +10760,136 @@ function SessionLogRow({ log, showNote = true }) {
   );
 }
 
+// The program description, cut to something an athlete will actually read.
+//
+// The generator writes two thorough paragraphs — 2,500 to 3,000 characters on
+// the four programs on this account, which is about seventy lines on a phone.
+// It opens the program page, so the first thing anyone sees before a single
+// exercise is a wall of text, and the reliable response to a wall of text is to
+// scroll past all of it. The reasoning was worth writing; it was not worth
+// making it the price of admission.
+//
+// So: a synopsis by default, the rest one tap away. Nothing is deleted and
+// nothing is rewritten in the database — the same stored text renders short.
+// A rationale that is already short shows whole and the toggle never appears,
+// which is what the imported programs do and what new ones will do.
+const SYNOPSIS_MAX = 240;   // ~5 lines on an iPhone
+const SYNOPSIS_WHOLE = 300; // below this, a "more" button saves a line and costs a tap
+
+// Sentence boundaries without a lookbehind regex — Safari only grew those
+// recently and this has to work on an iPhone that hasn't been updated.
+//
+// A period only ends a sentence when whitespace and something that looks like a
+// new sentence follow it. That leaves "40%.", "1.5", "48-72" and a trailing
+// "(Mon, Tue, Thu)" alone, which a naive split on /[.!?]\s/ does not.
+function splitSentences(text) {
+  const s = String(text || "");
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (".!?".indexOf(s[i]) < 0) continue;
+    // A terminator only ends a sentence when whitespace and something that
+    // looks like a new sentence follow it. That requirement also handles runs:
+    // inside "..." the next character is another dot, so the scan moves on and
+    // the sentence closes at the last one.
+    const next = /^(\s+)(\S)/.exec(s.slice(i + 1));
+    if (!next) continue;
+    const end = i;
+    // A new sentence opens with a capital or an opening quote. Anything else
+    // means the period belonged to the word before it.
+    if (!/[A-Z“‘"'(]/.test(next[2])) continue;
+    // A single capital letter before the dot is an initial, not an end —
+    // "I. Fearon", and the second dot of "U.S." (hence the dot in the class).
+    // It errs toward not splitting, which costs a longer synopsis at worst; the
+    // other way round mangles a name.
+    if (/(^|[\s.(])[A-Z]$/.test(s.slice(start, end))) continue;
+    const chunk = s.slice(start, end + 1).trim();
+    if (chunk) out.push(chunk);
+    start = end + 1 + next[1].length;
+  }
+  const tail = s.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+// { synopsis, truncated }. `truncated` is false when the synopsis IS the whole
+// rationale, which is how the caller knows not to render a toggle at all.
+//
+// Expanding shows the original text, not synopsis-plus-remainder: cutting at a
+// colon and then re-joining leaves a seam (". : Monday hits...") that reads
+// like a bug.
+function programSynopsis(rationale) {
+  const full = String(rationale || "").trim();
+  if (!full) return { synopsis: "", truncated: false };
+  if (full.length <= SYNOPSIS_WHOLE) return { synopsis: full, truncated: false };
+
+  // The first paragraph only. `full` is trimmed, so offsets into `first` are
+  // offsets into `full`.
+  const first = full.split(/\n\s*\n/)[0].trim();
+  const sentences = splitSentences(first);
+
+  // Whole sentences while they fit. Walking with indexOf rather than joining
+  // keeps the original spacing instead of normalising it to single spaces.
+  let pos = 0;
+  for (const sentence of sentences) {
+    const at = first.indexOf(sentence, pos);
+    if (at < 0) break;
+    const end = at + sentence.length;
+    if (pos > 0 && end > SYNOPSIS_MAX) break;
+    pos = end;
+    if (pos >= SYNOPSIS_MAX) break;
+  }
+  if (pos === 0) pos = first.length;
+
+  let synopsis = first.slice(0, pos).trim();
+
+  // A single sentence can be longer than the whole budget — one program on this
+  // account opens with a 598-character sentence, which is four fifths of the
+  // wall this is meant to remove. Cut it at a clause break.
+  if (synopsis.length > SYNOPSIS_MAX) {
+    synopsis = synopsis.slice(0, clauseBreak(synopsis, SYNOPSIS_MAX))
+      .replace(/[\s,;:—–-]+$/, "") + "…";
+  }
+
+  // In practice this is always true by the time we get here — anything that
+  // reached this line was longer than SYNOPSIS_WHOLE and the sentence loop
+  // stops at SYNOPSIS_MAX, so the synopsis is always shorter. It is written as
+  // the comparison rather than `true` because that is the actual condition the
+  // toggle depends on, and a future change to either threshold could make the
+  // two diverge.
+  return { synopsis, truncated: synopsis !== full };
+}
+
+// Where to cut a too-long sentence so it still reads like a finished thought.
+//
+// A colon, semicolon or dash is a real clause break and cuts cleanly; a comma
+// is second best; a word boundary is the fallback. Every candidate must sit
+// OUTSIDE brackets, the fallback included — cutting inside one strands an
+// unclosed "(" and the synopsis ends "…built around (squat,".
+function clauseBreak(text, max) {
+  const window = text.slice(0, max + 1);
+  // Not so early that the synopsis says nothing.
+  const floor = Math.floor(max * 0.4);
+  let depth = 0;
+  let strong = -1, weak = -1, space = -1;
+  for (let i = 0; i < window.length; i++) {
+    const c = window[i];
+    if (c === "(" || c === "[") { depth++; continue; }
+    if (c === ")" || c === "]") { depth = Math.max(0, depth - 1); continue; }
+    if (depth !== 0 || i < floor) continue;
+    if (c === ":" || c === ";" || c === "\u2014" || c === "\u2013") strong = i;
+    else if (c === ",") weak = i;
+    else if (/\s/.test(c)) space = i;
+  }
+  if (strong >= 0) return strong;
+  if (weak >= 0) return weak;
+  if (space >= 0) return space;
+  // Nothing safe to cut at — an unclosed bracket runs the whole window. Stop
+  // before it opened rather than in the middle of it.
+  const open = window.indexOf("(");
+  return open > floor ? open : max;
+}
+
 // What the program is for, before a single exercise is listed.
 //
 // The screen used to open straight into a flat list of sixteen movements. A
@@ -10772,6 +10905,7 @@ function SessionLogRow({ log, showNote = true }) {
 // it can always be shown.
 function ProgramExplainer({ program, state }) {
   const [open, setOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const goals = state.me.goals?.length ? state.me.goals.join(" + ") : null;
   const perWeek = program.days.length;
   const typical = program.days.length
@@ -10785,13 +10919,24 @@ function ProgramExplainer({ program, state }) {
           <Target size={15} style={{ color: C.orange }} />
           <div className="text-xs uppercase tracking-wide font-semibold" style={{ color: C.orange }}>Why this program</div>
         </div>
-        {program.rationale ? (
-          <div className="space-y-2.5">
-            {String(program.rationale).split(/\n\s*\n/).map((para, i) => (
-              <p key={i} className="text-sm leading-relaxed" style={{ color: C.text }}>{para.trim()}</p>
-            ))}
-          </div>
-        ) : (
+        {program.rationale ? (() => {
+          const { synopsis, truncated } = programSynopsis(program.rationale);
+          const shown = showAll ? String(program.rationale).trim() : synopsis;
+          return (
+            <div className="space-y-2.5">
+              {shown.split(/\n\s*\n/).map((para, i) => (
+                <p key={i} className="text-sm leading-relaxed" style={{ color: C.text }}>{para.trim()}</p>
+              ))}
+              {/* Only when there is something behind it. A program whose
+                  description is already a couple of sentences gets no toggle. */}
+              {truncated && (
+                <button onClick={() => setShowAll(v => !v)} className="text-xs font-semibold" style={{ color: C.orange }}>
+                  {showAll ? "Show less" : "Read the full reasoning"}
+                </button>
+              )}
+            </div>
+          );
+        })() : (
           <p className="text-sm leading-relaxed" style={{ color: C.sub }}>
             {program.weeks}-week block, {perWeek} session{perWeek === 1 ? "" : "s"} a week
             {goals ? `, aimed at ${goals.toLowerCase()}` : ""}
