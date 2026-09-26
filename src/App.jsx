@@ -4478,13 +4478,202 @@ function resolveExerciseForWeek(exercise, week) {
   if (!entry) return exercise;
   if (entry.skip) return null;
   const out = { ...exercise };
-  ["name", "sets", "reps", "rpe", "rest", "phase"].forEach((k) => {
+  // exerciseId is in this list because swapping the MOVEMENT for a block is
+  // the commonest per-block change there is — a new primary lift in a new
+  // phase. Without it a week could override the name while the screen, which
+  // looks the movement up by exerciseId, went on showing the old one.
+  ["exerciseId", "name", "sets", "reps", "rpe", "rest", "phase"].forEach((k) => {
     if (entry[k] !== undefined && entry[k] !== null) out[k] = entry[k];
   });
   // The resolved exercise keeps its identity: same id, so a log written against
   // it still lines up week to week, and `byWeek` stays attached so the coach's
   // editor can still see the whole arc.
   return out;
+}
+
+// ---------- changing one movement, across a chosen span ----------
+//
+// A coach editing week 1 day 1 is doing one of several different things, and
+// the app cannot tell which from the edit alone. Swapping the primary lift
+// because a new phase calls for a new movement is a BLOCK change. Dropping the
+// sets because someone turned up beaten up is a THIS WEEK change. Correcting a
+// movement that was wrong from the start is an EVERY WEEK change. Guessing
+// wrong is expensive in both directions: one way a coach fixes a typo twenty
+// times, the other way a single tweak silently overwrites six months of
+// authored progression.
+//
+// So the scope is asked for, and this is what each answer means.
+const EDIT_SCOPES = [
+  { key: "week", label: "This week only", hint: "Reverts to the planned movement next week." },
+  { key: "block", label: "This block", hint: "Every week of this block. Later blocks keep what they had." },
+  { key: "blocks", label: "Pick blocks", hint: "Choose exactly which blocks change." },
+  { key: "all", label: "Every week", hint: "The whole program, including blocks already written." },
+];
+const DEFAULT_EDIT_SCOPE = "block";
+
+// The fields a per-week entry may carry. Must match resolveExerciseForWeek's
+// list, or an edit writes a field nothing ever reads back.
+const WEEK_FIELDS = ["exerciseId", "name", "sets", "reps", "rpe", "rest", "phase"];
+
+function weekKeys(exercise) {
+  return Object.keys(exercise?.byWeek || {})
+    .map(Number).filter(n => Number.isFinite(n) && n >= 1)
+    .sort((a, b) => a - b);
+}
+
+// What this exercise actually shows in a given week, for the given fields.
+function resolvedFields(exercise, week, fields) {
+  const at = resolveExerciseForWeek(exercise, week);
+  const out = {};
+  // A week the movement is skipped entirely resolves to null; there is nothing
+  // to pin, and the skip itself is what the next entry must preserve.
+  fields.forEach(f => { out[f] = at ? at[f] : undefined; });
+  return out;
+}
+
+// Drop empty entries so byWeek does not fill up with {} after a few edits —
+// and drop byWeek itself when nothing is left, so dayHasWeeklyPlan stops
+// claiming a program has a plan when it no longer does.
+function tidyByWeek(exercise) {
+  const map = { ...(exercise.byWeek || {}) };
+  Object.keys(map).forEach(k => {
+    const entry = map[k];
+    if (!entry || (typeof entry === "object" && Object.keys(entry).length === 0)) delete map[k];
+  });
+  const out = { ...exercise };
+  if (Object.keys(map).length === 0) out.byWeek = null; else out.byWeek = map;
+  return out;
+}
+
+// Write `patch` into the entry at `week`, creating it if needed.
+function setWeekEntry(exercise, week, patch) {
+  const map = { ...(exercise.byWeek || {}) };
+  map[String(week)] = { ...(map[String(week)] || {}), ...patch };
+  return { ...exercise, byWeek: map };
+}
+
+// Entries do NOT cascade into one another. weekEntryFor returns the single
+// nearest entry at or before the week, and any field that entry does not name
+// falls back to the BASE template — not to an earlier entry. That is the whole
+// reason these two functions are not the same function.
+//
+// Inside a span being changed, every existing entry has to be given the new
+// value outright. Merely deleting the field would drop those weeks back to the
+// base and the edit would apply to the first week of the block and then
+// silently stop.
+function setFieldsInRange(exercise, from, to, patch, fields) {
+  const map = { ...(exercise.byWeek || {}) };
+  weekKeys(exercise).filter(w => w >= from && w <= to).forEach(w => {
+    const entry = { ...map[String(w)] };
+    fields.forEach(f => { entry[f] = patch[f]; });
+    map[String(w)] = entry;
+  });
+  return { ...exercise, byWeek: map };
+}
+
+// For an EVERY WEEK change the base template holds the new value, so entries
+// must let go of the field instead — an entry still naming it would win.
+// Other fields in those entries are left alone, so changing the movement never
+// flattens the loading.
+function clearFieldsInRange(exercise, from, to, fields) {
+  const map = { ...(exercise.byWeek || {}) };
+  weekKeys(exercise).filter(w => w >= from && w <= to).forEach(w => {
+    const entry = { ...map[String(w)] };
+    fields.forEach(f => { delete entry[f]; });
+    map[String(w)] = entry;
+  });
+  return { ...exercise, byWeek: map };
+}
+
+// Stop a change leaking past the span it was made for, by writing what the
+// following week USED to show. Only fields that week does not already pin for
+// itself are written — an entry that already says what it wants is left alone.
+function pinAt(exercise, week, before, fields) {
+  if (!(week >= 1)) return exercise;
+  const existing = exercise.byWeek?.[String(week)] || {};
+  const patch = {};
+  fields.forEach(f => {
+    // Belt and braces with the boundary filter in applyExerciseEdit: a week
+    // that already names the field is either a block that chose for itself
+    // (where `before` reads back that same value, so writing it changes
+    // nothing) or a block that was just edited in this same call (where
+    // writing would undo it). Removing EITHER this line or that filter is
+    // unobservable; removing both breaks picking two adjacent blocks, which
+    // the tests cover.
+    if (existing[f] !== undefined) return;
+    if (before[f] === undefined) return;
+    patch[f] = before[f];
+  });
+  return Object.keys(patch).length ? setWeekEntry(exercise, week, patch) : exercise;
+}
+
+// The one entry point. `blocks` is the program's block list ([{startWeek,
+// endWeek}]); `week` is the week being looked at; `selected` is the set of
+// block start weeks for the "Pick blocks" scope.
+function applyExerciseEdit(exercise, patch, { scope, week, blocks, selected, totalWeeks } = {}) {
+  if (!exercise || !patch) return exercise;
+  const fields = Object.keys(patch).filter(f => WEEK_FIELDS.includes(f));
+  if (!fields.length) return exercise;
+  const last = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
+  const list = Array.isArray(blocks) && blocks.length
+    ? blocks
+    : [{ startWeek: 1, endWeek: last }];
+
+  // Every week: the base template IS the change, and any entry that overrides
+  // one of these fields has to let go of it or it would win later on.
+  if (scope === "all") {
+    let out = { ...exercise, ...patch };
+    out = clearFieldsInRange(out, 1, Infinity, fields);
+    return tidyByWeek(out);
+  }
+
+  // Which spans are changing.
+  let spans;
+  if (scope === "week") {
+    const w = Math.max(1, Math.round(Number(week) || 1));
+    spans = [{ startWeek: w, endWeek: w }];
+  } else if (scope === "blocks") {
+    const want = new Set((selected || []).map(Number));
+    spans = list.filter(b => want.has(Number(b.startWeek)));
+  } else {
+    spans = list.filter(b => week >= b.startWeek && week <= b.endWeek);
+    if (!spans.length) spans = [list[0]];
+  }
+  if (!spans.length) return exercise;
+
+  // Read what every following week shows BEFORE anything is written, or the
+  // pins record values the earlier writes already changed.
+  // A boundary that falls inside ANOTHER span being changed is not a
+  // boundary — pinning there would undo the edit to the block next door.
+  // See the note in pinAt: these two guards cover for each other.
+  const boundaries = spans
+    .map(s => Number(s.endWeek) + 1)
+    .filter(w => w <= last && !spans.some(s => w >= s.startWeek && w <= s.endWeek));
+  const before = new Map(boundaries.map(w => [w, resolvedFields(exercise, w, fields)]));
+
+  let out = exercise;
+  for (const span of spans) {
+    out = setWeekEntry(out, span.startWeek, patch);
+    // Anything already written later inside this span would otherwise override
+    // the edit — or, if the field were merely deleted, fall back to the base.
+    out = setFieldsInRange(out, Number(span.startWeek) + 1, Number(span.endWeek), patch, fields);
+  }
+  for (const w of boundaries) out = pinAt(out, w, before.get(w), fields);
+  return tidyByWeek(out);
+}
+
+// Which blocks a coach is offered, and which are already different from the
+// one being edited — so the picker can show "front squat" against block 2 and
+// "back squat" against block 3 rather than a row of identical checkboxes.
+function blockSummaryFor(exercise, blocks, field = "name") {
+  return (blocks || []).map(b => {
+    const at = resolveExerciseForWeek(exercise, b.startWeek);
+    return {
+      startWeek: b.startWeek, endWeek: b.endWeek, index: b.index,
+      skipped: at === null,
+      value: at ? at[field] : null,
+    };
+  });
 }
 
 function resolveDayForWeek(day, week) {
@@ -5782,6 +5971,123 @@ function BottomNav({ items, active, onChange }) {
 // ============================================================
 // EXERCISE SWAP MODAL — pattern-matched, full pick list
 // ============================================================
+// Asks what a change applies to, before it is written.
+//
+// The same gesture — swapping a movement — means three different things
+// depending on why the coach is doing it, and only they know which. A new
+// primary lift for a new phase is a BLOCK change. A movement that was wrong
+// from the start is an EVERY WEEK change. So the app asks instead of guessing,
+// and shows what each block currently holds so the answer is informed: front
+// squat against blocks 1 and 2, speed squat against block 3.
+//
+// Only appears for a program that HAS blocks worth distinguishing. A program
+// written as one repeating week has nothing to scope to, so the change is
+// applied and nothing is asked.
+function EditScopeModal({ open, onClose, onConfirm, exercise, blocks, week, totalWeeks, newName, currentName }) {
+  const [scope, setScope] = useState(DEFAULT_EDIT_SCOPE);
+  const [picked, setPicked] = useState([]);
+
+  // Reopening for a different movement must not inherit the last answer.
+  useEffect(() => {
+    if (open) {
+      setScope(DEFAULT_EDIT_SCOPE);
+      const here = (blocks || []).find(b => week >= b.startWeek && week <= b.endWeek);
+      setPicked(here ? [here.startWeek] : []);
+    }
+  }, [open, week, exercise?.id]);
+
+  if (!open) return null;
+  const rows = blockSummaryFor(exercise, blocks);
+  const here = (blocks || []).find(b => week >= b.startWeek && week <= b.endWeek);
+  const toggle = (startWeek) => setPicked(p =>
+    p.includes(startWeek) ? p.filter(w => w !== startWeek) : [...p, startWeek]);
+  const ready = scope !== "blocks" || picked.length > 0;
+
+  return (
+    <Modal open={open} onClose={onClose} title="Apply this change to…">
+      <div className="rounded-lg p-3 mb-4" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+        <div className="text-xs" style={{ color: C.sub }}>
+          <span style={{ color: C.faint }}>{currentName}</span>
+          {" → "}
+          <span className="font-semibold" style={{ color: C.text }}>{newName}</span>
+        </div>
+        {here && (
+          <div className="text-[11px] mt-1" style={{ color: C.faint }}>
+            You're looking at week {week}, which is block {here.index} (weeks {here.startWeek}–{here.endWeek}).
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2 mb-4">
+        {EDIT_SCOPES.map(opt => {
+          const active = scope === opt.key;
+          return (
+            <button key={opt.key} onClick={() => setScope(opt.key)} className="w-full text-left rounded-xl p-3.5"
+              style={{ background: active ? `${C.orange}18` : C.panel, border: `1px solid ${active ? C.orange : C.border}` }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold flex-1" style={{ color: active ? C.orange : C.text }}>{opt.label}</span>
+                {opt.key === DEFAULT_EDIT_SCOPE && (
+                  <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0"
+                    style={{ background: `${C.olive}22`, color: C.olive }}>Usual</span>
+                )}
+                {active && <Check size={15} style={{ color: C.orange }} className="shrink-0" />}
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>{opt.hint}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {scope === "blocks" && (
+        <div className="mb-4">
+          <div className="text-xs uppercase tracking-wide font-semibold mb-2" style={{ color: C.sub }}>Which blocks</div>
+          <div className="space-y-1.5">
+            {rows.map(r => {
+              const on = picked.includes(r.startWeek);
+              return (
+                <button key={r.startWeek} onClick={() => toggle(r.startWeek)}
+                  className="w-full flex items-center gap-2.5 rounded-lg p-3 text-left"
+                  style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                  {on ? <CheckCircle2 size={16} style={{ color: C.orange }} className="shrink-0" />
+                      : <Circle size={16} style={{ color: C.faint }} className="shrink-0" />}
+                  <span className="text-sm font-semibold shrink-0" style={{ color: on ? C.orange : C.text }}>
+                    Block {r.index}
+                  </span>
+                  <span className="text-[11px] shrink-0" style={{ color: C.faint }}>wk {r.startWeek}–{r.endWeek}</span>
+                  {/* What that block holds today, so ticking it is an informed
+                      choice rather than a row of identical checkboxes. */}
+                  <span className="text-[11px] ml-auto truncate text-right" style={{ color: C.sub }}>
+                    {r.skipped ? "not in this block" : r.value}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {picked.length === 0 && (
+            <div className="text-[11px] mt-2" style={{ color: C.red }}>Pick at least one block.</div>
+          )}
+        </div>
+      )}
+
+      {scope === "all" && (
+        <div className="rounded-lg p-3 mb-4 flex items-start gap-2" style={{ background: `${C.amber}18`, border: `1px solid ${C.amber}55` }}>
+          <AlertCircle size={14} style={{ color: C.amber }} className="mt-0.5 shrink-0" />
+          <div className="text-[11px]" style={{ color: C.text }}>
+            This overwrites the movement in every block, including ones already written.
+            Sets, reps and loading are left alone.
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Btn variant="ghost" className="flex-1" onClick={onClose}>Cancel</Btn>
+        <Btn className="flex-1" disabled={!ready}
+          onClick={() => onConfirm({ scope, selected: picked, week, totalWeeks })}>Apply</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 function ExerciseSwapModal({ open, onClose, currentExercise, exercises, onSwap, reasonPreset }) {
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState(reasonPreset || "");
@@ -7733,6 +8039,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
   const [swapTarget, setSwapTarget] = useState(null);
+  const [scopeTarget, setScopeTarget] = useState(null);
+  const [editBlockStart, setEditBlockStart] = useState(1);
   const [detailExercise, setDetailExercise] = useState(null);
   const [editError, setEditError] = useState(null);
   // These two were declared BELOW the `if (!athlete) return null` guard, which
@@ -7856,14 +8164,56 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
     ensureCustom(prog => ({ ...prog, days: setDateSessionMode(prog.days, dayId, dateIso, mode) }));
   };
   const deleteExerciseGlobally = (exerciseId) => deleteExerciseEverywhere(state, setState, exerciseId, setEditError);
-  const updateExerciseField = (dayId, xId, field, value) => {
-    ensureCustom(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, [field]: value } : x) } : d) }));
+  // Both writers go through applyExerciseEdit when the program has more than
+  // one block, so a change lands in the block on screen and the others keep
+  // what they had. A single-block program has nothing to scope to, so the
+  // straight write is still the right one.
+  const scopedEdit = (dayId, xId, patch, scopeOpts) => {
+    ensureCustom(prog => ({
+      ...prog,
+      days: prog.days.map(d => d.id !== dayId ? d : {
+        ...d,
+        exercises: d.exercises.map(x => x.id !== xId ? x
+          : scopeOpts
+            ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: coachPlan.blocks, totalWeeks: coachPlan.weeks })
+            : { ...x, ...patch }),
+      }),
+    }));
   };
-  const swapExercise = (dayId, xId, newExercise) => {
-    ensureCustom(prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, exerciseId: newExercise.id, phase: newExercise.phase } : x) } : d) }));
+  const multiBlock = () => coachPlan.blocks.length > 1;
+  // Typing in a sets or reps box is a per-block change by default. Asking on
+  // every keystroke would be unusable, and the block on screen is the block the
+  // coach means — which is the whole point of the strip above.
+  const updateExerciseField = (dayId, xId, field, value) => {
+    scopedEdit(dayId, xId, { [field]: value },
+      multiBlock() ? { scope: "block", week: editBlock.startWeek } : null);
+  };
+  // A movement swap DOES ask, because it is the change most likely to mean
+  // something other than "just this block".
+  const swapExercise = (dayId, xId, newExercise, scopeOpts = null) => {
+    scopedEdit(dayId, xId,
+      { exerciseId: newExercise.id, name: newExercise.name, phase: newExercise.phase },
+      scopeOpts);
   };
 
   const sortedExercises = (day) => [...day.exercises].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase));
+
+  // Which block the coach is editing.
+  //
+  // This screen used to render the base template and nothing else, so there was
+  // no week to scope an edit to and every change necessarily hit all of them.
+  // The block strip below is what makes a per-block edit meaningful here.
+  const coachPlan = program
+    ? planForFight(
+        programHasWeeklyPlan(program)
+          ? { ...buildProgramPlan(program.weeks), blocks: authoredBlocks(program), deloadWeeks: authoredDeloadWeeks(program) }
+          : buildProgramPlan(program.weeks),
+        program, athlete?.intake?.fightDate)
+    : { weeks: 1, blocks: [{ index: 1, startWeek: 1, endWeek: 1, isFinal: true }], deloadWeeks: [] };
+  const editBlock = coachPlan.blocks.find(b => b.startWeek === editBlockStart) || coachPlan.blocks[0];
+  // What the athlete actually sees in that block's first week. Display only —
+  // every write below goes to the stored day, never to this resolved copy.
+  const dayForEdit = (day) => (editBlock ? resolveDayForWeek(day, editBlock.startWeek) : day);
 
   // Start a fresh program for this athlete, right here.
   //
@@ -8190,8 +8540,32 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                     coach deleting "Conditioning" is looking at the same thing
                     the athlete is, and so a whole section can go in one action
                     instead of one exercise at a time. */}
+                {/* Which block is being edited. Without this the screen only
+                    ever showed the base template, so every change was global
+                    whether the coach meant it or not. */}
+                {coachPlan.blocks.length > 1 && (
+                  <div className="mt-3">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: C.sub }}>Editing block</span>
+                      <span className="text-[10px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
+                    </div>
+                    <div className="flex gap-1.5 overflow-x-auto pb-1">
+                      {coachPlan.blocks.map(b => {
+                        const on = b.startWeek === editBlock?.startWeek;
+                        return (
+                          <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
+                            className="shrink-0 rounded-lg px-3 py-2 text-left"
+                            style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                            <div className="text-xs font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
+                            <div className="text-[10px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-3 mt-3">
-                  {buildSessionBlocks(sortedExercises(day)).map(b => (
+                  {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
                   <div key={b.key} className="space-y-2">
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
@@ -8285,8 +8659,26 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         onPick={(ex) => addExerciseToDay(activeDayId, ex, pickerBlock)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
-      <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
-        onSwap={(newEx) => swapExercise(swapTarget.dayId, swapTarget.x.id, newEx)} />
+      <ExerciseSwapModal open={!!swapTarget && !scopeTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
+        onSwap={(newEx) => {
+          if (multiBlock()) { setScopeTarget({ ...swapTarget, newEx }); return; }
+          swapExercise(swapTarget.dayId, swapTarget.x.id, newEx);
+          setSwapTarget(null);
+        }} />
+      <EditScopeModal
+        open={!!scopeTarget}
+        onClose={() => { setScopeTarget(null); setSwapTarget(null); }}
+        exercise={scopeTarget?.x}
+        blocks={coachPlan.blocks}
+        week={editBlock?.startWeek || 1}
+        totalWeeks={coachPlan.weeks}
+        currentName={exById(scopeTarget?.x?.exerciseId)?.name || "This movement"}
+        newName={scopeTarget?.newEx?.name}
+        onConfirm={(opts) => {
+          swapExercise(scopeTarget.dayId, scopeTarget.x.id, scopeTarget.newEx, opts);
+          setScopeTarget(null);
+          setSwapTarget(null);
+        }} />
       <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
         onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
         onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
@@ -11602,6 +11994,7 @@ function AthleteProgram({ state, setState, nav }) {
   // offers "what does the rest of the program look like".
   const [viewWeek, setViewWeek] = useState(null);
   const [swapTarget, setSwapTarget] = useState(null);
+  const [scopeTarget, setScopeTarget] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
   // Declared here, above the `if (!myProgram)` early return below. It used to
   // sit further down, which made it a conditional hook: the no-program branch
@@ -11739,12 +12132,20 @@ function AthleteProgram({ state, setState, nav }) {
   const tooMany = sortedExercises.length > budget.total;
   const overrunning = tooLong || tooMany;
 
-  const swapExerciseInMyProgram = (dayId, xId, newExercise) => {
+  // A swap with no scope rewrites the movement outright, which is right for a
+  // program that is one repeating week. With a scope it goes through
+  // applyExerciseEdit, which writes per-week entries and pins the blocks that
+  // were NOT chosen so the change cannot leak into them.
+  const swapExerciseInMyProgram = (dayId, xId, newExercise, scopeOpts = null) => {
     const isCustom = !!state.me.customProgram;
+    const patch = { exerciseId: newExercise.id, name: newExercise.name, phase: newExercise.phase };
     const updateDays = (prog) => ({
       ...prog,
       days: prog.days.map(d => d.id === dayId
-        ? { ...d, exercises: d.exercises.map(x => x.id === xId ? { ...x, exerciseId: newExercise.id, phase: newExercise.phase } : x) }
+        ? { ...d, exercises: d.exercises.map(x => x.id !== xId ? x
+            : scopeOpts
+              ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: plan.blocks, totalWeeks: plan.weeks })
+              : { ...x, ...patch }) }
         : d)
     });
     if (isCustom) {
@@ -12202,8 +12603,28 @@ function AthleteProgram({ state, setState, nav }) {
         )}
       </div>
 
-      <ExerciseSwapModal open={!!swapTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
-        onSwap={(newEx) => swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx)} />
+      <ExerciseSwapModal open={!!swapTarget && !scopeTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
+        onSwap={(newEx) => {
+          // Only worth asking when the program has blocks to tell apart. One
+          // repeating week has nothing to scope to, so the swap just happens.
+          if (plan.blocks.length > 1) { setScopeTarget({ ...swapTarget, newEx }); return; }
+          swapExerciseInMyProgram(swapTarget.dayId, swapTarget.x.id, newEx);
+          setSwapTarget(null);
+        }} />
+      <EditScopeModal
+        open={!!scopeTarget}
+        onClose={() => { setScopeTarget(null); setSwapTarget(null); }}
+        exercise={scopeTarget?.x}
+        blocks={plan.blocks}
+        week={shownWeek}
+        totalWeeks={plan.weeks}
+        currentName={exById(scopeTarget?.x?.exerciseId)?.name || "This movement"}
+        newName={scopeTarget?.newEx?.name}
+        onConfirm={(opts) => {
+          swapExerciseInMyProgram(scopeTarget.dayId, scopeTarget.x.id, scopeTarget.newEx, opts);
+          setScopeTarget(null);
+          setSwapTarget(null);
+        }} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
       <DeleteSegmentModal
