@@ -1706,6 +1706,90 @@ function buildSessionBlocks(exercises) {
     });
 }
 
+// ---------- moving a movement through the session ----------
+//
+// Two separate bugs made the arrows useless, and both presented the same way:
+// you tap, and nothing happens.
+//
+// They used to SWAP two slots in the array and leave `phase` untouched. But a
+// section IS a phase — buildSessionBlocks groups on it — so a movement dragged
+// out of Power and into Primary Movements sorted straight back into Power on
+// the next render. Crossing a section boundary has to rewrite the phase;
+// nothing else decides which section a movement lives in.
+//
+// They also addressed exercises by their position in the list the SCREEN was
+// holding. On a program with per-week entries that list is FILTERED — an
+// exercise skipped this week is absent — so the index pointed at a different
+// exercise in the stored day and the arrow silently swapped the wrong two and
+// saved it. Two live programs on this account carry skips, so this was
+// corrupting real data. Everything below is addressed by row id instead.
+const blockOrderOf = (phase) => {
+  const key = blockForPhase(phase).key;
+  return SESSION_BLOCKS.findIndex(b => b.key === key);
+};
+
+// The order the athlete actually sees: section order, then position within the
+// section. It mirrors buildSessionBlocks exactly — that groups by section and
+// keeps array order inside each one — so the arrows agree with the screen.
+function sessionOrder(exercises) {
+  return (exercises || []).map((_, i) => i).sort((a, b) => {
+    const d = blockOrderOf(exercises[a].phase) - blockOrderOf(exercises[b].phase);
+    return d !== 0 ? d : a - b;
+  });
+}
+
+// Returns a NEW array, or the one it was given, unchanged and by reference,
+// when the move is impossible. canMoveExercise leans on that identity, so the
+// arrow is enabled exactly when tapping it would do something.
+function moveExerciseInDay(exercises, rowId, dir) {
+  if (!Array.isArray(exercises) || (dir !== 1 && dir !== -1)) return exercises;
+  const at = exercises.findIndex(x => x && x.id === rowId);
+  if (at < 0) return exercises;
+
+  const order = sessionOrder(exercises);
+  const seat = order.indexOf(at);
+  const me = exercises[at];
+  const neighbour = order[seat + dir];
+  const myBlock = blockOrderOf(me.phase);
+
+  // Inside the same section: trade places with the movement beside it and
+  // keep the phase, so a primer stays a primer.
+  if (neighbour !== undefined && blockOrderOf(exercises[neighbour].phase) === myBlock) {
+    const next = exercises.slice();
+    [next[at], next[neighbour]] = [next[neighbour], next[at]];
+    return next;
+  }
+
+  // Leaving the section. Step one section at a time even when the next is
+  // empty — it appears, which is what someone moving a movement into it
+  // expects to see.
+  const target = SESSION_BLOCKS[myBlock + dir];
+  if (!target) return exercises;
+  // Entering from below takes the section's last phase, from above its first,
+  // so the movement lands at the edge nearest where it came from and one more
+  // tap carries it straight through.
+  const phases = target.phases;
+  const moved = { ...me, phase: dir === -1 ? phases[phases.length - 1] : phases[0] };
+
+  const without = exercises.filter((_, i) => i !== at);
+  const inTarget = (x) => blockOrderOf(x.phase) === myBlock + dir;
+  let insertAt;
+  if (dir === -1) {
+    insertAt = 0;
+    without.forEach((x, i) => { if (inTarget(x)) insertAt = i + 1; });
+  } else {
+    insertAt = without.findIndex(inTarget);
+    if (insertAt < 0) insertAt = without.length;
+  }
+  const next = without.slice();
+  next.splice(insertAt, 0, moved);
+  return next;
+}
+
+function canMoveExercise(exercises, rowId, dir) {
+  return moveExerciseInDay(exercises, rowId, dir) !== exercises;
+}
+
 function sessionMinutes(exercises) {
   return buildSessionBlocks(exercises).reduce((sum, b) => sum + b.minutes, 0);
 }
@@ -5645,6 +5729,8 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
 WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
+- LOAD CEILING, both warm-up phases: bodyweight, bands, a light medicine ball or an empty bar ONLY. No barbell, dumbbell, kettlebell or machine work loaded for effect — a barbell glute bridge or a loaded squat is training, not preparation, and it belongs in the strength section. If a movement needs a working weight to make sense, it is not a warm-up.
+- A primer may use the day\'s first main lift as an unloaded or empty-bar rehearsal of that pattern. That is the only barbell allowed here, and it carries no plates.
 - Dynamic warm-up: raise temperature and take every joint the day's main lifts will load through its range — e.g. a lower-body day covers hips, knees, ankles and thoracic spine before a squat or deadlift; an upper-body day covers thoracic spine, shoulders, elbows and wrists.
 - Primers: activate the muscles the first main lift depends on (e.g. glutes before squats, scapular stabilisers before pressing).
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
@@ -10272,6 +10358,7 @@ function CoachProfile({ state, setState, nav }) {
           </>
         )}
 
+        <ProfileDetailsCard state={state} setState={setState} />
         <ThemePicker state={state} setState={setState} />
         <ChangePasswordCard />
 
@@ -11167,10 +11254,10 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
                     </button>
                   )}
                   <div className="flex flex-col">
-                    <button onClick={() => onMove(x._index, x._index - 1)} disabled={!canMoveUp(x._index)} className="p-1 disabled:opacity-25" aria-label="Move up">
+                    <button onClick={() => onMove(x.id, -1)} disabled={!canMoveUp(x)} className="p-1 disabled:opacity-25" aria-label="Move up, or into the section above">
                       <ChevronUp size={16} style={{ color: C.sub }} />
                     </button>
-                    <button onClick={() => onMove(x._index, x._index + 1)} disabled={!canMoveDown(x._index)} className="p-1 disabled:opacity-25" aria-label="Move down">
+                    <button onClick={() => onMove(x.id, 1)} disabled={!canMoveDown(x)} className="p-1 disabled:opacity-25" aria-label="Move down, or into the section below">
                       <ChevronDown size={16} style={{ color: C.sub }} />
                     </button>
                   </div>
@@ -11293,7 +11380,12 @@ function AthleteProgram({ state, setState, nav }) {
   // hard sessions out of it is the failure mode this prevents. Swapping stays
   // open to everyone - that's for equipment and injuries, and it tells the
   // coach why.
-  const canEdit = !!state.me.selfGuided;
+  // Who owns this program? Anyone without a coach over them — a self-guided
+  // athlete, and a COACH looking at the program on their own account, which
+  // selfGuided excluded because it is set from role === "athlete". The effect
+  // was that a coach who imported his own program could not add, delete or
+  // reorder a single movement in it.
+  const canEdit = !state.me.coachId;
 
   if (!myProgram) {
     return (
@@ -11419,23 +11511,27 @@ function AthleteProgram({ state, setState, nav }) {
     }
   };
 
-  const moveExercise = (fromIdx, toIdx) => {
-    if (toIdx < 0 || toIdx >= sortedExercises.length) return;
+  const moveExercise = (rowId, dir) => {
     const isCustom = !!state.me.customProgram;
+    let changed = false;
     const updateDays = (prog) => ({
       ...prog,
       days: prog.days.map((d, i) => {
         if (i !== activeDayIdx) return d;
-        const next = [...d.exercises];
-        [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+        const next = moveExerciseInDay(d.exercises, rowId, dir);
+        if (next === d.exercises) return d;
+        changed = true;
         return { ...d, exercises: next };
       })
     });
+    const updated = updateDays(isCustom ? state.me.customProgram : myProgram);
+    // A movement already at the top of the warm-up has nowhere to go. Writing
+    // the day back anyway costs a database round trip per tap and rewrites the
+    // row with nothing changed.
+    if (!changed) return;
     if (isCustom) {
-      const updated = updateDays(state.me.customProgram);
       setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
     } else {
-      const updated = updateDays(myProgram);
       setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
       if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
     }
@@ -11851,8 +11947,8 @@ function AthleteProgram({ state, setState, nav }) {
                     return at >= 0 && at < list.length - 1;
                   }}
                   onToggleGroup={(x) => toggleGroupWithNext(day.id, x.id)}
-                  canMoveUp={(i) => i > 0}
-                  canMoveDown={(i) => i < weekExercises.length - 1}
+                  canMoveUp={(x) => canMoveExercise(day.exercises, x.id, -1)}
+                  canMoveDown={(x) => canMoveExercise(day.exercises, x.id, 1)}
                 />
               ))}
             </div>
@@ -14755,29 +14851,109 @@ function ChangePasswordCard() {
 }
 
 
-// Birthday, for anyone who signed up before the birthday step existed.
+// What counts as a usable set of details.
 //
-// Signup asks for it now, but every athlete already on a roster has an empty
-// one, and their coach's screen just shows no age. This is the only way that
-// gets filled in — without it the feature only ever works for new clients.
-function BirthdayCard({ state, setState }) {
-  const saved = state.me.intake?.birthday || "";
-  const [value, setValue] = useState(saved);
+// A name is required — it is what a coach scrolls a roster looking for, and an
+// empty one renders a blank row. Everything else is optional, because accounts
+// that predate these questions have none of it and must still be able to save
+// the one field they came to fix. But anything that IS filled in has to be
+// real: the bounds below are wide enough for any human and tight enough to
+// catch a slipped decimal or a mistyped year, both of which reach the coach's
+// screen and the program generator.
+const HEIGHT_CM_MIN = 90;
+const HEIGHT_CM_MAX = 250;
+const WEIGHT_LB_MIN = 50;
+const WEIGHT_LB_MAX = 700;
+
+function profileDetailsValid({ name, birthday, heightCm, weightLb } = {}) {
+  if (!String(name || "").trim()) return false;
+  if (birthday && !isUsableBirthday(birthday)) return false;
+  if (heightCm && !(heightCm > HEIGHT_CM_MIN && heightCm < HEIGHT_CM_MAX)) return false;
+  if (weightLb && !(weightLb > WEIGHT_LB_MIN && weightLb < WEIGHT_LB_MAX)) return false;
+  return true;
+}
+
+// Your details — the stats a coach sees, editable by the person they describe.
+//
+// Everything here was captured once at signup and then frozen. Name, height
+// and weight were rendered as read-only tiles; birthday did not exist at all
+// until this week, which means every account that already existed has none and
+// shows their coach no age. A profile you cannot correct goes stale and then
+// gets ignored, and the program generator reads these same fields.
+//
+// Two stores, one card. Name, height and weight are columns on `profiles`;
+// birthday lives in the intake blob. The card hides that split — one Save.
+function ProfileDetailsCard({ state, setState }) {
+  const m = state.me;
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
   const [error, setError] = useState(null);
 
+  const startingHeight = m.heightCm || null;
+  const [name, setName] = useState(m.name || "");
+  const [birthday, setBirthday] = useState(m.intake?.birthday || "");
+  const [heightCm, setHeightCm] = useState(startingHeight);
+  const [weightLb, setWeightLb] = useState(m.weightKg ? kgToLb(m.weightKg) : null);
+  const [heightUnit, setHeightUnit] = useState(m.intake?.heightUnit || "imperial");
+  const [weightUnit, setWeightUnit] = useState(m.intake?.weightUnit || "lb");
+
+  // Reopening the editor must show what is actually stored, not what was typed
+  // and abandoned last time.
+  const open = () => {
+    setName(m.name || "");
+    setBirthday(m.intake?.birthday || "");
+    setHeightCm(m.heightCm || null);
+    setWeightLb(m.weightKg ? kgToLb(m.weightKg) : null);
+    setError(null);
+    setEditing(true);
+  };
+
+  const age = ageFromBirthday(m.intake?.birthday);
   const bounds = birthdayBounds();
-  const age = ageFromBirthday(value);
-  const valid = isUsableBirthday(value);
-  const changed = value !== saved;
+  const { ft, inch } = cmToFtIn(heightCm || 178);
+
+  const trimmedName = (name || "").trim();
+  const valid = profileDetailsValid({ name, birthday, heightCm, weightLb });
 
   const save = async () => {
     if (busy || !valid) return;
-    setBusy(true); setError(null); setDone(false);
+    setBusy(true);
+    setError(null);
     try {
-      const err = await saveProfileSetting(setState, state.me.id, "birthday", value);
-      if (err) setError(errText(err)); else setDone(true);
+      const patch = {};
+      if (trimmedName !== m.name) {
+        patch.name = trimmedName;
+        // Initials are derived from the name at signup and never again, so a
+        // renamed athlete kept the old ones on every avatar in the app.
+        patch.avatar = trimmedName.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "ME";
+      }
+      if (heightCm && heightCm !== m.heightCm) patch.height_cm = heightCm;
+      const kg = weightLb ? lbToKg(weightLb) : null;
+      if (kg && kg !== m.weightKg) patch.weight_kg = kg;
+
+      if (Object.keys(patch).length && m.id) {
+        const { error: err } = await supabase.from("profiles").update(patch).eq("id", m.id);
+        if (err) { setError(errText(err)); setBusy(false); return; }
+      }
+      setState(s => ({
+        ...s,
+        me: {
+          ...s.me,
+          name: trimmedName,
+          avatar: patch.avatar || s.me.avatar,
+          heightCm: heightCm || s.me.heightCm,
+          weightKg: kg || s.me.weightKg,
+        },
+      }));
+
+      // The birthday goes through the single-key RPC, which is a jsonb_set on
+      // that one key — a read-modify-write of the whole blob can wipe every
+      // other intake answer if the read fails.
+      if ((birthday || "") !== (m.intake?.birthday || "")) {
+        const err = await saveProfileSetting(setState, m.id, "birthday", birthday || null);
+        if (err) { setError(errText(err)); setBusy(false); return; }
+      }
+      setEditing(false);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -14785,23 +14961,101 @@ function BirthdayCard({ state, setState }) {
     }
   };
 
+  const Row = ({ label, value, muted }) => (
+    <div className="flex items-baseline justify-between py-1.5">
+      <span className="text-xs" style={{ color: C.sub }}>{label}</span>
+      <span className="text-sm font-semibold" style={{ color: muted ? C.faint : C.text }}>{value}</span>
+    </div>
+  );
+
   return (
     <>
-      <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>Birthday</div>
-      <div className="rounded-2xl p-3.5 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-        <div className="text-[11px] mb-2.5" style={{ color: C.sub }}>
-          {age === null
-            ? "Your coach can't see your age until this is set."
-            : `Your coach sees you as ${age}. Your birthday itself stays private.`}
-        </div>
-        <input type="date" style={inputStyle} min={bounds.min} max={bounds.max}
-          value={value} onChange={e => { setValue(e.target.value); setDone(false); setError(null); }} />
-        {error && <div className="text-xs mt-2" style={{ color: C.red }}>{error}</div>}
-        {done && !changed && <div className="text-xs mt-2" style={{ color: C.olive }}>Saved.</div>}
-        {changed && (
-          <Btn className="w-full mt-2.5" disabled={busy || !valid} onClick={save}>
-            {busy ? "Saving…" : "Save"}
-          </Btn>
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="text-xs uppercase tracking-wide font-semibold" style={{ color: C.sub }}>Your Details</div>
+        {!editing && (
+          <button onClick={open} className="text-xs font-semibold" style={{ color: C.orange }}>Edit</button>
+        )}
+      </div>
+
+      <div className="rounded-2xl p-4 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+        {!editing ? (
+          <>
+            <Row label="Name" value={m.name || "—"} muted={!m.name} />
+            <Row label="Birthday" value={age === null ? "Not set" : `${age} years old`} muted={age === null} />
+            <Row label="Height" value={m.heightCm ? `${cmToFtIn(m.heightCm).ft}'${cmToFtIn(m.heightCm).inch}"` : "—"} muted={!m.heightCm} />
+            <Row label="Weight" value={m.weightKg ? `${kgToLb(m.weightKg)} lb` : "—"} muted={!m.weightKg} />
+            {age === null && (
+              <div className="text-[11px] mt-2.5" style={{ color: C.sub }}>
+                Your coach can't see your age until you add a birthday.
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <Field label="Name">
+              <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} placeholder="Your name" />
+            </Field>
+
+            <Field label="Birthday">
+              <input type="date" style={inputStyle} min={bounds.min} max={bounds.max}
+                value={birthday} onChange={e => setBirthday(e.target.value)} />
+              {birthday && isUsableBirthday(birthday) && (
+                <div className="text-[11px] mt-1.5" style={{ color: C.sub }}>
+                  {ageFromBirthday(birthday)} years old. Your coach sees the age, not the date.
+                </div>
+              )}
+              {birthday && !isUsableBirthday(birthday) && (
+                <div className="text-[11px] mt-1.5" style={{ color: C.red }}>That doesn't look right — check the year.</div>
+              )}
+            </Field>
+
+            <Field label="Height">
+              <div className="flex items-center gap-2">
+                {heightUnit === "imperial" ? (
+                  <>
+                    <input type="number" inputMode="numeric" value={ft}
+                      onChange={e => setHeightCm(ftInToCm(Number(e.target.value) || 0, inch))}
+                      style={{ ...inputStyle, flex: 1 }} aria-label="Feet" />
+                    <span className="text-xs" style={{ color: C.faint }}>ft</span>
+                    <input type="number" inputMode="numeric" value={inch}
+                      onChange={e => setHeightCm(ftInToCm(ft, Number(e.target.value) || 0))}
+                      style={{ ...inputStyle, flex: 1 }} aria-label="Inches" />
+                    <span className="text-xs" style={{ color: C.faint }}>in</span>
+                  </>
+                ) : (
+                  <>
+                    <input type="number" inputMode="numeric" value={heightCm || ""}
+                      onChange={e => setHeightCm(Number(e.target.value) || null)}
+                      style={{ ...inputStyle, flex: 1 }} aria-label="Centimetres" />
+                    <span className="text-xs" style={{ color: C.faint }}>cm</span>
+                  </>
+                )}
+                <UnitToggle value={heightUnit} options={["imperial", "metric"]} onChange={setHeightUnit} />
+              </div>
+            </Field>
+
+            <Field label="Weight">
+              <div className="flex items-center gap-2">
+                <input type="number" inputMode="decimal"
+                  value={weightLb == null ? "" : (weightUnit === "lb" ? Math.round(weightLb) : Math.round(lbToKg(weightLb)))}
+                  onChange={e => {
+                    const n = Number(e.target.value);
+                    if (!n) { setWeightLb(null); return; }
+                    setWeightLb(weightUnit === "lb" ? n : kgToLb(n));
+                  }}
+                  style={{ ...inputStyle, flex: 1 }} aria-label="Weight" />
+                <UnitToggle value={weightUnit} options={["lb", "kg"]} onChange={setWeightUnit} />
+              </div>
+            </Field>
+
+            {error && <div className="text-xs mb-2" style={{ color: C.red }}>{error}</div>}
+            {!trimmedName && <div className="text-xs mb-2" style={{ color: C.red }}>A name is required.</div>}
+
+            <div className="flex gap-2">
+              <Btn variant="ghost" className="flex-1" onClick={() => setEditing(false)}>Cancel</Btn>
+              <Btn className="flex-1" disabled={busy || !valid} onClick={save}>{busy ? "Saving…" : "Save"}</Btn>
+            </div>
+          </>
         )}
       </div>
     </>
@@ -14871,8 +15125,8 @@ function AthletePreferences({ state, setState }) {
 
   return (
     <>
+      <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
-      <BirthdayCard state={state} setState={setState} />
       <ChangePasswordCard />
 
       {/* The athlete's own switch. Turning it off means no prompt, no badge,
@@ -15143,9 +15397,13 @@ function AthleteProfile({ state, setState, nav }) {
         </div>
 
         <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>Body Metrics</div>
-        <div className="grid grid-cols-2 gap-2.5 mb-5">
-          <StatCard icon={Ruler} label="📏 Height" value={`${ft}'${inch}"`} accent={C.amber} />
-          <StatCard icon={Scale} label="⚖️ Weight" value={`${kgToLb(m.weightKg)} lb`} accent={C.amber} />
+        {/* Guarded: an athlete who never recorded these read "NaN'NaN"" and
+            "NaN lb". Age is derived from the birthday on every render, so it
+            cannot go stale, and a dash says plainly that it is missing. */}
+        <div className="grid grid-cols-3 gap-2.5 mb-5">
+          <StatCard icon={Ruler} label="📏 Height" value={m.heightCm ? `${ft}'${inch}"` : "—"} accent={C.amber} />
+          <StatCard icon={Scale} label="⚖️ Weight" value={m.weightKg ? `${kgToLb(m.weightKg)}` : "—"} sub={m.weightKg ? "lb" : ""} accent={C.amber} />
+          <StatCard icon={Calendar} label="🎂 Age" value={ageFromBirthday(m.intake?.birthday) ?? "—"} accent={C.amber} />
         </div>
 
         {m.injuries?.length > 0 && (
