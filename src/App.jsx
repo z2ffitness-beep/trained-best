@@ -7038,7 +7038,52 @@ function programHasContent(days) {
   return days.some(d => Array.isArray(d?.exercises) && d.exercises.length > 0);
 }
 
-async function assignTemplateToAthlete({ template, athlete, coachId, state }) {
+// `allowEmpty` is for a program the coach MEANT to leave empty — the "start
+// from blank" option, which exists so they can build one up by hand. The guard
+// below is there to catch an import or a generation that silently produced
+// nothing, and a deliberately blank day is not that. Without this, the blank
+// option could never work: it failed every time with a message telling the
+// coach to try an import they had not attempted.
+// Delete a program outright, whoever it belongs to.
+//
+// Deleting a TEMPLATE already existed, but that is a different thing: it leaves
+// every athlete's copy alone. There was no way to get rid of an athlete's
+// actual program — the coach's client screen had no delete at all, and neither
+// did a coach looking at their own training. The only route out was to empty it
+// one exercise at a time.
+//
+// Two writes, and the order matters. The profile pointer goes first: if the row
+// were deleted while a profile still pointed at it, that athlete's next load
+// would ask for a program that no longer exists.
+async function deleteProgramEverywhere(programId, athleteId, state, setState) {
+  if (!programId) return { ok: false, message: "No program to delete." };
+
+  if (athleteId) {
+    const { error: linkError } = await supabase
+      .from("profiles").update({ active_program_id: null }).eq("id", athleteId);
+    if (linkError) {
+      return { ok: false, message: "Couldn't unassign that program. Check your connection and try again." };
+    }
+  }
+
+  const { error } = await supabase.from("programs").delete().eq("id", programId);
+  if (error) {
+    // The pointer is already cleared, so the athlete is not looking at a
+    // program that is about to vanish — but the row is still there and the
+    // coach should know the job only half finished.
+    return { ok: false, message: "The program was unassigned but couldn't be deleted. Try again." };
+  }
+
+  setState(s => ({
+    ...s,
+    programs: s.programs.filter(p => p.id !== programId),
+    athletes: (s.athletes || []).map(a => (a.program === programId ? { ...a, program: null, customProgram: null } : a)),
+    me: s.me?.program === programId ? { ...s.me, program: null, customProgram: null } : s.me,
+  }));
+  return { ok: true };
+}
+
+async function assignTemplateToAthlete({ template, athlete, coachId, state, allowEmpty = false }) {
   // Each athlete gets their own row rather than pointing at the coach's
   // template: the RLS policy on `programs` only lets an athlete read rows where
   // they are the athlete_id, and per-athlete edits need somewhere private to go.
@@ -7048,8 +7093,12 @@ async function assignTemplateToAthlete({ template, athlete, coachId, state }) {
     trainingDays.length ? trainingDays : WEEKDAY_ORDER
   );
 
-  if (!programHasContent(scheduled)) {
-    return { ok: false, message: "That program came through empty. Nothing was saved — try the import again." };
+  if (!allowEmpty && !programHasContent(scheduled)) {
+    return { ok: false, message: "That program came through with no exercises in it, so nothing was saved. If you imported it, try again — the document may not have read cleanly." };
+  }
+  // Even a blank program needs somewhere to put the first exercise.
+  if (allowEmpty && (!Array.isArray(scheduled) || scheduled.length === 0)) {
+    return { ok: false, message: "A program needs at least one day." };
   }
 
   const { data: created, error: createError } = await supabase
@@ -7909,7 +7958,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   // a template is. Before this, a coach's only options were the two demo
   // templates the app ships with — so a client who had answered every question
   // at signup still had to be given a program built for somebody else.
-  const assignGenerated = async (athleteId, result) => {
+  const assignGenerated = async (athleteId, result, allowEmpty = false) => {
     const athlete = state.athletes.find(a => a.id === athleteId);
     if (!athlete || !result) return;
     setAssigning(true);
@@ -7921,7 +7970,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       rationale: result.rationale || null,
       days: result.days || [],
     };
-    const res = await assignTemplateToAthlete({ template, athlete, coachId: myUserId, state });
+    const res = await assignTemplateToAthlete({ template, athlete, coachId: myUserId, state, allowEmpty });
     if (!res.ok) {
       setAssigning(false);
       setAssignError(res.message);
@@ -7951,7 +8000,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       programName: `${athlete.name.split(" ")[0]}'s Program`,
       weeks: 8,
       days: [{ name: "Day 1", exercises: [] }],
-    });
+    }, true);
   };
 
   // Assign one template to every athlete in a group. Runs sequentially rather
@@ -8519,6 +8568,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [scopeTarget, setScopeTarget] = useState(null);
   const [editBlockStart, setEditBlockStart] = useState(1);
   const [weeksOpen, setWeeksOpen] = useState(false);
+  const [deleteProgOpen, setDeleteProgOpen] = useState(false);
+  const [deletingProg, setDeletingProg] = useState(false);
+  const [deleteProgError, setDeleteProgError] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
   const [editError, setEditError] = useState(null);
   // These two were declared BELOW the `if (!athlete) return null` guard, which
@@ -8659,6 +8711,18 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
     }));
   };
   const multiBlock = () => coachPlan.blocks.length > 1;
+
+  // Start again. There was no way to remove a client's program at all — the
+  // only route out was deleting it one exercise at a time.
+  const removeProgram = async () => {
+    if (deletingProg || !program) return;
+    setDeletingProg(true);
+    setDeleteProgError(null);
+    const res = await deleteProgramEverywhere(program.id, athlete.id, state, setState);
+    setDeletingProg(false);
+    if (!res.ok) { setDeleteProgError(res.message); return; }
+    setDeleteProgOpen(false);
+  };
   // Adding or removing weeks changes the program's length, which ensureCustom
   // does not save — it writes days only. So this one goes direct.
   const reshapeProgram = (fn) => {
@@ -9058,6 +9122,12 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                         <div className="text-xs font-semibold" style={{ color: C.sub }}>Edit weeks</div>
                         <div className="text-[10px]" style={{ color: C.faint }}>add · remove</div>
                       </button>
+                      <button onClick={() => setDeleteProgOpen(true)}
+                        className="shrink-0 rounded-lg px-3 py-2 text-left"
+                        style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
+                        <div className="text-xs font-semibold" style={{ color: C.red }}>Delete program</div>
+                        <div className="text-[10px]" style={{ color: C.faint }}>start again</div>
+                      </button>
                     </div>
                   </div>
                 )}
@@ -9162,6 +9232,14 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           swapExercise(swapTarget.dayId, swapTarget.x.id, newEx);
           setSwapTarget(null);
         }} />
+      <DeleteProgramModal
+        open={deleteProgOpen}
+        onClose={() => { setDeleteProgOpen(false); setDeleteProgError(null); }}
+        programName={program?.name}
+        forWhom={athlete?.name}
+        busy={deletingProg}
+        error={deleteProgError}
+        onConfirm={removeProgram} />
       <WeeksModal
         open={weeksOpen}
         onClose={() => setWeeksOpen(false)}
@@ -9495,6 +9573,32 @@ function WeeksModal({ open, onClose, plan, currentWeek, onRemoveWeek, onRemoveBl
         )}
       </div>
       <Btn variant="ghost" className="w-full" onClick={onClose}>Cancel</Btn>
+    </Modal>
+  );
+}
+
+// Deleting a whole program. Says plainly what goes and what stays, because the
+// two are easy to confuse: the program disappears, the training history does
+// not — those sessions were still trained.
+function DeleteProgramModal({ open, onClose, programName, forWhom, busy, error, onConfirm }) {
+  if (!open) return null;
+  return (
+    <Modal open={open} onClose={onClose} title="Delete this program">
+      <p className="text-sm mb-2" style={{ color: C.text }}>
+        Delete <span className="font-semibold">{programName || "this program"}</span>
+        {forWhom ? <> for <span className="font-semibold">{forWhom}</span></> : null}?
+      </p>
+      <p className="text-xs mb-4" style={{ color: C.sub }}>
+        Every session, week and phase in it goes, and it can't be undone.
+        Logged workouts stay — those were still trained.
+      </p>
+      {error && <div className="text-xs mb-3" style={{ color: C.red }}>{error}</div>}
+      <div className="flex gap-2">
+        <Btn variant="ghost" className="flex-1" onClick={onClose}>Cancel</Btn>
+        <Btn variant="danger" className="flex-1" disabled={busy} onClick={onConfirm}>
+          {busy ? "Deleting…" : "Delete program"}
+        </Btn>
+      </div>
     </Modal>
   );
 }
@@ -12586,6 +12690,9 @@ function AthleteProgram({ state, setState, nav }) {
   const [swapTarget, setSwapTarget] = useState(null);
   const [scopeTarget, setScopeTarget] = useState(null);
   const [weeksOpen, setWeeksOpen] = useState(false);
+  const [deleteProgOpen, setDeleteProgOpen] = useState(false);
+  const [deletingProg, setDeletingProg] = useState(false);
+  const [deleteProgError, setDeleteProgError] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
   // Declared here, above the `if (!myProgram)` early return below. It used to
   // sit further down, which made it a conditional hook: the no-program branch
@@ -12770,6 +12877,19 @@ function AthleteProgram({ state, setState, nav }) {
     // The week on screen may no longer exist.
     setViewWeek(w => (w ? Math.min(w, updated.weeks) : w));
     setWeeksOpen(false);
+  };
+
+  // Throw the whole thing away and start again. A coach training himself had
+  // no way to do this either — the only route out was one exercise at a time.
+  const removeProgram = async () => {
+    if (deletingProg || !myProgram) return;
+    setDeletingProg(true);
+    setDeleteProgError(null);
+    const res = await deleteProgramEverywhere(myProgram.id, state.me.id, state, setState);
+    setDeletingProg(false);
+    if (!res.ok) { setDeleteProgError(res.message); return; }
+    setDeleteProgOpen(false);
+    setViewWeek(null);
   };
 
   const moveExercise = (rowId, dir) => {
@@ -13041,6 +13161,22 @@ function AthleteProgram({ state, setState, nav }) {
             <Calendar size={13} /> Add or remove weeks and phases
           </button>
         )}
+
+        {canEdit && (
+          <button onClick={() => setDeleteProgOpen(true)}
+            className="w-full rounded-xl py-2.5 mb-4 text-xs font-semibold flex items-center justify-center gap-1.5"
+            style={{ background: C.panel, color: C.red, border: `1px dashed ${C.red}55` }}>
+            <Trash2 size={13} /> Delete this program and start again
+          </button>
+        )}
+
+        <DeleteProgramModal
+          open={deleteProgOpen}
+          onClose={() => { setDeleteProgOpen(false); setDeleteProgError(null); }}
+          programName={myProgram?.name}
+          busy={deletingProg}
+          error={deleteProgError}
+          onConfirm={removeProgram} />
 
         <WeeksModal
           open={weeksOpen}
