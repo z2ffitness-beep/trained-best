@@ -4282,6 +4282,116 @@ const INJURY_AREAS = [
   "Knee",
   "Ankle / Foot / Shin",
 ];
+// What the injury actually IS, not just where it is.
+//
+// "Knee" tells a coach almost nothing. Patellar tendinopathy, a meniscus tear
+// and arthritis are three different programs: one wants loading, one wants
+// range limited, one wants the joint kept out of deep flexion. The area alone
+// was all the app asked for, so every one of them came back as "knee" and the
+// generator guessed.
+//
+// Wording stays plain. Someone filling this in on their phone knows their knee
+// hurts; they may not know the word for it, which is what the last option and
+// the free-text box are for.
+const INJURY_KINDS = [
+  { key: "tendon", label: "Tendon pain", hint: "Tendinopathy or tendonitis — aches with load, often warms up" },
+  { key: "muscle", label: "Muscle strain or tear", hint: "A pull or tear in the muscle itself" },
+  { key: "ligament", label: "Sprain or instability", hint: "Ligament damage, or the joint gives way" },
+  { key: "joint", label: "Joint pain or arthritis", hint: "Pain in the joint itself, stiffness, wear" },
+  { key: "impingement", label: "Pinching or impingement", hint: "Catches or pinches at the end of a range" },
+  { key: "nerve", label: "Nerve pain", hint: "Shooting, burning, numbness or pins and needles" },
+  { key: "surgery", label: "Post-surgery", hint: "Operated on, whether or not you've been cleared" },
+  { key: "unsure", label: "Not sure", hint: "It hurts and nobody has told you why. That's a useful answer too." },
+];
+
+const INJURY_STATUS = [
+  { key: "current", label: "Bothering me now" },
+  { key: "past", label: "Had it before, fine now" },
+];
+const DEFAULT_INJURY_STATUS = "current";
+
+// Injury detail is stored per area, beside the plain area list rather than
+// replacing it. The `injuries` array is a text column the coach's screens and
+// the athlete's profile already read; changing its shape would break all of
+// them for every account that already exists.
+async function recordProgramFailure(userId, message) {
+  if (!userId) return;
+  try {
+    await supabase.rpc("set_profile_setting", {
+      p_key: "programBuildFailed",
+      p_value: { at: new Date().toISOString(), message: String(message || "").slice(0, 300) },
+    });
+  } catch { /* the failure notice failing is not worth a second error */ }
+}
+
+async function clearProgramFailure(userId) {
+  if (!userId) return;
+  try {
+    await supabase.rpc("set_profile_setting", { p_key: "programBuildFailed", p_value: null });
+  } catch { /* nothing to tell the athlete here */ }
+}
+
+// What the app knows about a program that was never built. Reads the stored
+// note first and falls back to this session's in-memory one, so a retry works
+// both straight after the failure and a week later on a different phone.
+function programBuildFailure(state) {
+  const stored = state?.me?.intake?.programBuildFailed;
+  if (stored && stored.message) return stored;
+  if (state?.programGenerationError) return { message: state.programGenerationError, at: null };
+  return null;
+}
+
+// An athlete on a roster with no program and a failed build is not the same as
+// one the coach simply hasn't got to yet, and the roster should not show them
+// the same way.
+function athleteNeedsProgram(athlete) {
+  if (!athlete || athlete.program) return null;
+  const failed = athlete.intake?.programBuildFailed;
+  return failed && failed.message ? "failed" : "none";
+}
+
+function injuryDetailFor(intake, area) {
+  return (intake?.injuryDetail || {})[area] || null;
+}
+
+function setInjuryDetail(intake, area, patch) {
+  const all = { ...(intake?.injuryDetail || {}) };
+  all[area] = { ...(all[area] || {}), ...patch };
+  return all;
+}
+
+// Detail for an area nobody selected is noise, and it would go on reaching the
+// generator after the athlete changed their mind.
+function pruneInjuryDetail(detail, injuries) {
+  const keep = new Set((injuries || []).filter(a => a !== "None currently"));
+  const out = {};
+  Object.keys(detail || {}).forEach(a => { if (keep.has(a)) out[a] = detail[a]; });
+  return out;
+}
+
+const injuryKindLabel = (key) => INJURY_KINDS.find(k => k.key === key)?.label || null;
+
+// One line per injury for the generator, e.g.
+//   Knee — Tendon pain, bothering them now ("right side, worse on stairs")
+function injuryLines(intake) {
+  const areas = (intake?.injuries || []).filter(a => a && a !== "None currently");
+  if (!areas.length) return "None";
+  return areas.map(area => {
+    const d = injuryDetailFor(intake, area) || {};
+    const kind = injuryKindLabel(d.kind);
+    const status = d.status === "past" ? "had it before, fine now" : "bothering them now";
+    const note = (d.note || "").trim();
+    return `${area}${kind ? ` — ${kind}` : ""}, ${status}${note ? ` ("${note}")` : ""}`;
+  }).join("; ");
+}
+
+// Does every selected area say what it is? Not required — someone in a hurry
+// should not be blocked out of the app — but it drives the nudge on the step.
+function injuriesDescribed(intake) {
+  const areas = (intake?.injuries || []).filter(a => a && a !== "None currently");
+  return areas.every(a => !!injuryDetailFor(intake, a)?.kind);
+}
+
 const WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const WEEKDAY_SHORT = { Monday: "M", Tuesday: "T", Wednesday: "W", Thursday: "T", Friday: "F", Saturday: "S", Sunday: "S" };
 
@@ -4522,12 +4632,22 @@ function weekKeys(exercise) {
 }
 
 // What this exercise actually shows in a given week, for the given fields.
-function resolvedFields(exercise, week, fields) {
+function resolvedFields(exercise, week, fields, nameFor) {
   const at = resolveExerciseForWeek(exercise, week);
   const out = {};
   // A week the movement is skipped entirely resolves to null; there is nothing
   // to pin, and the skip itself is what the next entry must preserve.
   fields.forEach(f => { out[f] = at ? at[f] : undefined; });
+  // An exercise row carries a reference to the library, not a name, so a pin
+  // built only from the row records no name. That matters twice over: the
+  // block detection reads names, and the reference itself is regenerated on
+  // every load, so a nameless pin points at nothing tomorrow. `nameFor` lets
+  // the caller supply the library name without this function needing the
+  // library.
+  if (at && out.name === undefined && out.exerciseId !== undefined && typeof nameFor === "function") {
+    const looked = nameFor(out.exerciseId);
+    if (looked) out.name = looked;
+  }
   return out;
 }
 
@@ -4592,6 +4712,10 @@ function pinAt(exercise, week, before, fields) {
   if (!(week >= 1)) return exercise;
   const existing = exercise.byWeek?.[String(week)] || {};
   const patch = {};
+  // Only the fields the edit touched. A movement pin still records the name,
+  // because a swap's own patch names it and resolvedFields fills it in from
+  // the library; a sets-only edit pins only the sets, which is what keeps it
+  // from registering as a phase boundary.
   fields.forEach(f => {
     // Belt and braces with the boundary filter in applyExerciseEdit: a week
     // that already names the field is either a block that chose for itself
@@ -4610,7 +4734,7 @@ function pinAt(exercise, week, before, fields) {
 // The one entry point. `blocks` is the program's block list ([{startWeek,
 // endWeek}]); `week` is the week being looked at; `selected` is the set of
 // block start weeks for the "Pick blocks" scope.
-function applyExerciseEdit(exercise, patch, { scope, week, blocks, selected, totalWeeks } = {}) {
+function applyExerciseEdit(exercise, patch, { scope, week, blocks, selected, totalWeeks, nameFor } = {}) {
   if (!exercise || !patch) return exercise;
   const fields = Object.keys(patch).filter(f => WEEK_FIELDS.includes(f));
   if (!fields.length) return exercise;
@@ -4649,7 +4773,7 @@ function applyExerciseEdit(exercise, patch, { scope, week, blocks, selected, tot
   const boundaries = spans
     .map(s => Number(s.endWeek) + 1)
     .filter(w => w <= last && !spans.some(s => w >= s.startWeek && w <= s.endWeek));
-  const before = new Map(boundaries.map(w => [w, resolvedFields(exercise, w, fields)]));
+  const before = new Map(boundaries.map(w => [w, resolvedFields(exercise, w, fields, nameFor)]));
 
   let out = exercise;
   for (const span of spans) {
@@ -4674,6 +4798,100 @@ function blockSummaryFor(exercise, blocks, field = "name") {
       value: at ? at[field] : null,
     };
   });
+}
+
+// ---------- adding and removing weeks ----------
+//
+// Deleting week 6 of a twelve-week program means the program is eleven weeks
+// long and old week 7 is now week 6. Every per-week entry above the cut has to
+// be renumbered, or the whole plan slides out of step with the calendar and a
+// coach's carefully written week 9 lands on week 10.
+//
+// The subtle case is the week that moves up into the gap. If the removed span
+// contained the entry it was reading, deleting that entry silently drops it
+// back to the base template — the week keeps its number and loses its
+// prescription. So what it showed is captured first and pinned.
+function shiftExerciseWeeks(exercise, start, end, total) {
+  if (!exercise?.byWeek) return exercise;
+  const removed = end - start + 1;
+  const keys = weekKeys(exercise);
+  // The entry old week end+1 was reading. Only matters when it sits inside the
+  // span about to be deleted and no entry of its own lands on the new `start`.
+  const reading = keys.filter(w => w <= end + 1).pop();
+  const needsPin = end + 1 <= total
+    && reading !== undefined && reading >= start && reading <= end
+    && !keys.includes(end + 1);
+  const carried = needsPin ? { ...exercise.byWeek[String(reading)] } : null;
+
+  const map = {};
+  keys.forEach(w => {
+    const entry = exercise.byWeek[String(w)];
+    if (w < start) { map[String(w)] = entry; return; }
+    if (w <= end) return;                     // inside the removed span
+    map[String(w - removed)] = entry;         // everything above closes the gap
+  });
+  if (carried && !map[String(start)]) map[String(start)] = carried;
+
+  return { ...exercise, byWeek: Object.keys(map).length ? map : null };
+}
+
+function removeProgramWeeks(program, from, count) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const start = Math.max(1, Math.round(Number(from) || 0));
+  const n = Math.max(1, Math.round(Number(count) || 0));
+  if (!program || start > total) return program;
+  const end = Math.min(total, start + n - 1);
+  const removed = end - start + 1;
+  // A program with no weeks in it is not a program. Deleting everything is
+  // what "delete the program" is for, and that is a different button.
+  if (removed >= total) return program;
+
+  return {
+    ...program,
+    weeks: total - removed,
+    days: (program.days || []).map(d => ({
+      ...d,
+      exercises: (d.exercises || []).map(e => shiftExerciseWeeks(e, start, end, total)),
+    })),
+  };
+}
+
+// Inserted weeks carry on with whatever the week before them prescribed —
+// nothing has to be written for that, because an entry applies until the next
+// one and the next one has moved up out of the way.
+function insertProgramWeeks(program, at, count) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const n = Math.max(1, Math.round(Number(count) || 0));
+  const start = Math.min(total + 1, Math.max(1, Math.round(Number(at) || 0)));
+  if (!program) return program;
+
+  return {
+    ...program,
+    weeks: total + n,
+    days: (program.days || []).map(d => ({
+      ...d,
+      exercises: (d.exercises || []).map(e => {
+        if (!e?.byWeek) return e;
+        const map = {};
+        weekKeys(e).forEach(w => {
+          map[String(w >= start ? w + n : w)] = e.byWeek[String(w)];
+        });
+        return { ...e, byWeek: map };
+      }),
+    })),
+  };
+}
+
+// Deleting a phase is deleting its weeks. Adding one puts a fresh block on the
+// end, the same length as the program's other phases.
+function removeProgramBlock(program, block) {
+  if (!program || !block) return program;
+  return removeProgramWeeks(program, block.startWeek, block.endWeek - block.startWeek + 1);
+}
+
+function appendProgramBlock(program, weeks = PHASE_WEEKS) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  return insertProgramWeeks(program, total + 1, weeks);
 }
 
 function resolveDayForWeek(day, week) {
@@ -4717,6 +4935,35 @@ function authoredBlockStarts(program) {
     });
   }));
   return Array.from(starts).sort((a, b) => a - b);
+}
+
+// The blocks an EDITOR should offer, which is not the same question as "where
+// does this imported document change movements".
+//
+// authoredBlockStarts is a heuristic for imported documents: it looks for weeks
+// where a movement name changes. That is right for a document, and wrong the
+// moment a coach makes their own per-week edit, because an edit writes a
+// movement reference rather than a name and the heuristic then finds nothing.
+// It collapsed a 12-week program to a single block, which removed the "which
+// blocks?" question entirely and made the next edit silently global.
+//
+// So the authored blocks are only trusted when they look like real training
+// phases: at least two of them, and none shorter than two weeks. A single
+// one-week block is the fingerprint of a "this week only" edit, not a phase —
+// offering a coach "Block 1: week 1 / Block 2: weeks 2-12" would be nonsense.
+// Anything that fails those tests falls back to the regular 4-week phases.
+const MIN_AUTHORED_BLOCK_WEEKS = 2;
+
+function authoredBlocksLookReal(blocks) {
+  if (!Array.isArray(blocks) || blocks.length < 2) return false;
+  return blocks.every(b => (b.endWeek - b.startWeek + 1) >= MIN_AUTHORED_BLOCK_WEEKS);
+}
+
+function programBlocks(program) {
+  const generated = buildProgramPlan(program?.weeks).blocks;
+  if (!programHasWeeklyPlan(program)) return generated;
+  const authored = authoredBlocks(program);
+  return authoredBlocksLookReal(authored) ? authored : generated;
 }
 
 function authoredBlocks(program) {
@@ -5621,6 +5868,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     }
     case "🩹 Injuries": {
       const current = data.injuries || [];
+      const picked = current.filter(a => a !== "None currently");
       return (
         <div>
           <p className="text-xs mb-3" style={{ color: C.sub }}>We'll prime and work around these in every session.</p>
@@ -5629,9 +5877,15 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               const isActive = current.includes(opt);
               return (
                 <button key={opt} onClick={() => {
-                  if (opt === "None currently") { set("injuries", ["None currently"]); return; }
+                  if (opt === "None currently") {
+                    setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
+                    return;
+                  }
                   const without = current.filter(x => x !== "None currently");
-                  set("injuries", isActive ? without.filter(x => x !== opt) : [...without, opt]);
+                  const next = isActive ? without.filter(x => x !== opt) : [...without, opt];
+                  // Detail for an area that was just deselected would keep
+                  // reaching the generator after they changed their mind.
+                  setData(d => ({ ...d, injuries: next, injuryDetail: pruneInjuryDetail(d.injuryDetail, next) }));
                 }} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
                   style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
                   <span style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
@@ -5640,9 +5894,64 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               );
             })}
           </div>
-          {current.some(i => i !== "None currently") && (
+
+          {/* One card per selected area. "Knee" on its own tells a coach
+              almost nothing — tendon pain, a tear and arthritis are three
+              different programs. */}
+          {picked.map(area => {
+            const detail = injuryDetailFor(data, area) || {};
+            const status = detail.status || DEFAULT_INJURY_STATUS;
+            return (
+              <div key={area} className="rounded-xl p-3.5 mt-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>{area}</div>
+                <div className="text-[11px] mb-2.5" style={{ color: C.sub }}>What kind of problem is it?</div>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {INJURY_KINDS.map(k => {
+                    const on = detail.kind === k.key;
+                    return (
+                      <button key={k.key}
+                        onClick={() => setData(d => ({ ...d, injuryDetail: setInjuryDetail(d, area, { kind: on ? null : k.key }) }))}
+                        className="text-left rounded-lg px-3 py-2.5"
+                        style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                        <div className="text-[13px] font-medium" style={{ color: on ? C.orange : C.text }}>{k.label}</div>
+                        <div className="text-[10px] mt-0.5" style={{ color: C.sub }}>{k.hint}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="text-[11px] mt-3 mb-1.5" style={{ color: C.sub }}>Is it a problem right now?</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {INJURY_STATUS.map(st => {
+                    const on = status === st.key;
+                    return (
+                      <button key={st.key}
+                        onClick={() => setData(d => ({ ...d, injuryDetail: setInjuryDetail(d, area, { status: st.key }) }))}
+                        className="rounded-lg px-3 py-2 text-center text-[12px] font-medium"
+                        style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text }}>
+                        {st.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <input style={{ ...inputStyle, marginTop: 10 }}
+                  placeholder={`Anything specific about your ${area.toLowerCase()}?`}
+                  value={detail.note || ""}
+                  onChange={e => setData(d => ({ ...d, injuryDetail: setInjuryDetail(d, area, { note: e.target.value }) }))} />
+              </div>
+            );
+          })}
+
+          {picked.length > 0 && !injuriesDescribed(data) && (
+            <p className="text-[11px] mt-3" style={{ color: C.sub }}>
+              You can skip the detail, but the more specific you are the better your program will work around it.
+            </p>
+          )}
+
+          {picked.length > 0 && (
             <Field label="Anything else we should know?">
-              <textarea style={{ ...inputStyle, minHeight: 60, marginTop: 10 }} placeholder="Details on the injury, limitations, cleared by a doctor, etc."
+              <textarea style={{ ...inputStyle, minHeight: 60, marginTop: 10 }} placeholder="Cleared by a doctor, movements to avoid, anything that flares it up."
                 value={data.injuryNotes || ""} onChange={e => set("injuryNotes", e.target.value)} />
             </Field>
           )}
@@ -6207,6 +6516,31 @@ function ExerciseSwapModal({ open, onClose, currentExercise, exercises, onSwap, 
 // ============================================================
 // AI PROGRAM GENERATOR — calls Claude API
 // ============================================================
+function intakeForAthlete(athlete) {
+  const a = athlete || {};
+  const i = a.intake || {};
+  const pick = (v, fallback) => (v === undefined || v === null || v === "" ? fallback : v);
+  const out = {
+    ...i,
+    "🥊 Sport / Focus": pick(i["🥊 Sport / Focus"], a.sport),
+    sex: pick(i.sex, a.sex === "female" ? "Female" : a.sex === "male" ? "Male" : undefined),
+    isFighter: i.isFighter === undefined || i.isFighter === null ? a.isFighter : i.isFighter,
+    goals: (i.goals && i.goals.length) ? i.goals : a.goals,
+    injuries: (i.injuries && i.injuries.length) ? i.injuries : a.injuries,
+    heightCm: pick(i.heightCm, a.heightCm),
+    weightLb: pick(i.weightLb, a.weightKg ? kgToLb(a.weightKg) : undefined),
+  };
+  return out;
+}
+
+// Enough to build a program that is actually about this person. Without a
+// training schedule the generator has no idea how many days to write, and
+// without equipment it has to guess what they can lift.
+function intakeIsUsable(intake) {
+  const i = intake || {};
+  return (i.trainingDays || []).length > 0 && (i.equipment || []).length > 0;
+}
+
 function buildAIPrompt(intake) {
   return `You are an elite strength & conditioning coach. Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
@@ -6220,7 +6554,9 @@ Athlete intake:
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
 - Goal notes: ${intake.goalNotes || "n/a"}
 - Timeframe: ${intake.timeframe || "n/a"}${intake.fightDate ? ` (competition date: ${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out)` : ""}
-- Injuries: ${(intake.injuries || []).join(", ") || "None"}
+- Injuries: ${injuryLines(intake)}
+  * Each one reads "area — what it is, whether it is a problem now". Treat "bothering them now" as a CURRENT injury and "had it before" as a PREVIOUS one, per the rules further down.
+  * The KIND changes what to do, not just the area. Tendon pain wants controlled loading, not avoidance. A sprain or instability wants stability and controlled range. Joint pain or arthritis wants the range limited and the joint kept out of deep loaded flexion. Nerve pain wants nothing that reproduces the symptoms at all. Post-surgery wants the most conservative reading of everything above. "Not sure" wants the cautious option.
 - Injury notes: ${intake.injuryNotes || "n/a"}
 - Height: ${intake.heightCm}cm
 - Weight: ${intake.weightLb}lb
@@ -6436,6 +6772,22 @@ function buildDaysWithExerciseIds(rawDays, state, { sortByPhase = false } = {}) 
       // The group fields have to be named here AND in denormalizeDays. The
       // pair enumerate exercise fields explicitly, so one missing from either
       // list appears to save and then reverts on the next load.
+      // A per-week entry may swap the movement for that stretch of the program.
+      // It stores the NAME, because the reference below is minted fresh on
+      // every load and means nothing tomorrow. So each entry's name is
+      // resolved the same way the row's is, minting a library entry when the
+      // movement is new.
+      const byWeek = x.byWeek ? Object.fromEntries(Object.entries(x.byWeek).map(([wk, entry]) => {
+        if (!entry || !entry.name) return [wk, entry];
+        const ekey = String(entry.name).toLowerCase();
+        let emat = byName.get(ekey);
+        if (!emat) {
+          emat = { id: "eai" + Math.random().toString(36).slice(2, 9), name: entry.name, phase: entry.phase || x.phase, pattern: "AI-Generated", hasMedia: false };
+          byName.set(ekey, emat);
+          newExercises.push(emat);
+        }
+        return [wk, { ...entry, exerciseId: emat.id }];
+      })) : null;
       return {
         id: "x" + Math.random().toString(36).slice(2, 9), exerciseId: match.id,
         phase: x.phase, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest,
@@ -6444,11 +6796,25 @@ function buildDaysWithExerciseIds(rawDays, state, { sortByPhase = false } = {}) 
         // its first week repeated forever — 22 weekly entries sitting in the
         // row for a single squat and none of them reaching the screen. It is
         // why a 26-week program looked like it had no progression in it.
-        byWeek: x.byWeek || null,
+        byWeek: byWeek,
       };
     }).sort((a, b) => (sortByPhase ? phaseIndex(a.phase) - phaseIndex(b.phase) : 0))
   }));
   return { days, newExercises };
+}
+
+function denormalizeByWeek(byWeek, state) {
+  if (!byWeek) return null;
+  const out = {};
+  Object.entries(byWeek).forEach(([wk, entry]) => {
+    if (!entry) return;
+    const { exerciseId, ...rest } = entry;
+    const named = exerciseId
+      ? state.exercises.find(e => e.id === exerciseId)?.name || entry.name
+      : entry.name;
+    out[wk] = named ? { ...rest, name: named } : rest;
+  });
+  return Object.keys(out).length ? out : null;
 }
 
 // Inverse of the above — turns local exerciseId-based days back into plain
@@ -6471,7 +6837,12 @@ function denormalizeDays(days, state) {
         // plan out of the database for good. A coach reordering one warm-up
         // would have destroyed six months of authored progression and had no
         // way of knowing.
-        byWeek: x.byWeek || null,
+        //
+        // Each entry's movement is written as a NAME. exerciseId is a local
+        // reference minted at load time; saving it would store a number that
+        // resolves to nothing tomorrow, and a per-block movement swap would
+        // quietly revert or go blank the next time the program was opened.
+        byWeek: denormalizeByWeek(x.byWeek, state),
       };
     })
   }));
@@ -6801,8 +7172,13 @@ function queueProgramSave(programId, days, state, onError, delay = 600) {
 
 // Updates an existing program row after a manual edit (reorder/swap) — local
 // days are in exerciseId form, so they need denormalizing back to plain names first.
-async function updateProgramRow(programId, days, state) {
-  const { error } = await supabase.from("programs").update({ days: denormalizeDays(days, state) }).eq("id", programId);
+async function updateProgramRow(programId, days, state, extra = null) {
+  // `extra` carries anything outside the days — today that means `weeks`,
+  // which changes when a week or a phase is added or removed. Every save path
+  // before this one wrote days alone, so a program that got shorter stayed
+  // the old length in the database and grew its weeks back on the next load.
+  const patch = { days: denormalizeDays(days, state), ...(extra || {}) };
+  const { error } = await supabase.from("programs").update(patch).eq("id", programId);
   return !error;
 }
 
@@ -7411,6 +7787,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   const [search, setSearch] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(null);
+  const [generateFor, setGenerateFor] = useState(null);
   const [assignError, setAssignError] = useState(null);
   const [assigning, setAssigning] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -7526,6 +7903,55 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
     });
     setAssigning(false);
     setAssignOpen(null);
+  };
+
+  // A program generated from this athlete's own answers, assigned the same way
+  // a template is. Before this, a coach's only options were the two demo
+  // templates the app ships with — so a client who had answered every question
+  // at signup still had to be given a program built for somebody else.
+  const assignGenerated = async (athleteId, result) => {
+    const athlete = state.athletes.find(a => a.id === athleteId);
+    if (!athlete || !result) return;
+    setAssigning(true);
+    setAssignError(null);
+    const template = {
+      name: result.programName || `${athlete.name.split(" ")[0]}'s Program`,
+      weeks: result.weeks || 8,
+      sport: athlete.sport || null,
+      rationale: result.rationale || null,
+      days: result.days || [],
+    };
+    const res = await assignTemplateToAthlete({ template, athlete, coachId: myUserId, state });
+    if (!res.ok) {
+      setAssigning(false);
+      setAssignError(res.message);
+      return;
+    }
+    const created = res.created;
+    setState(s => {
+      const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+      return {
+        ...s,
+        exercises: [...s.exercises, ...newExercises],
+        programs: [...s.programs, { id: created.id, name: created.name, weeks: created.weeks, sport: created.sport, rationale: created.rationale || null, startedOn: created.started_on || null, athleteId, assignedCount: 1, days }],
+        athletes: s.athletes.map(a => a.id === athleteId ? { ...a, program: created.id, customProgram: null } : a),
+      };
+    });
+    setAssigning(false);
+    setGenerateFor(null);
+    setAssignOpen(null);
+  };
+
+  // A blank program to build up by hand, for a coach who would rather start
+  // from nothing than edit a generated one.
+  const assignBlank = async (athleteId) => {
+    const athlete = state.athletes.find(a => a.id === athleteId);
+    if (!athlete) return;
+    await assignGenerated(athleteId, {
+      programName: `${athlete.name.split(" ")[0]}'s Program`,
+      weeks: 8,
+      days: [{ name: "Day 1", exercises: [] }],
+    });
   };
 
   // Assign one template to every athlete in a group. Runs sequentially rather
@@ -7686,6 +8112,11 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
                       {groupName(a.groupId) || "No group"}
                     </button>
                   )}
+                  {athleteNeedsProgram(a) === "failed" && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0"
+                      title={a.intake?.programBuildFailed?.message || ""}
+                      style={{ background: `${C.red}22`, color: C.red }}>Build failed</span>
+                  )}
                   <button onClick={() => setAssignOpen(a.id)} className="text-xs font-semibold shrink-0" style={{ color: C.orange }}>Assign</button>
                 </div>
               </div>
@@ -7836,15 +8267,61 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
         {assignError && (
           <div className="rounded-lg p-3 mb-3 text-xs" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{assignError}</div>
         )}
-        <div className="space-y-2.5">
-          {state.programs.filter(isTemplate).map(p => (
-            <button key={p.id} disabled={assigning} onClick={() => assignProgram(assignOpen, p.id)} className="w-full text-left rounded-lg p-3.5" style={{ background: C.bg, border: `1px solid ${C.border}`, opacity: assigning ? 0.6 : 1 }}>
-              <div className="font-semibold text-sm" style={{ color: C.text }}>{p.name}</div>
-              <div className="text-xs mt-0.5" style={{ color: C.sub }}>{p.weeks} weeks · {p.days.length} days/cycle</div>
-            </button>
-          ))}
-        </div>
+        {(() => {
+          const athlete = state.athletes.find(a => a.id === assignOpen);
+          const intake = intakeForAthlete(athlete);
+          const usable = intakeIsUsable(intake);
+          const first = athlete?.name?.split(" ")[0] || "them";
+          return (
+            <div className="space-y-2.5">
+              {/* This is the one that should be reached for first: they answered
+                  all of this at signup, and it is sitting there unused. */}
+              <button disabled={assigning || !usable} onClick={() => setGenerateFor(assignOpen)}
+                className="w-full text-left rounded-lg p-3.5 disabled:opacity-40"
+                style={{ background: `${C.orange}14`, border: `1px solid ${C.orange}66` }}>
+                <div className="flex items-center gap-2">
+                  <Sparkles size={14} style={{ color: C.orange }} className="shrink-0" />
+                  <div className="font-semibold text-sm" style={{ color: C.orange }}>Build from {first}'s answers</div>
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: C.sub }}>
+                  {usable
+                    ? `Their goals, injuries, sport, schedule and equipment. You can edit every part of it afterwards.`
+                    : `${first} hasn't finished the questionnaire — no training days or equipment on file yet.`}
+                </div>
+              </button>
+
+              <button disabled={assigning} onClick={() => assignBlank(assignOpen)}
+                className="w-full text-left rounded-lg p-3.5 disabled:opacity-60"
+                style={{ background: C.bg, border: `1px dashed ${C.border}` }}>
+                <div className="font-semibold text-sm" style={{ color: C.text }}>Start from blank</div>
+                <div className="text-xs mt-0.5" style={{ color: C.sub }}>One empty day. Build it up yourself.</div>
+              </button>
+
+              {state.programs.filter(isTemplate).length > 0 && (
+                <>
+                  <div className="text-[10px] uppercase tracking-wide font-semibold pt-2" style={{ color: C.faint }}>Or use a saved program</div>
+                  {state.programs.filter(isTemplate).map(p => (
+                    <button key={p.id} disabled={assigning} onClick={() => assignProgram(assignOpen, p.id)} className="w-full text-left rounded-lg p-3.5" style={{ background: C.bg, border: `1px solid ${C.border}`, opacity: assigning ? 0.6 : 1 }}>
+                      <div className="font-semibold text-sm" style={{ color: C.text }}>{p.name}</div>
+                      <div className="text-xs mt-0.5" style={{ color: C.sub }}>{p.weeks} weeks · {p.days.length} days/cycle</div>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          );
+        })()}
       </Modal>
+
+      {/* Fed the athlete's REAL answers. The other place in the app that
+          generates for a coach passes a hardcoded example intake, so it built a
+          program for an imaginary MMA fighter whoever the client was. */}
+      {generateFor && (
+        <AIProgramGenerator
+          intake={intakeForAthlete(state.athletes.find(a => a.id === generateFor))}
+          onGenerated={(result) => assignGenerated(generateFor, result)}
+          onClose={() => setGenerateFor(null)} />
+      )}
     </div>
   );
 }
@@ -8041,6 +8518,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [swapTarget, setSwapTarget] = useState(null);
   const [scopeTarget, setScopeTarget] = useState(null);
   const [editBlockStart, setEditBlockStart] = useState(1);
+  const [weeksOpen, setWeeksOpen] = useState(false);
   const [detailExercise, setDetailExercise] = useState(null);
   const [editError, setEditError] = useState(null);
   // These two were declared BELOW the `if (!athlete) return null` guard, which
@@ -8175,12 +8653,25 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         ...d,
         exercises: d.exercises.map(x => x.id !== xId ? x
           : scopeOpts
-            ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: coachPlan.blocks, totalWeeks: coachPlan.weeks })
+            ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: coachPlan.blocks, totalWeeks: coachPlan.weeks, nameFor: id => exById(id)?.name })
             : { ...x, ...patch }),
       }),
     }));
   };
   const multiBlock = () => coachPlan.blocks.length > 1;
+  // Adding or removing weeks changes the program's length, which ensureCustom
+  // does not save — it writes days only. So this one goes direct.
+  const reshapeProgram = (fn) => {
+    if (!program) return;
+    const updated = fn(JSON.parse(JSON.stringify(program)));
+    if (!updated || updated.weeks === program.weeks) return;
+    setState(st => ({ ...st, programs: st.programs.map(p => (p.id === program.id ? updated : p)) }));
+    setEditError(null);
+    updateProgramRow(program.id, updated.days, state, { weeks: updated.weeks });
+    // The block being edited may have just been deleted.
+    setEditBlockStart(w => Math.min(w, updated.weeks));
+    setWeeksOpen(false);
+  };
   // Typing in a sets or reps box is a per-block change by default. Asking on
   // every keystroke would be unusable, and the block on screen is the block the
   // coach means — which is the whole point of the strip above.
@@ -8206,7 +8697,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const coachPlan = program
     ? planForFight(
         programHasWeeklyPlan(program)
-          ? { ...buildProgramPlan(program.weeks), blocks: authoredBlocks(program), deloadWeeks: authoredDeloadWeeks(program) }
+          ? { ...buildProgramPlan(program.weeks), blocks: programBlocks(program), deloadWeeks: authoredDeloadWeeks(program) }
           : buildProgramPlan(program.weeks),
         program, athlete?.intake?.fightDate)
     : { weeks: 1, blocks: [{ index: 1, startWeek: 1, endWeek: 1, isFinal: true }], deloadWeeks: [] };
@@ -8383,7 +8874,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         {athlete.injuries?.length > 0 && (
           <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
             <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
-            <div className="text-xs" style={{ color: C.red }}>Injury flags: {athlete.injuries.join(", ")}</div>
+            <div className="text-xs" style={{ color: C.red }}>Injury flags: {injuryLines(athlete.intake) !== "None" ? injuryLines(athlete.intake) : athlete.injuries.join(", ")}</div>
           </div>
         )}
 
@@ -8561,6 +9052,12 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                           </button>
                         );
                       })}
+                      <button onClick={() => setWeeksOpen(true)}
+                        className="shrink-0 rounded-lg px-3 py-2 text-left"
+                        style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
+                        <div className="text-xs font-semibold" style={{ color: C.sub }}>Edit weeks</div>
+                        <div className="text-[10px]" style={{ color: C.faint }}>add · remove</div>
+                      </button>
                     </div>
                   </div>
                 )}
@@ -8665,6 +9162,15 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           swapExercise(swapTarget.dayId, swapTarget.x.id, newEx);
           setSwapTarget(null);
         }} />
+      <WeeksModal
+        open={weeksOpen}
+        onClose={() => setWeeksOpen(false)}
+        plan={coachPlan}
+        currentWeek={editBlock?.startWeek || 1}
+        onAddWeek={(at) => reshapeProgram(prog => insertProgramWeeks(prog, at, 1))}
+        onAddBlock={() => reshapeProgram(prog => appendProgramBlock(prog))}
+        onRemoveWeek={(w) => reshapeProgram(prog => removeProgramWeeks(prog, w, 1))}
+        onRemoveBlock={(b) => reshapeProgram(prog => removeProgramBlock(prog, b))} />
       <EditScopeModal
         open={!!scopeTarget}
         onClose={() => { setScopeTarget(null); setSwapTarget(null); }}
@@ -8941,6 +9447,55 @@ function WeekScheduleEditor({ days, onSetWeekday, colorOf }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// Add or remove weeks and phases. The one destructive action in the program
+// editor that changes the SHAPE of the plan rather than its contents, so it
+// says out loud what it will do to the weeks either side before it does it.
+function WeeksModal({ open, onClose, plan, currentWeek, onRemoveWeek, onRemoveBlock, onAddWeek, onAddBlock }) {
+  if (!open) return null;
+  const blocks = plan?.blocks || [];
+  const weeks = plan?.weeks || 1;
+  const here = blocks.find(b => currentWeek >= b.startWeek && currentWeek <= b.endWeek);
+  const lastWeek = weeks <= 1;
+
+  const Row = ({ tone, label, detail, onClick, disabled }) => (
+    <button onClick={onClick} disabled={disabled}
+      className="w-full text-left rounded-lg p-3.5 disabled:opacity-40"
+      style={{ background: tone === "danger" ? `${C.red}14` : C.panel,
+               border: `1px solid ${tone === "danger" ? `${C.red}55` : C.border}` }}>
+      <div className="text-sm font-semibold" style={{ color: tone === "danger" ? C.red : C.text }}>{label}</div>
+      <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>{detail}</div>
+    </button>
+  );
+
+  return (
+    <Modal open={open} onClose={onClose} title="Weeks and phases">
+      <p className="text-xs mb-4" style={{ color: C.sub }}>
+        {weeks} week{weeks === 1 ? "" : "s"} in {blocks.length} phase{blocks.length === 1 ? "" : "s"}.
+        Removing weeks closes the gap — the weeks after move up and keep what they were prescribed.
+      </p>
+      <div className="space-y-2 mb-4">
+        <Row label={`Add a week after week ${currentWeek}`}
+          detail={`It carries on from week ${currentWeek} until you change it. The program becomes ${weeks + 1} weeks.`}
+          onClick={() => onAddWeek(currentWeek + 1)} />
+        <Row label={`Add a phase on the end`}
+          detail={`${PHASE_WEEKS} more weeks, making ${weeks + PHASE_WEEKS} in total.`}
+          onClick={() => onAddBlock()} />
+        <Row tone="danger" label={`Delete week ${currentWeek}`}
+          detail={lastWeek ? "A program needs at least one week." : `The program becomes ${weeks - 1} weeks.`}
+          disabled={lastWeek}
+          onClick={() => onRemoveWeek(currentWeek)} />
+        {here && blocks.length > 1 && (
+          <Row tone="danger" label={`Delete phase ${here.index}`}
+            detail={`Weeks ${here.startWeek}–${here.endWeek} go. The program becomes ${weeks - (here.endWeek - here.startWeek + 1)} weeks.`}
+            disabled={here.endWeek - here.startWeek + 1 >= weeks}
+            onClick={() => onRemoveBlock(here)} />
+        )}
+      </div>
+      <Btn variant="ghost" className="w-full" onClick={onClose}>Cancel</Btn>
+    </Modal>
   );
 }
 
@@ -9288,6 +9843,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiFor, setAiFor] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [removeTarget, setRemoveTarget] = useState(null);
@@ -9581,10 +10137,44 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
         </div>
       </Modal>
 
-      {aiOpen && (
+      {/* Who is this for? The generator used to be handed a hardcoded example
+          intake here — MMA, intermediate, four days, full gym — so whoever the
+          coach had in mind, it wrote a program for an imaginary fighter. A
+          program is for a person, so pick the person. */}
+      {aiOpen && !aiFor && (
+        <Modal open onClose={() => setAiOpen(false)} title="Who is this program for?">
+          <p className="text-xs mb-3" style={{ color: C.sub }}>
+            Their own answers are what the program gets built from.
+          </p>
+          <div className="space-y-2">
+            {state.athletes.length === 0 && (
+              <p className="text-sm" style={{ color: C.sub }}>No athletes on your roster yet.</p>
+            )}
+            {state.athletes.map(a => {
+              const usable = intakeIsUsable(intakeForAthlete(a));
+              return (
+                <button key={a.id} disabled={!usable} onClick={() => setAiFor(a.id)}
+                  className="w-full flex items-center gap-3 rounded-lg p-3 text-left disabled:opacity-40"
+                  style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                  <Avatar initials={a.avatar} size={34} photoUrl={a.photoUrl} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate" style={{ color: C.text }}>{a.name}</div>
+                    <div className="text-[11px]" style={{ color: C.sub }}>
+                      {usable ? a.sport || "General Fitness" : "Questionnaire not finished"}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <Btn variant="ghost" className="w-full mt-3" onClick={() => setAiOpen(false)}>Cancel</Btn>
+        </Modal>
+      )}
+      {aiOpen && aiFor && (
         <AIProgramGenerator
-          intake={{ "🥊 Sport / Focus": "MMA", isFighter: true, experience: "Intermediate (1-3 years)", goals: ["Athletic Performance"], injuries: ["None currently"], trainingDays: ["Monday", "Tuesday", "Thursday", "Friday"], equipment: ["Full gym access"], heightCm: 178, weightLb: 175 }}
-          onGenerated={applyAIProgram} onClose={() => setAiOpen(false)} />
+          intake={intakeForAthlete(state.athletes.find(a => a.id === aiFor))}
+          onGenerated={applyAIProgram}
+          onClose={() => { setAiOpen(false); setAiFor(null); }} />
       )}
     </div>
   );
@@ -9972,7 +10562,7 @@ function CoachMessages({ state, setState, nav, myUserId }) {
   };
 
   return (
-    <div className="flex flex-col h-screen pb-16">
+    <div className="flex flex-col app-screen">
       <TopBar title="Messages" onLogout={nav.logout} />
       <div className="flex gap-2 px-3 py-3 overflow-x-auto shrink-0" style={{ borderBottom: `1px solid ${C.border}` }}>
         {state.athletes.map(a => (
@@ -11995,6 +12585,7 @@ function AthleteProgram({ state, setState, nav }) {
   const [viewWeek, setViewWeek] = useState(null);
   const [swapTarget, setSwapTarget] = useState(null);
   const [scopeTarget, setScopeTarget] = useState(null);
+  const [weeksOpen, setWeeksOpen] = useState(false);
   const [detailExercise, setDetailExercise] = useState(null);
   // Declared here, above the `if (!myProgram)` early return below. It used to
   // sit further down, which made it a conditional hook: the no-program branch
@@ -12032,11 +12623,14 @@ function AthleteProgram({ state, setState, nav }) {
               error, no retry, and nothing their coach could do either, because
               signup is the only thing that builds a program. That is exactly
               how it failed in the wild. */}
-          {state.programGenerationError ? (
+          {/* Reads the note written to the profile as well as this session's
+              own error, so the retry is still here tomorrow, on another phone,
+              instead of disappearing with the tab. */}
+          {programBuildFailure(state) ? (
             <>
               <AlertCircle size={28} style={{ color: C.red }} className="mx-auto mb-3" />
               <div className="text-sm font-semibold mb-1" style={{ color: C.text }}>We couldn't build your program</div>
-              <p className="text-xs mb-5" style={{ color: C.sub }}>{state.programGenerationError}</p>
+              <p className="text-xs mb-5" style={{ color: C.sub }}>{programBuildFailure(state).message}</p>
               <Btn icon={Sparkles} onClick={() => nav.go("athlete-workout")}>Try again</Btn>
             </>
           ) : state.me.selfGuided ? (
@@ -12082,7 +12676,7 @@ function AthleteProgram({ state, setState, nav }) {
   const authoredWeeks = programHasWeeklyPlan(myProgram);
   const generated = buildProgramPlan(myProgram.weeks);
   const base = authoredWeeks
-    ? { ...generated, blocks: authoredBlocks(myProgram), deloadWeeks: authoredDeloadWeeks(myProgram) }
+    ? { ...generated, blocks: programBlocks(myProgram), deloadWeeks: authoredDeloadWeeks(myProgram) }
     : generated;
   // A fight date replaces the block deload with the taper. The two are
   // answers to the same question and on a camp they disagree — the deload
@@ -12144,7 +12738,7 @@ function AthleteProgram({ state, setState, nav }) {
       days: prog.days.map(d => d.id === dayId
         ? { ...d, exercises: d.exercises.map(x => x.id !== xId ? x
             : scopeOpts
-              ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: plan.blocks, totalWeeks: plan.weeks })
+              ? applyExerciseEdit(x, patch, { ...scopeOpts, blocks: plan.blocks, totalWeeks: plan.weeks, nameFor: id => exById(id)?.name })
               : { ...x, ...patch }) }
         : d)
     });
@@ -12156,6 +12750,26 @@ function AthleteProgram({ state, setState, nav }) {
       setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
       if (state.me.id) updateProgramRow(myProgram.id, updated.days, state);
     }
+  };
+
+  // Changing the SHAPE of the plan: how many weeks it runs and how they are
+  // grouped. Goes through the same two stores as every other edit, but has to
+  // save the program's length as well as its days — every existing save path
+  // wrote days alone.
+  const reshapeProgram = (fn) => {
+    const isCustom = !!state.me.customProgram;
+    const source = isCustom ? state.me.customProgram : myProgram;
+    const updated = fn(source);
+    if (!updated || updated === source) return;
+    if (isCustom) {
+      setState(s => ({ ...s, me: { ...s.me, customProgram: updated } }));
+    } else {
+      setState(s => ({ ...s, programs: s.programs.map(p => p.id === myProgram.id ? updated : p) }));
+      if (state.me.id) updateProgramRow(myProgram.id, updated.days, state, { weeks: updated.weeks });
+    }
+    // The week on screen may no longer exist.
+    setViewWeek(w => (w ? Math.min(w, updated.weeks) : w));
+    setWeeksOpen(false);
   };
 
   const moveExercise = (rowId, dir) => {
@@ -12419,6 +13033,24 @@ function AthleteProgram({ state, setState, nav }) {
             })}
           </div>
         )}
+
+        {canEdit && plan.weeks > 1 && (
+          <button onClick={() => setWeeksOpen(true)}
+            className="w-full rounded-xl py-2.5 mb-4 text-xs font-semibold flex items-center justify-center gap-1.5"
+            style={{ background: C.panel, color: C.sub, border: `1px dashed ${C.border}` }}>
+            <Calendar size={13} /> Add or remove weeks and phases
+          </button>
+        )}
+
+        <WeeksModal
+          open={weeksOpen}
+          onClose={() => setWeeksOpen(false)}
+          plan={plan}
+          currentWeek={shownWeek}
+          onAddWeek={(at) => reshapeProgram(prog => insertProgramWeeks(prog, at, 1))}
+          onAddBlock={() => reshapeProgram(prog => appendProgramBlock(prog))}
+          onRemoveWeek={(w) => reshapeProgram(prog => removeProgramWeeks(prog, w, 1))}
+          onRemoveBlock={(b) => reshapeProgram(prog => removeProgramBlock(prog, b))} />
 
         {shownIsDeload && (
           <div className="rounded-xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
@@ -15210,7 +15842,7 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   const bubbleBg = (kind) => (kind === "me" ? C.orange : kind === "ai" ? `${C.steel}55` : C.panel);
 
   return (
-    <div className="flex flex-col h-screen pb-16">
+    <div className="flex flex-col app-screen">
       <TopBar title="Messages" onLogout={nav.logout} />
       {/* With the AI assistant parked there is only one thread, so a tab strip
           with a single tab is just a label. */}
@@ -16078,7 +16710,7 @@ function AthleteProfile({ state, setState, nav }) {
             <div className="text-xs uppercase tracking-wide font-semibold mb-2.5" style={{ color: C.sub }}>Injury Flags</div>
             <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
               <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
-              <div className="text-xs" style={{ color: C.red }}>{m.injuries.join(", ")}</div>
+              <div className="text-xs" style={{ color: C.red }}>{injuryLines(m.intake) !== "None" ? injuryLines(m.intake) : m.injuries.join(", ")}</div>
             </div>
           </>
         )}
@@ -18823,7 +19455,7 @@ function CommunityPage({ state, setState, nav, isCoach = false }) {
   };
 
   return (
-    <div className="flex flex-col h-screen pb-16">
+    <div className="flex flex-col app-screen">
       <TopBar title="Community" onLogout={nav.logout} />
 
       {/* Filter tabs */}
@@ -19791,13 +20423,22 @@ function AppInner() {
           const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days, parsed.rationale || null) : null;
           if (userId && !dbId) throw new Error("We built your program but couldn't save it. Please try again from the Workout tab.");
           setState(s => applyGeneratedProgram(parsed, s, data, dbId));
+          // A note left behind from an earlier failed attempt would otherwise
+          // keep showing the athlete an error over a program that now exists.
+          await clearProgramFailure(userId);
         } catch (err) {
           // This catch used to be empty. A failed generation dropped the athlete
           // on a dashboard with no program and no error, staring at a "your
           // program is being built" message that nothing would ever resolve.
           // Record the failure so the Program tab can offer a retry.
           console.error("Program generation failed:", err);
-          setState(s => ({ ...s, programGenerationError: err.message || "We couldn't build your program automatically." }));
+          const message = err.message || "We couldn't build your program automatically.";
+          setState(s => ({ ...s, programGenerationError: message }));
+          // Written to the profile as well as to state. In memory it lasted
+          // exactly as long as the tab: one athlete's build failed at signup,
+          // and by the time anyone looked there was no program, no error and
+          // no log left to say why.
+          await recordProgramFailure(userId, message);
         }
         setGeneratingProgram(false);
         setView("athlete-dashboard");

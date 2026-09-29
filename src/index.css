@@ -100,3 +100,23 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
   padding: 7px 12px; cursor: pointer;
 }
 .tb-view-toggle { position: fixed; right: 14px; bottom: 90px; z-index: 60; }
+
+/* A screen that ends where the screen actually ends.
+ *
+ * These are the three pages built as a column that fills the height with a
+ * message composer pinned at the bottom: the coach's messages, the athlete's
+ * messages, and Community. They used `h-screen`, which is 100vh, and on iOS
+ * Safari 100vh measures the viewport as if the browser's own bars were hidden.
+ * So the bottom of the column sat below what you can actually see, and the
+ * composer was half off the screen with no way to scroll to it. 100dvh tracks
+ * the visible area instead; the 100vh line above it is the fallback for any
+ * browser without dvh.
+ *
+ * The padding clears the fixed bottom navigation. That bar pads ITSELF by the
+ * home-indicator inset, so this has to add the same inset or it under-clears
+ * the bar by exactly that much on any phone that has one. */
+.app-screen {
+  height: 100vh;
+  height: 100dvh;
+  padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+}
