@@ -7,18 +7,18 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
-        display: ['Archivo', 'Inter', 'sans-serif'],
+        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+        display: ['Sora', 'DM Sans', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
       },
       // Softer than Tailwind's defaults across the board. Every rounded-* class
       // in the app moves together, so the whole surface gets the same radius
       // language instead of each card being edited by hand.
       borderRadius: {
-        md: '10px',
-        lg: '14px',
-        xl: '18px',
-        '2xl': '22px',
+        md: '12px',
+        lg: '16px',
+        xl: '20px',
+        '2xl': '24px',
       },
     },
   },
