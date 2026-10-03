@@ -428,12 +428,12 @@ const FEATURES = {
   achievements: false,     // PR counters and badges with no real data behind them
 };
 
-const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap";
+const FONT_LINK = "https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap";
 
-// ---------- palette ----------
+// ---------- Performance Dark palette ----------
 //
 // Two themes, one object. Every screen in this file reads its colours from `C`
-// — around 1,150 references — so the theme switch mutates `C` IN PLACE rather
+// - around 1,150 references - so the theme switch mutates `C` IN PLACE rather
 // than replacing it. Each of those references reads `C.bg` at render time, so
 // after the mutation the next render picks up the new value, and not one of
 // the call sites had to change.
@@ -441,37 +441,59 @@ const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;6
 // The alternative, CSS custom properties, looked cleaner until the alpha
 // suffixes: the file is full of `${C.orange}22` to make a tinted background,
 // and "var(--orange)22" is not a colour. Hex strings keep that working.
+//
+// Key names are deliberately unchanged: about 1,150 places in this file read
+// `C.bg`, `C.orange` and so on, and applyTheme mutates `C` in place. `orange`
+// still holds the accent even though the accent is now blue - renaming it
+// would be 1,150 edits for no gain and a lot of risk.
 const DARK_PALETTE = {
-  bg: "#070910", panel: "#10131A", panelAlt: "#0B0E15", border: "#1E242F",
-  text: "#FFFFFF", sub: "#9BA1AA", faint: "#767E8C",
-  orange: "#3B6FED", blue: "#5B8DEF", steel: "#2A3A52", olive: "#34C77B", oliveDeep: "#1F8F58",
-  amber: "#F0A93C", red: "#FF5C5C",
-  gradFrom: "#3B6FED", gradTo: "#6E9AF8",
+  bg: "#05070D", panel: "#0E1422", panelAlt: "#0A0E18", border: "#1D2740",
+  text: "#F3F6FB", sub: "#8D98AE", faint: "#5D6882",
+  orange: "#2E86FF", blue: "#5CA9FF", steel: "#283552", olive: "#2BE3B0", oliveDeep: "#1FB88E",
+  amber: "#F4B544", red: "#FF5D6E",
+  gradFrom: "#3A92FF", gradTo: "#1F6FE8",
   // One hue per training day, so a session and the weekday it sits on can be
   // matched by colour at a glance instead of by reading two labels.
   days: ["#3B6FED", "#F0A93C", "#34C77B", "#C77BE8", "#FF7A5C", "#2BC4C4", "#E85C8A"],
 };
 
 // Not the dark palette inverted. On white, the mid-tones that read well
-// against black (the greens, the amber) turn to mush, so the accents are
-// darkened until they carry their weight as text — and the page/card
-// relationship is flipped: cards sit LIGHTER than the page, the way they sit
-// darker than it in dark mode.
+// against black turn to mush, so the accents are darkened until they carry
+// their weight as text - and the page/card relationship is flipped: cards sit
+// LIGHTER than the page, the way they sit darker than it in dark mode.
 const LIGHT_PALETTE = {
   // `bg` does two jobs: the page behind everything, AND the inset surfaces
-  // INSIDE cards — set rows, inputs, the week strip. So it has to read as
-  // clearly different from `panel` in both directions. At #F4F5F7 against a
-  // white card it was a 3% step, which is why the first pass looked like one
-  // flat white sheet: the cards never lifted off the page and the insets never
-  // sank into the cards. A proper grey gives the layout its structure back.
-  bg: "#E8EBF0", panel: "#FFFFFF", panelAlt: "#F1F3F7", border: "#CFD6E0",
-  text: "#0B0D12", sub: "#4E555F", faint: "#6A717C",
-  orange: "#2A5FD9", blue: "#3B6FED", steel: "#C6D3E8", olive: "#15855A", oliveDeep: "#0E6343",
+  // INSIDE cards - set rows, inputs, the week strip. So it has to read as
+  // clearly different from `panel` in both directions. A near-white value here
+  // makes the whole layout look like one flat sheet: the cards never lift off
+  // the page and the insets never sink into the cards.
+  bg: "#EEF1F6", panel: "#FFFFFF", panelAlt: "#F5F7FB", border: "#DCE2EC",
+  text: "#0B1020", sub: "#4F5A6E", faint: "#6B7588",
+  orange: "#1F6FE8", blue: "#1A5FD0", steel: "#C9D2E0", olive: "#0B8A68", oliveDeep: "#08705A",
   amber: "#9A6100", red: "#CE3434",
-  gradFrom: "#3B6FED", gradTo: "#6E9AF8",
+  gradFrom: "#3A92FF", gradTo: "#1F6FE8",
   // Same hues, darkened until each one holds up as text on white.
   days: ["#2A5FD9", "#8A5600", "#15855A", "#7E36A6", "#BC4326", "#0B6E6E", "#AE2F5E"],
 };
+
+// The three feature panels - the Today's Workout hero, the program phase card
+// and the onboarding art panel - stay dark navy in BOTH themes. That is what
+// keeps light mode feeling like this design rather than a bleached copy of it.
+// They read from HERO, never from `C`, so a theme switch cannot wash them out.
+//
+// The design kit calls this FEATURE. It is named HERO here because this file
+// already has FEATURES (the on/off switches for parked features) one letter
+// away, and two constants that close together is a bug waiting to happen.
+const HERO = {
+  bg: "linear-gradient(150deg, #13203d 0%, #0a1020 55%, #070a14 100%)",
+  glow: "radial-gradient(circle at 85% 0%, rgba(46,134,255,.55), transparent 55%)",
+  text: "#F3F6FB", sub: "#8D98AE", body: "#C3CBDB", line: "#283552",
+  accent: "#2E86FF", accentText: "#5CA9FF", success: "#2BE3B0",
+  glass: "rgba(255,255,255,.08)", glassLine: "rgba(255,255,255,.14)",
+};
+
+// The soft glow behind primary buttons and the "today" marker, both themes.
+const GLOW = "rgba(46,134,255,.35)";
 
 const THEME_KEY = "trainedbest:theme";
 
@@ -495,11 +517,11 @@ function resolveTheme(mode) {
   return prefersLight() ? "light" : "dark";
 }
 
-// The display face. Every heading, screen title, avatar initial and big
-// number uses it; body copy and form text stay on Inter, which is easier to
-// read at 13px. Archivo is wider and more industrial in its heavy weights, so
-// a title reads as a title without having to be bigger.
-const DISPLAY = "Archivo, Inter, system-ui, sans-serif";
+// The display face. Every heading, screen title, avatar initial and big number
+// uses it; body copy and form text stay on DM Sans, which is easier to read at
+// 13px. Sora is geometric and gets noticeably wider in its heavy weights, so a
+// title reads as a title without having to be bigger.
+const DISPLAY = "Sora, 'Segoe UI', system-ui, sans-serif";
 
 // The exercise photos are instructional cards shot on a near-white sweep, with
 // the movement name and the step captions printed into the image. Two things
@@ -529,6 +551,30 @@ function applyTheme(mode) {
 
 // Applied at module load, before React mounts.
 applyTheme(storedTheme());
+
+// System mode has to follow the device while the app is OPEN, not only at
+// launch. Without this a phone that flips to dark at sunset leaves the app in
+// light mode until it is force-quit - which is exactly when an athlete is most
+// likely to be mid-session with the screen in their face.
+//
+// The palette object is mutated in place, so React cannot see the change on
+// its own. Subscribers are told to repaint; App registers one.
+const themeWatchers = new Set();
+function watchSystemTheme(fn) {
+  themeWatchers.add(fn);
+  return () => themeWatchers.delete(fn);
+}
+try {
+  // addEventListener on a MediaQueryList is unsupported on Safari before 14,
+  // where the whole thing throws and the app simply keeps its launch theme.
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    // An explicit Light or Dark choice outranks the device. Only "system"
+    // follows it.
+    if (storedTheme() !== "system") return;
+    applyTheme("system");
+    themeWatchers.forEach(fn => { try { fn(); } catch { /* a subscriber that unmounted mid-flight */ } });
+  });
+} catch { /* no matchMedia, or no addEventListener on it */ }
 
 // ---------- phase ordering (the canonical workout structure) ----------
 const PHASES = [
@@ -19755,7 +19801,7 @@ class ErrorBoundary extends React.Component {
     const text = "#f5f1ec", sub = "#b6b0a8", faint = "#7d766e";
     return (
       <div style={{ minHeight: "100vh", background: "#12100e", color: text, padding: "48px 24px",
-                    fontFamily: "Inter, system-ui, sans-serif", display: "flex", flexDirection: "column",
+                    fontFamily: "DM Sans, system-ui, sans-serif", display: "flex", flexDirection: "column",
                     alignItems: "center", textAlign: "center" }}>
         <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 10 }}>Something went wrong</div>
         <p style={{ color: sub, fontSize: 14, lineHeight: 1.6, maxWidth: 340, margin: "0 0 24px" }}>
@@ -19922,6 +19968,11 @@ function InstallHint() {
 }
 
 export default function App() {
+  // Repaint when the device flips light/dark and the user is on "System".
+  // themeTick is the same lever ThemePicker pulls; the palette is already
+  // updated by the time this runs.
+  const [, forceThemePaint] = useState(0);
+  useEffect(() => watchSystemTheme(() => forceThemePaint(n => n + 1)), []);
   return (
     <PhoneFrame>
       <ErrorBoundary><AppInner /></ErrorBoundary>
@@ -20734,7 +20785,7 @@ function AppInner() {
     // writing the profile with the session they already hold.
     if (resumeSetupUser) {
       return (
-        <div style={{ fontFamily: "Inter, sans-serif" }}>
+        <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}>
           <Onboarding
             existingUser={resumeSetupUser}
             onComplete={handleResumeSetup}
@@ -20744,9 +20795,9 @@ function AppInner() {
       );
     }
     if (authMode === "login") {
-      return <div style={{ fontFamily: "Inter, sans-serif" }}><LoginScreen onLogin={handleLogin} onSwitchToSignup={() => setAuthMode("onboarding")} /></div>;
+      return <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}><LoginScreen onLogin={handleLogin} onSwitchToSignup={() => setAuthMode("onboarding")} /></div>;
     }
-    return <div style={{ fontFamily: "Inter, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} onSwitchToLogin={() => setAuthMode("login")} /></div>;
+    return <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} onSwitchToLogin={() => setAuthMode("login")} /></div>;
   }
 
   // Every tab here is part of the core loop; parked features add their own tab
@@ -20831,7 +20882,7 @@ function AppInner() {
 
   return (
     <NotificationContext.Provider value={notificationContext}>
-      <div style={{ fontFamily: "Inter, sans-serif", background: C.bg, minHeight: "100vh" }}>
+      <div style={{ fontFamily: "DM Sans, system-ui, sans-serif", background: C.bg, minHeight: "100vh" }}>
         <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
         {(authed === "coach" && trainingMode && !state.me?.intake && view !== "athlete-profile")
           ? pages["coach-training-intake"]
