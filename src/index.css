@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* The app writes this on <html> and <body> from the saved theme as soon as
+     it loads. The value here only covers the frame before that runs — it was a
+     hardcoded #000, which flashed black on every load in light mode and left a
+     black gutter under short pages and behind iOS overscroll. */
+  background: #05070D;
+  font-family: 'DM Sans', system-ui, sans-serif;
+}
+
+html[data-theme="light"],
+html[data-theme="light"] body {
+  background: #EEF1F6;
+}
+
+* {
+  -webkit-overflow-scrolling: touch;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* No double-tap-to-zoom delay on buttons, and no rubber-band pull on the
+   whole page - on an iPhone that drags the header and nav bar with it. */
+html, body {
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+}
+
+/* The iPhone's notch/Dynamic Island and home indicator. Zero in a desktop
+   browser, so these change nothing there. */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+
+/* ---------- phone frame on a desktop screen ----------
+   See PhoneFrame in App.jsx. Everything here applies only while the frame is
+   on (html.tb-framed), so phones and the installed app never see it. */
+/* !important because the theme code writes the page background inline on
+   <html> and <body>, which would otherwise show as a strip around the desk. */
+html.tb-framed, html.tb-framed body { background: #0b0b0d !important; overflow: hidden; }
+
+.tb-desk {
+  position: fixed; inset: 0; overflow: auto;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; padding: 24px;
+  background: radial-gradient(circle at 50% 20%, #1a1c22 0%, #0b0b0d 70%);
+}
+.tb-phone {
+  position: relative; overflow: hidden; border-radius: 52px;
+  /* Makes this the containing block for position: fixed, so the nav bar and
+     sheets pin to the phone rather than to the browser window. */
+  transform: translateZ(0);
+  box-shadow: 0 0 0 11px #1c1c1e, 0 0 0 13px #3a3a3c, 0 30px 80px #000000cc;
+  flex-shrink: 0;
+}
+/* Short laptop screens: scale the whole phone down rather than clip it. */
+@media (max-height: 920px) {
+  .tb-phone { zoom: calc((100vh - 90px) / 844px); }
+}
+@supports not (zoom: 1) {
+  @media (max-height: 920px) { .tb-phone { transform: translateZ(0) scale(0.85); } }
+}
+.tb-phone-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; }
+
+/* Inside the frame, "the screen" is the phone, not the browser window. */
+html.tb-framed .min-h-screen,
+html.tb-framed [style*="min-height: 100vh"] { min-height: 844px !important; }
+html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
+
+.tb-desk-caption {
+  display: flex; align-items: center; gap: 14px;
+  font: 12px/1 Inter, system-ui, sans-serif; color: #7d766e;
+}
+.tb-desk-caption button, .tb-view-toggle {
+  font: 600 12px/1 Inter, system-ui, sans-serif; color: #b6b0a8;
+  background: #1c1917; border: 1px solid #2e2a26; border-radius: 999px;
+  padding: 7px 12px; cursor: pointer;
+}
+.tb-view-toggle { position: fixed; right: 14px; bottom: 90px; z-index: 60; }
+
+/* A screen that ends where the screen actually ends.
+ *
+ * These are the three pages built as a column that fills the height with a
+ * message composer pinned at the bottom: the coach's messages, the athlete's
+ * messages, and Community. They used `h-screen`, which is 100vh, and on iOS
+ * Safari 100vh measures the viewport as if the browser's own bars were hidden.
+ * So the bottom of the column sat below what you can actually see, and the
+ * composer was half off the screen with no way to scroll to it. 100dvh tracks
+ * the visible area instead; the 100vh line above it is the fallback for any
+ * browser without dvh.
+ *
+ * The padding clears the fixed bottom navigation. That bar pads ITSELF by the
+ * home-indicator inset, so this has to add the same inset or it under-clears
+ * the bar by exactly that much on any phone that has one. */
+.app-screen {
+  height: 100vh;
+  height: 100dvh;
+  padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+}
+
+
+/* ---------- welcome page carousel ----------
+   See HeroCarousel in App.jsx. The parent (HeroPanel) already sets
+   position: relative and overflow: hidden, and its content sits at z-index 1.
+
+   Deliberately NO background here. The kit's version painted its own navy
+   gradient, which would have covered the panel's drawn art whenever the three
+   media files are absent. Transparent means a missing file costs nothing: the
+   panel looks exactly as it did before. */
+.hero-carousel { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+.hc-slide { position: absolute; inset: 0; opacity: 0; transition: opacity 1.2s ease; }
+.hc-slide.on { opacity: 1; }
+.hc-slide video, .hc-slide img {
+  width: 100%; height: 100%; object-fit: cover;
+  transform: scale(1.04); transition: transform 6s linear;
+}
+.hc-slide.on video, .hc-slide.on img { transform: scale(1.12); }
+/* A slide whose file has not loaded yet draws nothing.
+   Opacity rather than the kit's display:none, and the reason is narrow: this
+   rule hides an element that still has to finish loading, and a display:none
+   <video> is not guaranteed to keep loading. Chrome does (measured: a
+   display:none video fires loadeddata exactly as a visible one does), but it
+   is not a promise every browser makes, and if one breaks it the video slide
+   never stops being "empty" and the carousel cycles through a hole. Opacity
+   leaves the element rendered and laid out, so loading is never in question.
+   Nothing is visible either way. */
+.hc-slide.empty video, .hc-slide.empty img { opacity: 0; }
+
+/* Darkens the footage so the logo stays readable over it. Only rendered once
+   at least one file has loaded. */
+.hc-shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(5,7,13,.55) 0%, rgba(5,7,13,.10) 35%, rgba(5,7,13,.35) 60%, rgba(5,7,13,.92) 100%),
+    linear-gradient(90deg, rgba(5,7,13,.35), transparent 50%);
+}
+.hc-chip {
+  position: absolute; top: 96px; right: 40px; z-index: 2;
+  padding: 6px 12px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: #F3F6FB; background: rgba(5,7,13,.45);
+  border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(8px);
+}
+.hc-dots { position: absolute; right: 40px; bottom: 40px; z-index: 2; display: flex; gap: 6px; }
+.hc-dots button {
+  width: 22px; height: 4px; border: 0; padding: 0; border-radius: 2px;
+  background: rgba(255,255,255,.28); cursor: pointer;
+}
+.hc-dots button.on { background: #2E86FF; width: 34px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-slide, .hc-slide video, .hc-slide img { transition: none !important; transform: none !important; }
+}
