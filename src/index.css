@@ -120,3 +120,57 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
   height: 100dvh;
   padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
 }
+
+
+/* ---------- welcome page carousel ----------
+   See HeroCarousel in App.jsx. The parent (HeroPanel) already sets
+   position: relative and overflow: hidden, and its content sits at z-index 1.
+
+   Deliberately NO background here. The kit's version painted its own navy
+   gradient, which would have covered the panel's drawn art whenever the three
+   media files are absent. Transparent means a missing file costs nothing: the
+   panel looks exactly as it did before. */
+.hero-carousel { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+.hc-slide { position: absolute; inset: 0; opacity: 0; transition: opacity 1.2s ease; }
+.hc-slide.on { opacity: 1; }
+.hc-slide video, .hc-slide img {
+  width: 100%; height: 100%; object-fit: cover;
+  transform: scale(1.04); transition: transform 6s linear;
+}
+.hc-slide.on video, .hc-slide.on img { transform: scale(1.12); }
+/* A slide whose file has not loaded yet draws nothing.
+   Opacity rather than the kit's display:none, and the reason is narrow: this
+   rule hides an element that still has to finish loading, and a display:none
+   <video> is not guaranteed to keep loading. Chrome does (measured: a
+   display:none video fires loadeddata exactly as a visible one does), but it
+   is not a promise every browser makes, and if one breaks it the video slide
+   never stops being "empty" and the carousel cycles through a hole. Opacity
+   leaves the element rendered and laid out, so loading is never in question.
+   Nothing is visible either way. */
+.hc-slide.empty video, .hc-slide.empty img { opacity: 0; }
+
+/* Darkens the footage so the logo stays readable over it. Only rendered once
+   at least one file has loaded. */
+.hc-shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(5,7,13,.55) 0%, rgba(5,7,13,.10) 35%, rgba(5,7,13,.35) 60%, rgba(5,7,13,.92) 100%),
+    linear-gradient(90deg, rgba(5,7,13,.35), transparent 50%);
+}
+.hc-chip {
+  position: absolute; top: 96px; right: 40px; z-index: 2;
+  padding: 6px 12px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: #F3F6FB; background: rgba(5,7,13,.45);
+  border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(8px);
+}
+.hc-dots { position: absolute; right: 40px; bottom: 40px; z-index: 2; display: flex; gap: 6px; }
+.hc-dots button {
+  width: 22px; height: 4px; border: 0; padding: 0; border-radius: 2px;
+  background: rgba(255,255,255,.28); cursor: pointer;
+}
+.hc-dots button.on { background: #2E86FF; width: 34px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-slide, .hc-slide video, .hc-slide img { transition: none !important; transform: none !important; }
+}
