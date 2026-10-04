@@ -1546,6 +1546,35 @@ function lastPerformance({ exerciseName, program, logs, dayName, currentWeek }) 
 // 1, 2, 3: gaps are the whole reason set numbers are preserved rather than
 // compacted, and an unlabelled list puts set 2's weight where set 1's should
 // be - which is the number the bar gets loaded from.
+// Total tonnage for a set of logged sets: weight x reps, summed.
+//
+// Reps are deliberately optional when logging - an athlete who only tracks
+// weight loses nothing - which means a volume figure can only ever cover the
+// sets that recorded both. So the count of what WAS counted travels with the
+// number instead of a total that quietly under-reports and looks like a drop
+// in work when it is really a gap in logging.
+function setsVolume(sets, unit = "lb") {
+  const list = (sets || []).filter(Boolean);
+  let volume = 0, counted = 0;
+  for (const entry of list) {
+    const w = Number(entry?.weight), r = Number(entry?.reps);
+    if (isFinite(w) && w > 0 && isFinite(r) && r > 0) { volume += w * r; counted += 1; }
+  }
+  if (!counted) return null;
+  return { volume, counted, total: list.length, unit };
+}
+
+// "4 sets · 5,920 lb total volume", and says so when reps were missing from
+// some of them rather than presenting a partial total as the whole story.
+function formatVolume(v) {
+  if (!v) return null;
+  const amount = Math.round(v.volume).toLocaleString("en-US");
+  const base = `${v.counted} ${v.counted === 1 ? "set" : "sets"} \u00b7 ${amount} ${v.unit} total volume`;
+  return v.counted < v.total
+    ? `${base} (reps were logged on ${v.counted} of ${v.total})`
+    : base;
+}
+
 function formatSetHistory(sets) {
   const list = (sets || []).filter(Boolean);
   if (!list.length) return null;
@@ -6546,36 +6575,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     case "🩹 Injuries": {
       const current = data.injuries || [];
       const picked = current.filter(a => a !== "None currently");
-      return (
-        <div>
-          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>We'll prime and work around these in every session.</p>
-          <div className="grid grid-cols-1 gap-2.5">
-            {INJURY_AREAS.map(opt => {
-              const isActive = current.includes(opt);
-              return (
-                <button key={opt} onClick={() => {
-                  if (opt === "None currently") {
-                    setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
-                    return;
-                  }
-                  const without = current.filter(x => x !== "None currently");
-                  const next = isActive ? without.filter(x => x !== opt) : [...without, opt];
-                  // Detail for an area that was just deselected would keep
-                  // reaching the generator after they changed their mind.
-                  setData(d => ({ ...d, injuries: next, injuryDetail: pruneInjuryDetail(d.injuryDetail, next) }));
-                }} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
-                  style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
-                  <span style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
-                  {isActive && <Check size={16} style={{ color: C.orange }} />}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* One card per selected area. "Knee" on its own tells a coach
-              almost nothing — tendon pain, a tear and arthritis are three
-              different programs. */}
-          {picked.map(area => {
+      // One card per selected area, rendered directly under the body part
+      // it belongs to. They used to collect in a stack BELOW the whole list,
+      // so after tapping a knee you scrolled past nine other body parts to
+      // answer a question about it - and with two areas selected nothing on
+      // screen tied a card to the area it came from.
+      const injuryCard = (area) => {
             const detail = injuryDetailFor(data, area) || {};
             const status = detail.status || DEFAULT_INJURY_STATUS;
             return (
@@ -6644,7 +6649,39 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                   onChange={e => setData(d => ({ ...d, injuryDetail: setInjuryDetail(d, area, { note: e.target.value }) }))} />
               </div>
             );
-          })}
+      };
+      return (
+        <div>
+          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>We'll prime and work around these in every session.</p>
+          <div className="grid grid-cols-1 gap-2.5">
+            {INJURY_AREAS.map(opt => {
+              const isActive = current.includes(opt);
+              return (
+                <React.Fragment key={opt}>
+                <button onClick={() => {
+                  if (opt === "None currently") {
+                    setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
+                    return;
+                  }
+                  const without = current.filter(x => x !== "None currently");
+                  const next = isActive ? without.filter(x => x !== opt) : [...without, opt];
+                  // Detail for an area that was just deselected would keep
+                  // reaching the generator after they changed their mind.
+                  setData(d => ({ ...d, injuries: next, injuryDetail: pruneInjuryDetail(d.injuryDetail, next) }));
+                }} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
+                  style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
+                  <span style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
+                  {isActive && <Check size={16} style={{ color: C.orange }} />}
+                </button>
+                {isActive && opt !== "None currently" && injuryCard(opt)}
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {/* One card per selected area. "Knee" on its own tells a coach
+              almost nothing — tendon pain, a tear and arthritis are three
+              different programs. */}
 
           {/* A disabled Continue with no reason on screen is the single most
               common way a sign-up form loses somebody. */}
@@ -6862,7 +6899,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       const list = [
         "Full gym access", "MMA gym (bags, mats, etc.)", "Barbell + rack", "Dumbbells",
         "Kettlebells", "Resistance bands", "Pull-up bar", "Med ball", "Sled / prowler",
-        "Cardio equipment (bike, rower, etc.)", "Bodyweight only"
+        "Cardio equipment (bike, rower, etc.)", "Bodyweight"
       ];
       const current = data.equipment || [];
       return (
@@ -10151,10 +10188,18 @@ function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf }) {
               onClick={() => !isActive && onChange(day)}
               title={occupant ? `Swap with ${occupant.name}` : day}
               className="flex-1 aspect-square rounded-md text-[11px] font-bold flex flex-col items-center justify-center gap-0.5"
+              // Selected reads as a ring and coloured text, not a solid
+              // block. The filled square was the loudest thing on the screen
+              // and sat right beside the day tabs, which are also filled -
+              // two different "this one is selected" blocks competing a
+              // centimetre apart. The ring is drawn with an inset shadow
+              // rather than a thicker border so nothing shifts by a pixel
+              // when the selection moves.
               style={{
-                background: isActive ? activeColor : occupant ? `${occupantColor}18` : C.bg,
-                color: isActive ? "#fff" : occupant ? occupantColor : C.sub,
+                background: isActive ? `${activeColor}1F` : occupant ? `${occupantColor}18` : C.bg,
+                color: isActive ? activeColor : occupant ? occupantColor : C.sub,
                 border: `1px solid ${isActive ? activeColor : occupant ? `${occupantColor}55` : C.border}`,
+                boxShadow: isActive ? `inset 0 0 0 1px ${activeColor}` : "none",
               }}>
               <span>{WEEKDAY_SHORT[day]}</span>
               {occupant && <span style={{ width: 3, height: 3, borderRadius: 999, background: occupantColor }} />}
@@ -15878,7 +15923,14 @@ function Workout({ state, setState, nav, dayId }) {
               )
             }
           </div>
-          <div className="p-5">
+          {/* The Back / Next bar below is FIXED, so it floats over whatever
+              is at the end of this column. p-5 left 20px of clearance against
+              a bar roughly 78px tall - which on a phone also sits above the
+              64px navigation - and the last thing in the column is "Send this
+              to my coach". It was being covered completely. */}
+          <div className="p-5" style={{
+            paddingBottom: wideWorkout ? 120 : "calc(184px + env(safe-area-inset-bottom, 0px))",
+          }}>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.orange }}>{phaseLabel}</div>
             <div className="text-2xl font-bold mt-1" style={{ fontFamily: DISPLAY, color: C.text }}>{ex?.name}</div>
             {!hasExerciseImage(ex?.name) && (
@@ -15993,6 +16045,15 @@ function Workout({ state, setState, nav, dayId }) {
                 <span className="tabular-nums">{formatSetHistory(lastSets.sets)}</span>
                 {lastSets.repsTarget != null && (
                   <span style={{ color: C.faint }}>{" "}· target was {lastSets.repsTarget} reps</span>
+                )}
+                {/* The total, under the set-by-set line. Set by set tells you
+                    what to put on the bar; the total tells you whether the
+                    session as a whole was more work than last time, which is
+                    the number that actually moves over a block. */}
+                {formatVolume(setsVolume(lastSets.sets, weightUnit)) && (
+                  <span className="block mt-1 tabular-nums font-semibold" style={{ color: accent }}>
+                    {formatVolume(setsVolume(lastSets.sets, weightUnit))}
+                  </span>
                 )}
                 {caveat && (
                   <span className="block mt-1" style={{ color: C.faint }}>{caveat}</span>
@@ -20750,14 +20811,14 @@ function storedView() {
   if (forced === "app" || forced === "phone") return "app";
   if (forced === "web" || forced === "full") return "web";
   if (forced === "auto") return "auto";
-  try {
-    const v = localStorage.getItem(VIEW_PREF_KEY);
-    // "phone" and "full" are what earlier builds wrote; read them rather than
-    // dumping anyone who already made a choice back to the default.
-    if (v === "phone") return "app";
-    if (v === "full") return "web";
-    return VIEW_MODES.includes(v) ? v : "auto";
-  } catch { return "auto"; }
+  // No stored preference any more. The device decides: the native build and
+  // anything under 960px get the app layout, everything else gets the web one.
+  // A saved choice was a way to end up permanently in the wrong layout on a
+  // phone with no obvious way back, and asking somebody to choose between
+  // "App" and "Web" before they have seen either is a question the app can
+  // answer for itself. The query parameter stays, unadvertised, for sending a
+  // link that opens a particular way.
+  return "auto";
 }
 
 function setStoredView(mode) {
@@ -20791,53 +20852,6 @@ function useWide() {
 // The switch itself. Bottom right, above the nav bar, on every screen - the
 // point of it is being able to flip between the two without hunting for a
 // setting.
-function ViewSwitch() {
-  const wideSwitch = useIsWide();
-  const [mode, setMode] = useState(storedView);
-  useEffect(() => {
-    const on = () => setMode(storedView());
-    window.addEventListener("tb-view-change", on);
-    return () => window.removeEventListener("tb-view-change", on);
-  }, []);
-  if (typeof window === "undefined" || isNativeApp() || isStandaloneApp()) return null;
-
-  const choose = (m) => { setMode(m); setStoredView(m); };
-  const opts = [
-    { key: "app", label: "App", icon: Smartphone },
-    { key: "web", label: "Web", icon: Monitor },
-    { key: "auto", label: "Auto", icon: null },
-  ];
-  return (
-    <div style={{
-      position: "fixed", right: 14,
-      // Clear of BOTH bottom bars. The workout screen stacks a Back/Next bar on
-      // top of the nav, and at 4.75rem this sat directly on the Next Exercise
-      // button - the one control somebody is reaching for mid-set.
-      bottom: wideSwitch ? 96 : "calc(10rem + env(safe-area-inset-bottom, 0px))",
-      zIndex: 70, display: "flex", gap: 2, padding: 4, borderRadius: 999,
-      background: C.nav, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
-      border: `1px solid ${C.border}`, boxShadow: "0 10px 30px rgba(0,0,0,.45)",
-    }}>
-      {opts.map(o => {
-        const on = mode === o.key;
-        return (
-          <button key={o.key} onClick={() => choose(o.key)} aria-pressed={on}
-            title={o.key === "auto" ? "Follow the window width" : `Always use the ${o.label.toLowerCase()} layout`}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 5,
-              padding: "7px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700,
-              background: on ? `${C.orange}29` : "transparent",
-              color: on ? C.blue : C.sub,
-              boxShadow: on ? `inset 0 0 0 1.5px ${C.orange}` : "none",
-            }}>
-            {o.icon && <o.icon size={14} />}
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 // A context so a screen deep in the tree can lay itself out in two columns
 // without every component between here and there having to pass the flag down.
@@ -20945,9 +20959,7 @@ function PhoneFrame({ children }) {
     document.documentElement.classList.toggle("tb-framed", framed);
   }, [framed]);
 
-  // The switch is rendered OUTSIDE the phone, so it stays reachable while the
-  // app is boxed into a 390px frame.
-  if (!framed) return <>{children}<ViewSwitch /></>;
+  if (!framed) return <>{children}</>;
 
   return (
     <>
@@ -20959,7 +20971,6 @@ function PhoneFrame({ children }) {
           <span>iPhone {"\u00b7"} {PHONE_SCREEN.width} {"\u00d7"} {PHONE_SCREEN.height}</span>
         </div>
       </div>
-      <ViewSwitch />
     </>
   );
 }
