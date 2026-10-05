@@ -5711,6 +5711,13 @@ const looksLikeEmail = (v) => EMAIL_RE.test((v || "").trim());
 // What is wrong with the account step, in the order somebody reads the form.
 // Returns null when nothing is. Used for the message AND the Continue gate, so
 // they cannot drift apart.
+// True when the signup failure is "this account already exists" — the one
+// failure the athlete can act on themselves, by logging in rather than signing
+// up. Matched on the message because that is all handleOnboardComplete returns.
+function signupNeedsLogin(message) {
+  return /already exists|already registered|log(ging)? in instead/i.test(message || "");
+}
+
 function accountStepProblems(data) {
   const out = {};
   if ((data?.name || "").trim().length < 2) out.name = "Please enter your name.";
@@ -5904,6 +5911,9 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     if (!canProceed || submitting) return;
     if (isLast) {
       setSubmitting(true);
+      // Clear the previous reason before trying again, so a fixed problem does
+      // not keep showing the error it already fixed.
+      setData(d => (d.signupError ? { ...d, signupError: null } : d));
       onComplete(role, data)
         .then(err => {
           if (err) setData(d => ({ ...d, signupError: err }));
@@ -6060,6 +6070,31 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
       <div className="flex-1 px-6 overflow-y-auto pb-4">
         <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: DISPLAY, color: C.text }}>{stepName}</h2>
         <OnboardingStepBody role={role} stepName={stepName} data={data} setData={setData} />
+      </div>
+
+      {/* The signup error belongs HERE, beside the button that causes it.
+          It used to be rendered only inside the "Create Account" step body —
+          which is step 1, while Finish Setup is pressed on step 15. So a failed
+          signup wrote the reason into state and then displayed it on a screen
+          fourteen steps behind the user: the button flicked from "Setting up…"
+          back to "Finish Setup" and, as far as anyone could tell, nothing
+          happened at all. Two people with existing accounts hit exactly this
+          and had no way of knowing why the app was ignoring them. */}
+      <div className="px-6 shrink-0">
+        {data.signupError && (
+          <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
+            <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
+            {/* An account that already exists is not a dead end, so don't
+                present it as one — hand them the door out. */}
+            {signupNeedsLogin(data.signupError) && onSwitchToLogin && (
+              <button type="button" onClick={onSwitchToLogin}
+                className="text-[13px] font-semibold mt-2 underline"
+                style={{ color: C.red }}>
+                Log in instead
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
@@ -8033,49 +8068,148 @@ function apiUrl(path) {
 const MODEL_PROGRAM = "claude-sonnet-5";
 const MODEL_CHAT = "claude-haiku-4-5";
 
+// How long we are willing to wait before giving up on a generation. The server
+// is capped at 300s; allowing a little more here means a server-side cut always
+// reports itself as a server-side cut, instead of racing our own abort and
+// getting blamed on the phone.
+const AI_TIMEOUT_MS = 320_000;
+
+// Turns a dead request into an honest sentence.
+//
+// This used to say "your connection dropped — find better signal" for EVERY
+// failure where fetch() threw, and that was wrong far more often than it was
+// right. A Vercel function being killed at its duration cap also closes the
+// socket, so athletes sitting on full-strength wifi were told to go find
+// better signal while the real fault was entirely server-side. Checking
+// navigator.onLine and the elapsed time separates the two cases.
+function aiNetworkError(elapsedMs, aborted) {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (offline) {
+    return new Error("You're offline. Reconnect and tap Try Again — nothing was lost.");
+  }
+  if (aborted || elapsedMs >= AI_TIMEOUT_MS - 5_000) {
+    return new Error("The program took too long to build and the request timed out. Tap Try Again — nothing was lost.");
+  }
+  return new Error("The connection to the server broke before the program came back. Tap Try Again — nothing was lost.");
+}
+
+// Reads the server's SSE relay. Each frame is either a text chunk, an in-band
+// error, or the terminator carrying stop_reason.
+//
+// stop_reason matters: "max_tokens" means the model ran out of room and the
+// JSON is truncated, which is a specific, explainable failure rather than the
+// generic parse error the athlete used to see.
+async function readAIStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let streamError = null;
+  let stopReason = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const line = frame.split("\n").find(l => l.startsWith("data:"));
+      if (!line) continue;                       // ": keepalive" comments land here
+      const raw = line.slice(5).trim();
+      if (!raw) continue;
+      let evt;
+      try { evt = JSON.parse(raw); } catch { continue; }
+      if (typeof evt.t === "string") text += evt.t;
+      else if (evt.error) streamError = evt.error;
+      else if (evt.done) stopReason = evt.stop_reason;
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (stopReason === "max_tokens") {
+    throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+  }
+  if (!text.trim()) throw new Error("The AI returned an empty response. Please try again.");
+  return text;
+}
+
 async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
-  const post = () => fetch(apiUrl("/api/chat"), {
+  // Streaming is what keeps a two-to-four minute generation alive. With nothing
+  // on the wire, the platform, the CDN and the phone's radio all eventually
+  // decide the request is dead and kill it. The server answers a non-streaming
+  // request exactly as before, so an older deployed copy of /api/chat still
+  // works — the response's content-type decides how we read it below.
+  const post = (signal) => fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.access_token}`,
     },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages, ...(system ? { system } : {}) }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages, stream: true, ...(system ? { system } : {}) }),
+    signal,
   });
 
-  // Building a program is a single request that can run for a minute with
-  // nothing coming back down the wire, and a phone on one bar in a gym drops
-  // it - which fetch reports as the bare, unattributable "Load failed". One
-  // silent retry catches most of those; a second failure is a real connection
-  // problem and worth saying so plainly, because "Load failed" tells the
-  // athlete neither what broke nor what to do.
-  let response;
-  try {
-    response = await post();
-  } catch {
-    await new Promise(r => setTimeout(r, 1500));
+  // One silent retry absorbs a genuine blip. It deliberately does NOT retry a
+  // request that got far enough to start streaming, because re-running a
+  // three-minute generation on a timeout just burns another three minutes and
+  // another call's worth of tokens before failing the same way.
+  const attempt = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    const began = Date.now();
     try {
-      response = await post();
-    } catch {
-      throw new Error("Your connection dropped before the program came back. Find better signal and tap Try Again — nothing was lost.");
+      return { response: await post(controller.signal) };
+    } catch (err) {
+      return { failure: aiNetworkError(Date.now() - began, err?.name === "AbortError"), started: began };
+    } finally {
+      clearTimeout(timer);
     }
+  };
+
+  let { response, failure } = await attempt();
+  if (failure) {
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    const timedOut = /timed out/.test(failure.message);
+    if (offline || timedOut) throw failure;
+    await new Promise(r => setTimeout(r, 1500));
+    ({ response, failure } = await attempt());
+    if (failure) throw failure;
   }
 
-  let data = null;
-  try { data = await response.json(); } catch { /* non-JSON error page */ }
-
   if (!response.ok) {
+    let data = null;
+    try { data = await response.json(); } catch { /* non-JSON error page */ }
     const detail = data?.error?.message || data?.error || "";
     if (response.status === 401) throw new Error("Your session expired. Sign in again to use AI features.");
     if (response.status === 429) throw new Error(detail || "The AI is rate limited right now. Wait a minute and try again.");
     if (response.status === 502) throw new Error(detail || "The AI service is having problems. This is on our side, not yours.");
+    if (response.status === 504) throw new Error("The server gave up before the program finished building. Tap Try Again — nothing was lost.");
     if (response.status >= 500) throw new Error(detail || "The AI service is unavailable right now. Please try again shortly.");
     throw new Error(detail || `AI request failed (${response.status}).`);
   }
 
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/event-stream") && response.body) {
+    try {
+      return await readAIStream(response);
+    } catch (err) {
+      // A socket that dies mid-stream surfaces here as a TypeError, not as a
+      // message we wrote. Only those get re-labelled as a network fault.
+      if (err instanceof TypeError) throw aiNetworkError(AI_TIMEOUT_MS, false);
+      throw err;
+    }
+  }
+
+  // Older server, or a non-streaming reply: the original path, unchanged.
+  let data = null;
+  try { data = await response.json(); } catch { /* non-JSON error page */ }
+  if (data?.stop_reason === "max_tokens") {
+    throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+  }
   const textBlock = (data?.content || []).find(b => b.type === "text");
   if (!textBlock?.text) throw new Error("The AI returned an empty response. Please try again.");
   return textBlock.text;
