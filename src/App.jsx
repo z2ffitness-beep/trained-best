@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { supabase } from "./supabaseClient";
 import {
   Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen,
@@ -3279,6 +3279,13 @@ function describeNotification(n) {
     if (d.setsPrescribed) bits.push(`${d.setsCompleted}/${d.setsPrescribed} sets`);
     return { title: n.title, detail: bits.join(" · "), accent: C.olive, icon: CheckCircle2 };
   }
+  // The athlete said they are doing today's session. Distinct from
+  // "session_completed", which is them having finished it — a coach needs the
+  // first one during the day and the second one after.
+  if (n?.kind === "session_confirmed") {
+    const d = n.data || {};
+    return { title: n.title, detail: d.programDay || "Confirmed for today", accent: C.blue, icon: Calendar };
+  }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
     // The summary when a caller knew what changed, the program's name when it
@@ -3302,6 +3309,27 @@ async function notifyCoachOfSession({ dayName, date, timedSeconds, setsCompleted
       p_sets_prescribed: setsPrescribed ?? null,
     });
   } catch { /* the session is already saved; this is the notice, not the record */ }
+}
+
+// The athlete confirming they are doing today's session. This was the missing
+// half of the pair: finishing a workout notified the coach, but CONFIRMING one
+// wrote a session_checkins row and told nobody, so a coach had to go looking
+// through each athlete in turn to find out who had shown up. Same
+// fire-and-forget contract as the others — the check-in is already saved, and
+// a failed notice must never turn it into an error.
+//
+// Like notifyAthleteOfProgramChange, this is called without checking who is
+// calling: notify_coach_session_confirmed returns null unless the caller
+// actually has a coach, so a self-guided athlete quietly sends nothing. It
+// also collapses repeat taps on the same day into one notice, in the database,
+// where the client cannot get it wrong.
+async function notifyCoachOfCheckin({ programDay, date }) {
+  try {
+    await supabase.rpc("notify_coach_session_confirmed", {
+      p_program_day: programDay || null,
+      p_date: date,
+    });
+  } catch { /* the check-in is already saved; this is the notice, not the record */ }
 }
 
 // The same thing in the other direction: the coach changed something, so the
@@ -12867,6 +12895,10 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
       }
     }
 
+    // After the row is safe, and deliberately not awaited. The coach hears
+    // about it now rather than finding out by scrolling a roster later.
+    notifyCoachOfCheckin({ programDay, date: today });
+
     setState(s => ({
       ...s,
       sessionCheckins: {
@@ -14943,6 +14975,57 @@ async function flushPendingLogs(userId) {
   return sent;
 }
 
+// How much room the scrolling column above a FIXED bottom bar has to leave.
+//
+// This was a hard-coded 184px, guessed once from one phone. A guess is wrong
+// the moment anything changes height — a label wrapping onto a second line, a
+// larger accessibility text size, a different home-indicator inset, an extra
+// button — and when it is wrong the last controls in the column sit underneath
+// the bar where they cannot be read or tapped. "Send this to my coach" was
+// lost that way once, and "Swap This Exercise" a second time after the first
+// fix was tuned to the device it was tested on.
+//
+// So measure the bar rather than predicting it. Returns a ref to put on the
+// bar and the padding to put under the column. The observer re-runs on
+// rotation, on a text-size change, and whenever the bar's own contents change.
+function useBarClearance(gap = 24) {
+  const ref = useRef(null);
+  // The old constant, used only until the first measurement lands on the very
+  // first frame. Never worse than what was there before.
+  const [pad, setPad] = useState(184);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof window === "undefined") return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      // height covers the bar including its own safe-area padding; the space
+      // BELOW it covers whatever it floats above (the phone nav bar and the
+      // home indicator). Together they are the whole obstruction.
+      const below = Math.max(0, window.innerHeight - r.bottom);
+      const next = Math.ceil(r.height + below + gap);
+      // Guard against a zero-height measurement while the bar is still laying
+      // out, which would briefly remove all clearance.
+      if (next > gap) setPad(next);
+    };
+    measure();
+    let ro;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+    }
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [gap]);
+
+  return [ref, pad];
+}
+
 // Whether this device currently believes it has a connection. navigator.onLine
 // is only ever trustworthy when it says NO - a connected wifi with no route to
 // anywhere still reports true - so it is used to explain a failure, never to
@@ -15236,6 +15319,8 @@ function LastSessionRecap({ session }) {
 
 function Workout({ state, setState, nav, dayId }) {
   const wideWorkout = useIsWide();
+  // Measured, not assumed — see useBarClearance.
+  const [workoutBarRef, workoutBarPad] = useBarClearance();
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   // Run the day the athlete actually chose. This used to be hardcoded to
   // days[0], so tapping Start on Day 3 handed you Day 1's exercises and there
@@ -16057,14 +16142,10 @@ function Workout({ state, setState, nav, dayId }) {
               )
             }
           </div>
-          {/* The Back / Next bar below is FIXED, so it floats over whatever
-              is at the end of this column. p-5 left 20px of clearance against
-              a bar roughly 78px tall - which on a phone also sits above the
-              64px navigation - and the last thing in the column is "Send this
-              to my coach". It was being covered completely. */}
-          <div className="p-5" style={{
-            paddingBottom: wideWorkout ? 120 : "calc(184px + env(safe-area-inset-bottom, 0px))",
-          }}>
+          {/* The Back / Next bar below is FIXED, so it floats over whatever is
+              at the end of this column. The clearance is measured from that
+              bar rather than guessed — see useBarClearance. */}
+          <div className="p-5" style={{ paddingBottom: workoutBarPad }}>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.orange }}>{phaseLabel}</div>
             <div className="text-2xl font-bold mt-1" style={{ fontFamily: DISPLAY, color: C.text }}>{ex?.name}</div>
             {!hasExerciseImage(ex?.name) && (
@@ -16351,23 +16432,44 @@ function Workout({ state, setState, nav, dayId }) {
         )}
 
         <ChalkDivider />
-        {!block?.grouped && (
-          <Btn variant="ghost" icon={RotateCcw} onClick={() => setSwapItem(x)}>Swap This Exercise</Btn>
-        )}
-        {/* Filed from the session it happened in, so the clip arrives already
-            labelled with the movement and the day rather than as an
-            unexplained video. */}
-        {state.me.coachId && (
-          <Btn variant="ghost" className="mt-2" icon={Video} onClick={() => setFormCheckOpen(true)}>
-            Send this to my coach
-          </Btn>
-        )}
+        {/* Side by side rather than stacked. Two full-width buttons at the end
+            of a long column pushed the second one under the fixed bar on a
+            phone; as a row they take one button's height instead of two, and
+            they read as the pair of options they are. flex-wrap puts them back
+            on separate lines if the screen is genuinely too narrow.
+            The wrapper divs carry the sizing because Btn is shrink-0. */}
+        <div className="flex flex-wrap gap-2">
+          {!block?.grouped && (
+            <div className="flex-1" style={{ minWidth: 150 }}>
+              {/* Shorter label and a smaller button on a phone. Btn is
+                  whitespace-nowrap, so a label wider than half the screen does
+                  not wrap or ellipsise — it overflows its own pill and takes
+                  the icon off the edge with it. There is room for the full
+                  wording on the web. */}
+              <Btn variant="ghost" className="w-full" size={wideWorkout ? "md" : "sm"}
+                icon={RotateCcw} onClick={() => setSwapItem(x)}>
+                {wideWorkout ? "Swap This Exercise" : "Swap Exercise"}
+              </Btn>
+            </div>
+          )}
+          {/* Filed from the session it happened in, so the clip arrives already
+              labelled with the movement and the day rather than as an
+              unexplained video. */}
+          {state.me.coachId && (
+            <div className="flex-1" style={{ minWidth: 150 }}>
+              <Btn variant="ghost" className="w-full" size={wideWorkout ? "md" : "sm"}
+                icon={Video} onClick={() => setFormCheckOpen(true)}>
+                {wideWorkout ? "Send this to my coach" : "Send to Coach"}
+              </Btn>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Sits on top of the nav bar, which grows by the home-indicator inset
           on an iPhone - so this has to move up by the same amount or the
           Back / Next buttons hide behind the nav. */}
-      <div className="fixed px-5 py-4 flex gap-3 z-30" style={{
+      <div ref={workoutBarRef} className="fixed px-5 py-4 flex gap-3 z-30" style={{
         ...bottomBarBox(wideWorkout),
         background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         borderTop: `1px solid ${C.border}`,
