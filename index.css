@@ -171,6 +171,17 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
 }
 .hc-dots button.on { background: #2E86FF; width: 34px; }
 
+/* The band above the sign-up form is a few hundred pixels tall, not a full
+   screen. At the desktop offsets the caption pill landed on top of the centred
+   wordmark and the dots sat in from the edge further than the gutter. Caption
+   bottom left, dots bottom right, both tucked under the logo. */
+@media (max-width: 719px) {
+  .hc-chip { top: auto; bottom: 14px; left: 18px; right: auto; font-size: 10px; padding: 5px 10px; }
+  .hc-dots { right: 18px; bottom: 16px; }
+  .hc-dots button { width: 16px; }
+  .hc-dots button.on { width: 26px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hc-slide, .hc-slide video, .hc-slide img { transition: none !important; transform: none !important; }
 }
