@@ -4075,6 +4075,117 @@ function timedSessions(logs) {
   return (logs || []).filter(isTimedLog);
 }
 
+// Hours and minutes, for a figure that can run to a whole year of training.
+// formatClock is the stopwatch format and reads as nonsense past an hour or
+// two: 41:07:12 is not how anybody says "forty-one hours".
+function formatTrainedTime(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!total) return "0m";
+  let h = Math.floor(total / 3600);
+  let m = Math.round((total % 3600) / 60);
+  // 59m30s rounds to 60 minutes, which must read as the next hour rather than
+  // as "3h 60m".
+  if (m === 60) { h += 1; m = 0; }
+  if (!h) return `${m}m`;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Time trained over the windows an athlete actually thinks in.
+//
+// ONLY timed sessions count. Every log also carries `duration`, which is how
+// long the workout screen was open — it keeps running while the phone sits in
+// a locker — so adding that up would produce a year total made largely of
+// idle time. An untimed session has no honest duration, so it is counted as a
+// session and left out of the time, and the panel says how many those were
+// rather than quietly shrinking the number.
+function trainingTotals(logs, todayIso) {
+  const timed = timedSessions(logs);
+  const weekStart = weekStartFor(todayIso);
+  const weekEnd = weekStart ? shiftDays(weekStart, 6) : null;
+  const inRange = (l) => weekStart && weekEnd && l.date >= weekStart && l.date <= weekEnd;
+  const seconds = (list) => list.reduce((n, l) => n + Math.round(l.timedSeconds), 0);
+
+  const week = timed.filter(inRange);
+  const month = timed.filter(l => (l.date || "").slice(0, 7) === (todayIso || "").slice(0, 7));
+  const year = timed.filter(l => (l.date || "").slice(0, 4) === (todayIso || "").slice(0, 4));
+
+  return {
+    week:  { seconds: seconds(week),  sessions: week.length },
+    month: { seconds: seconds(month), sessions: month.length },
+    year:  { seconds: seconds(year),  sessions: year.length },
+    all:   { seconds: seconds(timed), sessions: timed.length },
+    untimed: Math.max(0, (logs || []).length - timed.length),
+  };
+}
+
+// ---- points ----
+//
+// Ten for turning up, up to fifteen for doing the sets that were actually
+// prescribed, and twenty-five for a week in which every scheduled session got
+// done.
+//
+// Deliberately NOT scaled by weight or volume. A deload week is supposed to be
+// lighter, and a score that rewarded tonnage would tell an athlete to ignore
+// the one week of a block that most needs obeying. Beating the prescription
+// earns nothing extra for the same reason — the target is the programme, not
+// the biggest number.
+const POINTS = { session: 10, compliance: 15, perfectWeek: 25 };
+
+function sessionPoints(log) {
+  if (!log) return 0;
+  const prescribed = Number(log.setsPrescribed);
+  const completed = Number(log.setsCompleted);
+  // A session with nothing prescribed — a mobility day, a walk — cannot be
+  // under-completed, so it scores the full share rather than nothing.
+  const ratio = Number.isFinite(prescribed) && prescribed > 0
+    ? Math.min(1, Math.max(0, (Number.isFinite(completed) ? completed : 0) / prescribed))
+    : 1;
+  return POINTS.session + Math.round(POINTS.compliance * ratio);
+}
+
+// The weeks in which the athlete did every session their programme schedules.
+// Each bonus is filed under that week's Monday, so it lands in the same month
+// and year as the sessions that earned it.
+function perfectWeeks(logs, sessionsPerWeek) {
+  const per = Number(sessionsPerWeek);
+  if (!Number.isFinite(per) || per <= 0) return [];
+  const byWeek = new Map();
+  for (const l of logs || []) {
+    const start = l?.date ? weekStartFor(l.date) : null;
+    if (!start) continue;
+    byWeek.set(start, (byWeek.get(start) || 0) + 1);
+  }
+  return [...byWeek.entries()].filter(([, n]) => n >= per).map(([start]) => start).sort();
+}
+
+function pointsTotals(logs, sessionsPerWeek, todayIso) {
+  const list = (logs || []).filter(Boolean);
+  const weekStart = weekStartFor(todayIso);
+  const weekEnd = weekStart ? shiftDays(weekStart, 6) : null;
+
+  const inWeek  = (iso) => !!iso && !!weekStart && !!weekEnd && iso >= weekStart && iso <= weekEnd;
+  const inMonth = (iso) => !!iso && iso.slice(0, 7) === (todayIso || "").slice(0, 7);
+  const inYear  = (iso) => !!iso && iso.slice(0, 4) === (todayIso || "").slice(0, 4);
+
+  const bonusWeeks = perfectWeeks(list, sessionsPerWeek);
+  const tally = (keep) => {
+    const sessions = list.filter(l => keep(l.date));
+    const bonuses = bonusWeeks.filter(keep);
+    return {
+      points: sessions.reduce((n, l) => n + sessionPoints(l), 0) + bonuses.length * POINTS.perfectWeek,
+      sessions: sessions.length,
+      bonuses: bonuses.length,
+    };
+  };
+
+  return {
+    week: tally(inWeek),
+    month: tally(inMonth),
+    year: tally(inYear),
+    all: tally(() => true),
+  };
+}
+
 function complianceBaseline(logs) {
   const timed = timedSessions(logs);
   if (timed.length < COMPLIANCE_MIN_SAMPLES) return null;
@@ -6109,7 +6220,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
             "Build programs, track athletes, message your roster")}
           {roleCard("athlete_coached", Users, C.blue, "I have a coach",
             "Join your coach's roster with an invite code")}
-          {roleCard("athlete", Zap, C.olive, "Self-guided athlete",
+          {roleCard("athlete", Zap, C.olive, "Solo training",
             "Get a program built from your answers and train on your own")}
         </div>
 
@@ -14858,6 +14969,7 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
   }, [secondsLeft]);
 
   const adherence = setsPrescribed ? Math.round((setsCompleted / setsPrescribed) * 100) : null;
+  const earned = sessionPoints({ setsCompleted, setsPrescribed });
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
@@ -14884,6 +14996,17 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
           label={timedSeconds != null ? "Timed" : "Minutes"} />
         <PlateBadge value={setsPrescribed ? `${setsCompleted}/${setsPrescribed}` : "—"} label="Sets" accent={C.olive} />
         <PlateBadge value={EFFORT_LABEL(effort)} label="Effort" accent={C.blue} />
+      </div>
+
+      {/* The score, where it was earned. A number that only ever appears on a
+          profile screen is a number nobody connects to anything they did. */}
+      <div className="rounded-full px-4 py-2 mt-5 flex items-center gap-2"
+        style={{ background: `${C.amber}1A`, border: `1px solid ${C.amber}66` }}>
+        <Trophy size={14} style={{ color: C.amber }} />
+        <span className="text-[15px] font-bold tabular-nums" style={{ color: C.amber }}>+{earned}</span>
+        <span className="text-[12.5px]" style={{ color: C.sub }}>
+          points{setsPrescribed ? ` · ${setsCompleted}/${setsPrescribed} sets` : ""}
+        </span>
       </div>
 
       {timedSeconds != null && (
@@ -18115,6 +18238,105 @@ function AthletePreferences({ state, setState }) {
 // The per-session average is the headline: it's what "am I getting through my
 // workouts more efficiently" actually means, and it isn't skewed by training
 // four times one week and three the next.
+function PointsPanel({ logs, sessionsPerWeek }) {
+  const totals = pointsTotals(logs, sessionsPerWeek, todayISO());
+  const rows = [
+    { key: "week", label: "This week", value: totals.week },
+    { key: "month", label: "This month", value: totals.month },
+    { key: "year", label: "This year", value: totals.year },
+    { key: "all", label: "All time", value: totals.all },
+  ];
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-center gap-2 mb-3">
+        <Trophy size={15} style={{ color: C.amber }} />
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold flex-1" style={{ color: C.sub }}>Points</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>{POINTS.session} + up to {POINTS.compliance} a session</span>
+      </div>
+      {totals.all.sessions === 0 ? (
+        <div className="text-[15px]" style={{ color: C.sub }}>
+          Log a session and your first points land here.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2.5">
+            {rows.map(r => (
+              <div key={r.key} className="rounded-xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                <div className="text-[11px] uppercase tracking-[.12em] font-semibold" style={{ color: C.sub }}>{r.label}</div>
+                <div className="text-xl mt-1 tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>
+                  {r.value.points.toLocaleString("en-US")}
+                </div>
+                <div className="text-[12px] mt-0.5" style={{ color: C.faint }}>
+                  {r.value.sessions} {r.value.sessions === 1 ? "session" : "sessions"}
+                  {r.value.bonuses > 0 ? ` · ${r.value.bonuses} full ${r.value.bonuses === 1 ? "week" : "weeks"}` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Said plainly. A score nobody can explain is a score nobody
+              trusts, and this one is meant to be arguable with. */}
+          <div className="text-[12.5px] mt-3 leading-relaxed" style={{ color: C.sub }}>
+            {POINTS.session} for finishing a session, up to {POINTS.compliance} more for completing the sets your
+            programme asked for, and {POINTS.perfectWeek} for a week where you did every scheduled session.
+            Lifting heavier than prescribed does not score extra — hitting the plan does.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TrainingTotalsPanel({ logs }) {
+  const totals = trainingTotals(logs, todayISO());
+  if (!totals.all.sessions) {
+    return (
+      <div className="rounded-2xl p-4 mb-5" style={card()}>
+        <div className="flex items-center gap-2 mb-2">
+          <Clock size={15} style={{ color: C.orange }} />
+          <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Time Trained</span>
+        </div>
+        <div className="text-[15px]" style={{ color: C.sub }}>
+          Nothing timed yet. Start the clock when you begin a session and it adds up here.
+        </div>
+      </div>
+    );
+  }
+  const rows = [
+    { key: "week", label: "This week", value: totals.week },
+    { key: "month", label: "This month", value: totals.month },
+    { key: "year", label: "This year", value: totals.year },
+    { key: "all", label: "All time", value: totals.all },
+  ];
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-center gap-2 mb-3">
+        <Clock size={15} style={{ color: C.orange }} />
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold flex-1" style={{ color: C.sub }}>Time Trained</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        {rows.map(r => (
+          <div key={r.key} className="rounded-xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+            <div className="text-[11px] uppercase tracking-[.12em] font-semibold" style={{ color: C.sub }}>{r.label}</div>
+            <div className="text-xl mt-1 tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>
+              {formatTrainedTime(r.value.seconds)}
+            </div>
+            <div className="text-[12px] mt-0.5" style={{ color: C.faint }}>
+              {r.value.sessions} {r.value.sessions === 1 ? "session" : "sessions"}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Said out loud rather than folded into the totals. An athlete who times
+          half their sessions should know which half the number covers. */}
+      {totals.untimed > 0 && (
+        <div className="text-[12.5px] mt-3" style={{ color: C.sub }}>
+          {totals.untimed} {totals.untimed === 1 ? "session was" : "sessions were"} logged without the clock running, so {totals.untimed === 1 ? "it is" : "they are"} not counted above.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TimeTrainedPanel({ logs }) {
   const cmp = trainingWeekComparison(logs);
   if (!cmp) return null;
@@ -18205,10 +18427,20 @@ function AthleteProfile({ state, setState, nav }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const m = state.me;
   const { ft, inch } = cmToFtIn(m.heightCm);
-  const latestProgress = state.progress[state.progress.length - 1];
-  const firstProgress = state.progress[0];
-  const weightChange = latestProgress && firstProgress ? (latestProgress.weightKg - firstProgress.weightKg) : 0;
-  const totalMinutes = state.workoutLogs.reduce((sum, l) => sum + (l.duration || 0), 0);
+  // Only entries that actually carry a weight. A check-in can record sleep,
+  // stress and energy and no weight at all — which is most of them — and
+  // subtracting one undefined from another put a literal "NaN lb" on the
+  // profile. Two weighed entries are needed before there is any change to
+  // report; one is a starting point, not a trend.
+  const weighedProgress = (state.progress || []).filter(e => typeof e?.weightKg === "number");
+  const weightChange = weighedProgress.length >= 2
+    ? weighedProgress[weighedProgress.length - 1].weightKg - weighedProgress[0].weightKg
+    : null;
+  // How many sessions a full week is, for the perfect-week bonus. Zero when
+  // there is no programme yet, which turns the bonus off rather than handing
+  // it out for a single session.
+  const pointsProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  const pointsPerWeekTarget = pointsProgram?.days?.length || 0;
 
   // Persist to profiles.photo_url. This was local-state only, so the athlete
   // picked a photo, saw it apply, and lost it on the next login — and it never
@@ -18321,10 +18553,19 @@ function AthleteProfile({ state, setState, nav }) {
           {FEATURES.achievements && <StatCard icon={Award} label="PRs" value={0} accent={C.olive} />}
         </div>
         <TimeTrainedPanel logs={state.workoutLogs} />
+        <TrainingTotalsPanel logs={state.workoutLogs} />
+        <PointsPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} />
 
-        <div className="grid grid-cols-2 gap-2.5 mb-5">
-          <StatCard icon={Clock} label="All Time" value={totalMinutes} sub="minutes" accent={C.orange} />
-          <StatCard icon={TrendingUp} label="Weight Change" value={`${weightChange > 0 ? "+" : ""}${kgToLb(weightChange).toFixed(1)}`} sub="lb" accent={weightChange < 0 ? C.olive : C.amber} />
+        {/* The "All Time · minutes" tile that used to sit here summed `duration`,
+            which is how long the workout SCREEN was open — it keeps counting
+            while the phone is in a locker. It read as time trained and was
+            nothing of the sort. TrainingTotalsPanel above gives the same
+            headline from the stopwatch instead. */}
+        <div className="grid grid-cols-1 gap-2.5 mb-5">
+          <StatCard icon={TrendingUp} label="Weight Change"
+            value={weightChange == null ? "\u2014" : `${weightChange > 0 ? "+" : ""}${kgToLb(weightChange).toFixed(1)}`}
+            sub={weightChange == null ? "weigh in twice" : "lb"}
+            accent={weightChange != null && weightChange < 0 ? C.olive : C.amber} />
         </div>
 
         <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Body Metrics</div>
