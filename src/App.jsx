@@ -1432,6 +1432,33 @@ function sessionKey(name) {
   return numbered ? `day ${Number(numbered[1])}` : clean;
 }
 
+// What identifies one session from one app launch to the next.
+//
+// NOT day.id. A program's days are stored in the database with no id of their
+// own, so every time one is read back the app mints a fresh
+// "d" + Math.random() for each day. day.id is therefore different on every
+// single page load.
+//
+// Everything that has to survive being closed mid-workout was keyed on it:
+// the draft of ticked sets and typed weights, and the running session timer.
+// Both were written under a key that could never be looked up again, so an
+// athlete who closed the app four exercises in came back to exercise one with
+// nothing kept — while the draft sat in storage under its orphaned key until
+// it aged out.
+//
+// The program's id and the day's name both come from the database and both
+// survive a reload, and sessionKey() already treats "Day 01" and "Day 1" as
+// the same session.
+function sessionIdentity(program, day) {
+  if (!day) return null;
+  const pid = program?.id || "program";
+  const name = sessionKey(day.name);
+  // The name is what makes this stable. Falling back to day.id keeps a
+  // nameless day working for the length of one visit, which is still better
+  // than no draft at all.
+  return `${pid}|${name || day.id || "day"}`;
+}
+
 // "Day 1 — Lower Power" -> "Day 1", for referring to a session in a sentence.
 // Splits on any dash a coach might actually type, not just the em dash the
 // generator happens to use.
@@ -14844,6 +14871,12 @@ function readSessionDraft(dayId, dateStr, userId) {
   if (!draft || typeof draft !== "object") return null;
   const age = Date.now() - (Number(draft.savedAt) || 0);
   if (!Number.isFinite(age) || age < 0 || age > SESSION_DRAFT_MAX_AGE_MS) return null;
+  // The date this draft belongs to, which was being stored and then ignored.
+  // Age alone does not say what the comment above promises: train at 11pm,
+  // come back at 11am, and last night's half-finished session is only twelve
+  // hours old — inside the fourteen-hour window — so it would reattach itself
+  // to this morning's workout on the same day of the programme.
+  if (dateStr && draft.date && draft.date !== dateStr) return null;
   return draft;
 }
 
@@ -14871,13 +14904,62 @@ function clearSessionDraft(dayId, userId) {
 // Is there anything in here worth keeping? An empty draft written over a real
 // one on the first render would defeat the whole mechanism, so nothing is
 // stored until the athlete has actually entered something.
+// Draft storage has to survive a reload, and the ids the UI keys its sets on
+// do not. Every exercise in a program is handed an "x" + Math.random() id when
+// the program is read out of the database, because the stored JSON carries
+// only a name — so the SAME exercise has a different id on every launch.
+//
+// That is why a draft could be found and still restore nothing: the weights
+// and ticks inside it were filed under last launch's ids, and the day on
+// screen had all new ones.
+//
+// Position in the day plus the normalised name is stable across loads, stays
+// unique when the same movement appears twice in a session, and declines to
+// match if the coach has since reordered the day — which is the safe way to
+// fail, because attaching yesterday's top set to a different lift is worse
+// than losing it.
+function stableExerciseKeys(day, resolveName) {
+  const toStable = new Map();   // this launch's id -> durable key
+  const toCurrent = new Map();  // durable key      -> this launch's id
+  (day?.exercises || []).forEach((x, i) => {
+    if (!x?.id) return;
+    // A day entry carries no name of its own — only a reference into the
+    // exercise library, which is itself minted fresh for any movement the
+    // library has not persisted. So the caller resolves the name, the same way
+    // on the way in and on the way out. Without it the key is the position
+    // alone, and a reordered day would hand one lift's top set to another.
+    const name = normalizeExerciseName((resolveName ? resolveName(x) : x.name) || "");
+    const key = `${i}:${name}`;
+    toStable.set(x.id, key);
+    toCurrent.set(key, x.id);
+  });
+  return { toStable, toCurrent };
+}
+
+// Rewrites the keys of one of the per-exercise maps. Anything with no match on
+// the other side is dropped rather than carried across under a stale key.
+function remapExerciseKeys(map, lookup) {
+  const out = {};
+  for (const [key, value] of Object.entries(map || {})) {
+    const next = lookup.get(key);
+    if (next !== undefined) out[next] = value;
+  }
+  return out;
+}
+
 function draftHasContent(draft) {
   if (!draft) return false;
   const filled = (map) => Object.values(map || {}).some(list => (list || []).some(v => v !== "" && v != null));
   return filled(draft.setWeights) || filled(draft.setReps) ||
          Object.values(draft.setChecks || {}).some(list => (list || []).length > 0) ||
          Object.keys(draft.swappedMap || {}).length > 0 ||
-         !!(draft.notes || "").trim();
+         !!(draft.notes || "").trim() ||
+         // Being four exercises into a session is progress worth keeping even
+         // when nothing has been written down yet. A warm-up has no weights or
+         // reps to log, so an athlete who worked through one and then had the
+         // phone kill the tab came back to exercise one with no record that
+         // they had started at all.
+         Number(draft.exIdx) > 0;
 }
 
 // ---- 2. finished sessions that could not be sent ----
@@ -15344,6 +15426,13 @@ function Workout({ state, setState, nav, dayId }) {
       || days[0];
   }, [myProgram, dayId, dayOverride]);
   const exById = id => state.exercises.find(e => e.id === id);
+  // Resolves the name used in the durable draft keys. Memoised so the save and
+  // restore effects get a stable reference rather than a new function every
+  // render.
+  const nameOfEntry = React.useCallback(
+    (x) => state.exercises.find(e => e.id === x?.exerciseId)?.name || "",
+    [state.exercises],
+  );
   const sortedExercises = useMemo(() => day ? day.exercises : [], [day]);
 
   // A session only means something against a date. A day with no weekday isn't
@@ -15429,20 +15518,22 @@ function Workout({ state, setState, nav, dayId }) {
   // day's ticked sets, typed weights, swaps and elapsed timer into the new
   // session, and left the "session logged" screen showing instead of the new
   // workout. All of it belongs to one specific day.
-  const dayKey = day?.id;
+  // Stable across reloads, unlike day.id — see sessionIdentity.
+  const dayKey = sessionIdentity(myProgram, day);
   useEffect(() => {
     // Anything this device already holds for this same session today wins
     // over a blank slate. Without this, reloading the app mid-workout - or
     // the phone killing a backgrounded tab, which it does constantly - threw
     // away every set already ticked.
     const draft = dayKey ? readSessionDraft(dayKey, todayISO(), state.me.id) : null;
+    const { toCurrent } = stableExerciseKeys(day, nameOfEntry);
     setExIdx(draft?.exIdx || 0);
-    setSetChecks(draft?.setChecks || {});
-    setSetWeights(draft?.setWeights || {});
-    setSetReps(draft?.setReps || {});
+    setSetChecks(remapExerciseKeys(draft?.setChecks, toCurrent));
+    setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
+    setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
-    setSwappedMap(draft?.swappedMap || {});
+    setSwappedMap(remapExerciseKeys(draft?.swappedMap, toCurrent));
     setResting(0);
     setRestDone(false);
     setPendingDay(null);
@@ -15468,7 +15559,14 @@ function Workout({ state, setState, nav, dayId }) {
       setTimerSeconds(0);
       setTimerMode(state.me.intake?.workoutTimer === false ? "off" : "ask");
     }
-  }, [dayKey, state.me.intake?.workoutTimer]);
+    // state.me.id is in the dependency list because the draft is stored under
+    // it. On a cold start this effect fires the moment `day` resolves, which
+    // can be BEFORE the profile has hydrated — so it looked for the draft under
+    // "anon:<dayId>", found nothing, and started the athlete at exercise one.
+    // The draft itself was fine: saved correctly under the real id, still on
+    // the phone, simply never read. Depending on the id means the lookup is
+    // retried the instant it arrives.
+  }, [dayKey, state.me.id, state.me.intake?.workoutTimer]);
 
   // 3 — 2 — 1, then the clock starts. Kept above every early return: React
   // counts hooks per render, and a hook that only runs on some renders is the
@@ -15503,7 +15601,16 @@ function Workout({ state, setState, nav, dayId }) {
   // for another session - never by writing a blank.
   useEffect(() => {
     if (!dayKey || finished) return;
-    const draft = { dayId: dayKey, date: sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes };
+    // Re-read on every save, so if the program is refetched mid-session the
+    // next write already uses the new ids' durable keys.
+    const { toStable } = stableExerciseKeys(day, nameOfEntry);
+    const draft = {
+      dayId: dayKey, date: sessionDay, exIdx, notes,
+      setChecks: remapExerciseKeys(setChecks, toStable),
+      setWeights: remapExerciseKeys(setWeights, toStable),
+      setReps: remapExerciseKeys(setReps, toStable),
+      swappedMap: remapExerciseKeys(swappedMap, toStable),
+    };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
   }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes, finished]);
