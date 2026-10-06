@@ -4330,6 +4330,11 @@ function HeroPanel({ children, ghostNumber, style, backdrop }) {
 // carousel turns off along with the rest of the desktop layout instead of
 // second-guessing it with its own media query.
 const HERO_SLIDES = [
+  // The first slide carries no picture on purpose. The band opens as plain
+  // navy with the wordmark over it — the way the app has always introduced
+  // itself — and the photography fades up behind the logo from there. It also
+  // means the first thing anyone sees is never a half-decoded image.
+  { key: "brand", caption: null, type: "brand", src: null },
   { key: "strength", caption: "Strength", type: "image", src: "media/strength.jpg" },
   { key: "coaching", caption: "Coaching", type: "image", src: "media/coaching.jpg" },
   { key: "conditioning", caption: "Conditioning", type: "image", src: "media/conditioning.jpg" },
@@ -4341,8 +4346,10 @@ function prefersReducedMotion() {
   try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; }
 }
 
-function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
-  const show = useWide();
+// `chrome` draws the caption pill and the progress dots. They belong on a tall
+// band and only crowd a shallow one, so the thin strip above the sign-up steps
+// gets the photography without the furniture.
+function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true }) {
   const [index, setIndex] = useState(0);
   const [loaded, setLoaded] = useState({});
   // Read once, on mount. Someone who has asked their machine for less movement
@@ -4352,10 +4359,10 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
   const anyLoaded = Object.values(loaded).some(Boolean);
 
   useEffect(() => {
-    if (!show || still) return;
+    if (still) return;
     const t = setInterval(() => setIndex((i) => (i + 1) % slides.length), interval);
     return () => clearInterval(t);
-  }, [show, still, slides.length, interval]);
+  }, [still, slides.length, interval]);
 
   // Only the slide you can see plays. The others stay paused so a welcome page
   // left open is not decoding three videos at once.
@@ -4367,14 +4374,12 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
     });
   }, [index, still]);
 
-  if (!show) return null;
-
   return (
     <div className="hero-carousel" aria-hidden="true">
       {slides.map((s, i) => (
         <div key={s.key} className={"hc-slide" + (i === index ? " on" : "") + (loaded[s.key] ? "" : " empty")}>
-          {s.type === "image" ? (
-            <img src={s.src} alt=""
+          {s.type === "brand" ? null : s.type === "image" ? (
+            <img src={s.src} alt="" decoding="async"
               onLoad={() => setLoaded((l) => ({ ...l, [s.key]: true }))}
               onError={() => setLoaded((l) => ({ ...l, [s.key]: false }))} />
           ) : (
@@ -4386,8 +4391,11 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
         </div>
       ))}
       {anyLoaded && <div className="hc-shade" />}
-      {anyLoaded && <div className="hc-chip">{slides[index].caption}</div>}
-      {anyLoaded && (
+      {/* The brand slide has no caption, and an empty pill reads as a bug. */}
+      {chrome && anyLoaded && slides[index].caption && (
+        <div className="hc-chip">{slides[index].caption}</div>
+      )}
+      {chrome && anyLoaded && (
         <div className="hc-dots">
           {slides.map((s, i) => (
             <button key={s.key} type="button" tabIndex={-1} className={i === index ? "on" : ""}
@@ -6015,7 +6023,8 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // On a phone it is a band across the top and the logo sits TOP centre, so the
   // form underneath starts as high up the screen as it can.
   const brandPanel = (wide, bandHeight = 240) => (
-    <HeroPanel style={{ borderRadius: 0, border: 0 }} backdrop={<HeroCarousel />}>
+    <HeroPanel style={{ borderRadius: 0, border: 0 }}
+      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} />}>
       {/* The height lives on THIS div, not on the panel. HeroPanel wraps its
           children in a relatively-positioned box of automatic height, so a
           height:100% here resolved against nothing and collapsed - which is
@@ -6024,7 +6033,10 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         minHeight: wide ? "100dvh" : bandHeight,
         padding: wide ? "48px 56px" : "28px 24px",
         display: "flex",
-        alignItems: wide ? "center" : "flex-start",
+        // Centred on the phone as well now. Sitting the wordmark at the top of
+        // a 240px band left most of the navy empty, and with photography
+        // running behind it the logo belongs in the middle of the frame.
+        alignItems: "center",
         justifyContent: wide ? "flex-start" : "center",
       }}>
         <div style={{
