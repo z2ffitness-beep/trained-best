@@ -4465,7 +4465,7 @@ function prefersReducedMotion() {
 // is not a width test: it also answers false inside the iPhone app and follows
 // the ?view= override. A breakpoint in the stylesheet would disagree with the
 // layout the app actually chose.
-function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true, compact = false }) {
+function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true, compact = false, focusTop = false }) {
   const [index, setIndex] = useState(0);
   const [loaded, setLoaded] = useState({});
   // Read once, on mount. Someone who has asked their machine for less movement
@@ -4489,6 +4489,37 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome =
     : { top: 96, right: 40, bottom: "auto", left: "auto" };
   const dotsBox = compact ? { right: 14, bottom: 14 } : { right: 40, bottom: 40 };
 
+  // Where in the photograph the band looks.
+  //
+  // The four files are square, 1600x1600, and every one of them is a person
+  // standing up with their head in the top quarter of the frame. On the web
+  // the panel is the full-height left half - taller than it is wide - so the
+  // whole height of the picture is on screen and nothing is lost. On a phone
+  // the same picture is squeezed into a band about 390 wide by 240 tall, which
+  // can only show about three fifths of its height. Cropped from the middle,
+  // as object-fit does by default, those three fifths are the torso: every
+  // head was cut off above the chin.
+  //
+  // So a deep phone band reads from the TOP of the picture instead. Two
+  // properties, and both are needed - setting one without the other does not
+  // work:
+  //
+  //   objectPosition   anchors the crop to the top of the photo.
+  //   transformOrigin  anchors the slow zoom there too. Without it the 1.12x
+  //                    zoom still grows out of the middle and pushes the head
+  //                    straight back off the top edge, undoing the first.
+  //
+  // Not applied to the shallow 92px strip above the sign-up steps. A band that
+  // thin cannot hold a person at any crop, and anchoring it to the top would
+  // fill it with the tops of heads sliced off at the eyebrows - the very thing
+  // this is fixing. Centred, it stays an abstract band of movement, which is
+  // all a strip that size was ever doing.
+  //
+  // Inline rather than in index.css, for the same reason the chip and dots are:
+  // the two files are uploaded by hand and App.jsx has twice gone up without
+  // the stylesheet. Framing that lives in the component cannot be half-shipped.
+  const frame = focusTop ? { objectPosition: "50% 0%", transformOrigin: "50% 0%" } : undefined;
+
   useEffect(() => {
     if (still) return;
     const t = setInterval(() => setIndex((i) => (i + 1) % slides.length), interval);
@@ -4510,12 +4541,12 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome =
       {slides.map((s, i) => (
         <div key={s.key} className={"hc-slide" + (i === index ? " on" : "") + (loaded[s.key] ? "" : " empty")}>
           {s.type === "brand" ? null : s.type === "image" ? (
-            <img src={s.src} alt="" decoding="async"
+            <img src={s.src} alt="" decoding="async" style={frame}
               onLoad={() => setLoaded((l) => ({ ...l, [s.key]: true }))}
               onError={() => setLoaded((l) => ({ ...l, [s.key]: false }))} />
           ) : (
             <video ref={(el) => (videos.current[i] = el)} src={s.src} muted playsInline loop
-              preload={i === 0 ? "auto" : "metadata"}
+              style={frame} preload={i === 0 ? "auto" : "metadata"}
               onLoadedData={() => setLoaded((l) => ({ ...l, [s.key]: true }))}
               onError={() => setLoaded((l) => ({ ...l, [s.key]: false }))} />
           )}
@@ -6156,7 +6187,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // form underneath starts as high up the screen as it can.
   const brandPanel = (wide, bandHeight = 240) => (
     <HeroPanel style={{ borderRadius: 0, border: 0 }}
-      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} compact={!wide} />}>
+      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} compact={!wide} focusTop={!wide && bandHeight >= 160} />}>
       {/* The height lives on THIS div, not on the panel. HeroPanel wraps its
           children in a relatively-positioned box of automatic height, so a
           height:100% here resolved against nothing and collapsed - which is
@@ -21641,7 +21672,7 @@ function wantsPhoneFrame() {
 // The desktop sidebar. Same nav items, same conditions, same order as the
 // bottom bar - it is handed the identical list, so a tab that appears on a
 // phone appears here and one behind a feature flag stays behind it.
-function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, program }) {
+function SideNav({ items, active, onChange, me, roleLabel, modeSwitch }) {
   return (
     <aside style={{
       width: SIDEBAR_W, flexShrink: 0, borderRight: `1px solid ${C.border}`, background: C.panelAlt,
@@ -21679,22 +21710,6 @@ function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, program }
           );
         })}
       </nav>
-
-      {program && (
-        <div style={{ ...card({ borderRadius: 14 }), padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 11, letterSpacing: ".16em", textTransform: "uppercase", fontWeight: 600, color: C.sub }}>This program</div>
-          <b style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 700, lineHeight: 1.3, color: C.text }}>{program.name}</b>
-          <div style={{ display: "flex", gap: 4 }}>
-            {Array.from({ length: program.weeks || 6 }).map((_, i) => (
-              <i key={i} style={{
-                flex: 1, height: 5, borderRadius: 3,
-                background: i + 1 < program.currentWeek ? C.olive : i + 1 === program.currentWeek ? C.orange : C.steel,
-              }} />
-            ))}
-          </div>
-          <small style={{ color: C.sub, fontSize: 12 }}>Week {program.currentWeek} of {program.weeks}</small>
-        </div>
-      )}
 
       <div style={{ marginTop: "auto", display: "flex", alignItems: "center", gap: 12, paddingLeft: 4 }}>
         <Avatar initials={me?.avatar || "??"} size={42} photoUrl={me?.photoUrl} />
@@ -22747,12 +22762,6 @@ function AppInner() {
     ? pages["coach-training-intake"]
     : (pages[view] || pages[coaching ? "coach-dashboard" : "athlete-dashboard"]);
 
-  // The sidebar's program card, for an athlete who has one.
-  const activeProgram = state.programs.find(p => p.id === state.me?.program) || null;
-  const sideProgram = activeProgram
-    ? { name: activeProgram.name, weeks: activeProgram.weeks || 6, currentWeek: programWeekFor(activeProgram, todayISO()) || 1 }
-    : null;
-
   const font = "DM Sans, system-ui, sans-serif";
 
   // Two shells, one set of pages. Everything inside `screen` is identical
@@ -22769,7 +22778,6 @@ function AppInner() {
               me={coaching ? { ...state.coachProfile, avatar: state.coachProfile?.avatar || "CO" } : state.me}
               roleLabel={coaching ? "Coach" : "Athlete"}
               modeSwitch={authed === "coach" ? <ModeSwitch training={trainingMode} onChange={setTrainingMode} className="" /> : null}
-              program={coaching ? null : sideProgram}
             />
             <div style={{ flex: 1, minWidth: 0, height: "100dvh", overflowY: "auto" }}>
               <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
