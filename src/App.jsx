@@ -7106,6 +7106,138 @@ function NotificationBell({ count, onClick }) {
   );
 }
 
+// ---- first run ----
+//
+// Four cards, once, for somebody who has just signed up. Not a spotlight tour
+// over the live screens: those break the moment a label moves, and this app's
+// bar changes shape depending on whether the athlete has a coach.
+//
+// Remembered per account rather than per device, so a second phone does not
+// replay it, and gated on having logged nothing yet — an athlete who has been
+// training for a month is not a first-time starter even on a new handset.
+const TOUR_SEEN_KEY = "tb_tour_seen";
+
+function tourAlreadySeen(userId) {
+  // No id means nobody to remember it for. Treat that as seen rather than
+  // showing a tour that can never be dismissed for good.
+  if (!userId) return true;
+  try {
+    const seen = JSON.parse(localStorage.getItem(TOUR_SEEN_KEY) || "{}");
+    return !!seen[userId];
+  } catch { return false; }
+}
+
+function markTourSeen(userId) {
+  if (!userId) return;
+  try {
+    const seen = JSON.parse(localStorage.getItem(TOUR_SEEN_KEY) || "{}");
+    seen[userId] = true;
+    localStorage.setItem(TOUR_SEEN_KEY, JSON.stringify(seen));
+  } catch { /* storage blocked; the in-memory flag still stops a repeat today */ }
+}
+
+// Written for the app the athlete actually has. A self-guided athlete has no
+// coach to message and no sessions to book, and telling them otherwise on
+// their first screen is how an app teaches somebody to distrust it.
+function tourCards(hasCoach) {
+  return [
+    {
+      key: "program", icon: Dumbbell, title: "Your training lives in Program",
+      body: "Today's session sits at the top of the Program tab. One tap on Start and you are training — no hunting for it.",
+    },
+    {
+      key: "log", icon: CheckCircle2, title: "Log it as you lift",
+      body: "Tick each set as you finish it and type the weight you used. Put your phone away mid-session and it picks up exactly where you left off.",
+    },
+    hasCoach
+      ? {
+          key: "week", icon: Calendar, title: "Your week, and your coach",
+          body: "Week shows what is coming. Book takes a session with your coach, and Coach is where you message them.",
+        }
+      : {
+          key: "week", icon: Calendar, title: "Your week at a glance",
+          body: "Week shows what is coming up. Swap any movement you cannot do and the rest of the plan stays intact.",
+        },
+    hasCoach
+      ? {
+          key: "sync", icon: Bell, title: "You both stay in the loop",
+          body: "Finish a session and your coach is told. Change something in your program and you get a notice back.",
+        }
+      : {
+          key: "progress", icon: Sparkles, title: "Watch it add up",
+          body: "Every logged set feeds your progress. Check it any time from your Profile.",
+        },
+  ];
+}
+
+function FirstRunTour({ hasCoach, onDone }) {
+  const [i, setI] = useState(0);
+  const cards = tourCards(hasCoach);
+  const card = cards[Math.min(i, cards.length - 1)];
+  const last = i >= cards.length - 1;
+  const Icon = card.icon;
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 60, background: HERO.bg,
+      display: "flex", flexDirection: "column",
+      paddingTop: "calc(24px + env(safe-area-inset-top, 0px))",
+      paddingBottom: "calc(28px + env(safe-area-inset-bottom, 0px))",
+      paddingLeft: 24, paddingRight: 24,
+    }}>
+      <div style={{ position: "absolute", inset: 0, background: HERO.glow, pointerEvents: "none" }} />
+
+      <div className="flex justify-end relative">
+        <button type="button" onClick={onDone}
+          className="text-[15px] font-semibold px-2 py-1" style={{ color: HERO.sub }}>
+          Skip
+        </button>
+      </div>
+
+      <div className="flex-1 flex flex-col justify-center relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
+        <div style={{
+          width: 62, height: 62, borderRadius: 20, display: "grid", placeItems: "center",
+          background: HERO.glass, border: `1px solid ${HERO.glassLine}`, marginBottom: 26,
+        }}>
+          <Icon size={28} style={{ color: HERO.accentText }} />
+        </div>
+        <div style={{
+          fontFamily: DISPLAY, fontWeight: 800, color: HERO.text, letterSpacing: "-.02em",
+          fontSize: "clamp(26px, 7vw, 32px)", lineHeight: 1.15, textWrap: "balance",
+        }}>
+          {card.title}
+        </div>
+        <p className="text-[17px] mt-4 leading-relaxed" style={{ color: HERO.body }}>{card.body}</p>
+      </div>
+
+      <div className="relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
+        <div className="flex items-center gap-2 mb-5" aria-hidden="true">
+          {cards.map((c, n) => (
+            <div key={c.key} style={{
+              height: 4, borderRadius: 2, transition: "width .25s ease, background .25s ease",
+              width: n === i ? 26 : 16,
+              background: n === i ? HERO.accent : "rgba(255,255,255,.26)",
+            }} />
+          ))}
+        </div>
+        <button type="button"
+          onClick={() => (last ? onDone() : setI(n => n + 1))}
+          className="w-full inline-flex items-center justify-center gap-2 rounded-full font-bold"
+          style={{ height: 54, fontSize: 16, background: HERO.accent, color: "#fff", border: 0 }}>
+          {last ? "Start training" : "Next"}
+          {!last && <ChevronRight size={18} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Screens that belong under a tab without being one. The bar falls back to its
+// first item for anything it cannot find, so without this an athlete running a
+// workout had Home lit up underneath them.
+const NAV_PARENT = {
+  "athlete-workout": "athlete-program",
+};
+
 function BottomNav({ items, active, onChange }) {
   // An athlete with a coach now carries seven tabs. At 390px that is about
   // 55px each, so the horizontal padding has to give way or the labels clip.
@@ -12969,34 +13101,41 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
     setCheckinSaving(false);
   };
 
-  // Build reminder banners
-  const reminders = [];
-  if (myProgram) {
-    const totalDays = myProgram.days?.length || 0;
-    const logCount = (state.workoutLogs || []).length;
+  // The reminder banners that used to sit above Today's Workout are gone.
+  // "You train today", "<program> is ready to begin" and the final-stretch
+  // note all restated what the session card underneath them already showed,
+  // and three stacked pills pushed the one thing an athlete opens this screen
+  // for below the fold. The card leads the page now.
 
-    // Session today. This used to be gated on the coach's accountability
-    // setting, which is a different feature entirely — an athlete whose coach
-    // had check-ins switched off was never reminded that they trained today.
-    const doneToday = (state.workoutLogs || []).some(l => l?.date === today);
-    if (todayDay && !doneToday) {
-      const mode = sessionModeMeta(sessionModeFor(todayDay, today));
-      reminders.push({
-        type: "session",
-        icon: mode.key === "online" ? "💻" : "💪",
-        text: `You train today — ${todayDay.name} (${mode.short.toLowerCase()})`,
-        color: C.orange,
-      });
-    }
-    // Program starting (first log)
-    if (logCount === 0 && myProgram) {
-      reminders.push({ type: "start", icon: "🚀", text: `${myProgram.name} is ready to begin. Hit Start Workout to kick things off.`, color: C.blue });
-    }
-    // Program ending — last 2 sessions
-    if (logCount >= totalDays * (myProgram.weeks || 4) - 2 && logCount > 0) {
-      reminders.push({ type: "end", icon: "🏁", text: "You're in the final stretch of your program — finish strong!", color: C.amber });
-    }
-  }
+  // Still the coach's record that the athlete turned up: it keeps its Confirm
+  // button and still sends the coach a notice. Only its position changed — it
+  // now sits under Today's Workout rather than above it, so the session is the
+  // first thing on the screen.
+  const checkinCard = accountabilityOn && todayDay ? (
+    <div className="rounded-xl p-4 mb-5" style={{ background: alreadyCheckedIn ? `${C.olive}18` : `${C.orange}12`, border: `1px solid ${alreadyCheckedIn ? C.olive : C.orange}55` }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[15px] font-semibold" style={{ color: alreadyCheckedIn ? C.olive : C.text }}>
+            {alreadyCheckedIn ? "✅ Session confirmed!" : "📋 Session check-in required"}
+          </div>
+          <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
+            {alreadyCheckedIn
+              ? `Checked in at ${todayCheckin.confirmedAt}`
+              : "Your coach requires you to confirm completed sessions."}
+          </div>
+        </div>
+        {!alreadyCheckedIn && (
+          <button onClick={confirmCheckin} disabled={checkinSaving} className="rounded-full px-3 py-2 text-[12.5px] font-semibold shrink-0"
+            style={{ background: C.orange, color: "#fff", opacity: checkinSaving ? 0.6 : 1 }}>
+            {checkinSaving ? "Saving…" : "Confirm"}
+          </button>
+        )}
+      </div>
+      {checkinError && (
+        <div className="text-[12.5px] mt-2.5" style={{ color: C.red }}>{checkinError}</div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="pb-28">
@@ -13036,44 +13175,6 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
-        {/* Reminder banners */}
-        {reminders.length > 0 && (
-          <div className="space-y-2.5 mb-5">
-            {reminders.map((r, i) => (
-              <div key={i} className="rounded-xl px-4 py-3 flex items-start gap-3" style={{ background: `${r.color}18`, border: `1px solid ${r.color}55` }}>
-                <span className="text-[19px] shrink-0">{r.icon}</span>
-                <span className="text-[15px]" style={{ color: C.text }}>{r.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Session check-off — only when accountability is on */}
-        {accountabilityOn && todayDay && (
-          <div className="rounded-xl p-4 mb-5" style={{ background: alreadyCheckedIn ? `${C.olive}18` : `${C.orange}12`, border: `1px solid ${alreadyCheckedIn ? C.olive : C.orange}55` }}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[15px] font-semibold" style={{ color: alreadyCheckedIn ? C.olive : C.text }}>
-                  {alreadyCheckedIn ? "✅ Session confirmed!" : "📋 Session check-in required"}
-                </div>
-                <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                  {alreadyCheckedIn
-                    ? `Checked in at ${todayCheckin.confirmedAt}`
-                    : "Your coach requires you to confirm completed sessions."}
-                </div>
-              </div>
-              {!alreadyCheckedIn && (
-                <button onClick={confirmCheckin} disabled={checkinSaving} className="rounded-full px-3 py-2 text-[12.5px] font-semibold shrink-0"
-                  style={{ background: C.orange, color: "#fff", opacity: checkinSaving ? 0.6 : 1 }}>
-                  {checkinSaving ? "Saving…" : "Confirm"}
-                </button>
-              )}
-            </div>
-            {checkinError && (
-              <div className="text-[12.5px] mt-2.5" style={{ color: C.red }}>{checkinError}</div>
-            )}
-          </div>
-        )}
         {todayDay ? (
           (() => {
             // The first movement with a photo, shown as a tilted tile in the
@@ -13162,6 +13263,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
             )}
           </div>
         )}
+
+        {checkinCard}
 
         {/* Calories and Protein were hardcoded to 0 with nothing anywhere in
             the app able to change them — a permanent "you've eaten nothing"
@@ -14256,6 +14359,48 @@ function AthleteProgram({ state, setState, nav }) {
             <span className="flex items-center gap-1.5"><RefreshCw size={14} /> {myProgram.days.length}x per week</span>
           </div>
         </div>
+
+        {/* Today's session, pinned above the rest of the programme.
+            With the Workout tab gone this is the main way in, so it states
+            what is on and starts it in one tap. Every day further down keeps
+            its own Start button for training out of order. */}
+        {(() => {
+          const todayIso = todayISO();
+          const todaysDay = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
+          const doneToday = (state.workoutLogs || []).some(l => l?.date === todayIso);
+          if (!todaysDay) {
+            return (
+              <div className="rounded-3xl p-5 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: C.sub }}>Today</div>
+                <div className="text-[15px] mt-1.5" style={{ color: C.text }}>Rest day — nothing scheduled.</div>
+                <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>Start any session below if you want to train anyway.</div>
+              </div>
+            );
+          }
+          return (
+            <div className="rounded-3xl p-5 mb-5" style={{
+              background: C.panel,
+              border: `1px solid ${doneToday ? C.olive : C.orange}`,
+            }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: doneToday ? C.olive : C.orange }}>
+                    {doneToday ? "Today · logged" : "Today"}
+                  </div>
+                  <div className="text-xl mt-1" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{todaysDay.name}</div>
+                  <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>
+                    {(todaysDay.exercises || []).length} exercises
+                  </div>
+                </div>
+                <button onClick={() => nav.go("athlete-workout", todaysDay.id)}
+                  className="inline-flex items-center gap-1.5 rounded-full px-5 py-3 font-semibold text-[15px] shrink-0"
+                  style={{ background: doneToday ? C.panel : C.orange, color: doneToday ? C.text : "#fff", border: doneToday ? `1px solid ${C.border}` : "none" }}>
+                  <Play size={14} fill={doneToday ? "none" : "#fff"} /> {doneToday ? "Open" : "Start"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         <ProgramExplainer program={myProgram} state={state} />
 
@@ -21426,6 +21571,12 @@ function AppInner() {
   const [navParam, setNavParam] = useState(null);
   const [state, setState] = useState(initialState);
   const [sessionLoading, setSessionLoading] = useState(true);
+  // The first-run cards. Declared up here with the other AppInner state
+  // because React counts hooks per render and this component has several early
+  // returns below — a hook placed after one of them runs on some renders and
+  // not others, which is the "rendered fewer hooks than expected" crash.
+  const [tourOpen, setTourOpen] = useState(false);
+  const tourDecided = useRef(false);
   const [authMode, setAuthMode] = useState("onboarding"); // 'onboarding' | 'login'
   const [pendingConfirmEmail, setPendingConfirmEmail] = useState(null);
   // Onboarding answers held in memory while the user goes off to confirm their
@@ -22180,6 +22331,22 @@ function AppInner() {
     }));
   });
 
+  // Decide once per session whether this is somebody's first time. Gated on
+  // having logged nothing: an athlete a month into training is not a first-time
+  // starter, even on a handset that has never seen the app.
+  useEffect(() => {
+    if (tourDecided.current) return;
+    const id = state.me?.id;
+    if (!authed || authed === "coach" || !id) return;
+    tourDecided.current = true;
+    if ((state.workoutLogs || []).length === 0 && !tourAlreadySeen(id)) setTourOpen(true);
+  }, [authed, state.me?.id, state.workoutLogs]);
+
+  const closeTour = React.useCallback(() => {
+    setTourOpen(false);
+    markTourSeen(state.me?.id);
+  }, [state.me?.id]);
+
   // Ahead of everything else: someone who has just clicked a reset link must
   // choose a password before being dropped into the app.
   if (recoveringPassword) {
@@ -22257,7 +22424,11 @@ function AppInner() {
   // labels room to breathe; eight was 48px and pushed them to 9px.
   const athleteNavItems = [
     { key: "athlete-dashboard", label: "Home", icon: LayoutGrid },
-    { key: "athlete-workout", label: "Workout", icon: Flame },
+    // Workout is no longer a tab of its own. It is the same screen, reached
+    // from the session pinned at the top of Program and from the card on Home,
+    // which is where somebody about to train is already looking. The route
+    // stays — eight places link to it — only the bar entry is gone, and that
+    // takes the athlete bar from seven tabs to six.
     { key: "athlete-program", label: "Program", icon: Dumbbell },
     { key: "calendar", label: "Week", icon: Calendar },
     // Book and Coach are STATIC - they are here whether or not this athlete has
@@ -22327,7 +22498,9 @@ function AppInner() {
     ...(FEATURES.nutrition ? { "nutrition": <NutritionPage state={state} nav={nav} /> } : {}),
   };
 
-  const activeNavKey = navItems.find(i => i.key === view) ? view : navItems[0].key;
+  const activeNavKey = navItems.find(i => i.key === view) ? view
+    : navItems.find(i => i.key === NAV_PARENT[view]) ? NAV_PARENT[view]
+    : navItems[0].key;
 
   const screen = (authed === "coach" && trainingMode && !state.me?.intake && view !== "athlete-profile")
     ? pages["coach-training-intake"]
@@ -22347,6 +22520,7 @@ function AppInner() {
   return (
     <NotificationContext.Provider value={notificationContext}>
       <WideContext.Provider value={wide}>
+        {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} onDone={closeTour} />}
         {wide ? (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100dvh", display: "flex", alignItems: "flex-start" }}>
             <SideNav
