@@ -4363,6 +4363,21 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome =
   const videos = useRef([]);
   const anyLoaded = Object.values(loaded).some(Boolean);
 
+  // Where the caption pill and the dots sit, written as inline style rather
+  // than left to the stylesheet.
+  //
+  // This is deliberate and it is not decoration. The app ships as two files
+  // uploaded by hand, and twice now App.jsx has gone up without index.css —
+  // which left the new centred wordmark from this file sitting underneath the
+  // old stylesheet's pill at top:96px/right:40px, exactly the overlap this was
+  // meant to cure. An inline style beats a stylesheet rule, so the component
+  // now places its own furniture and cannot be half-deployed into a broken
+  // state. The classes stay for the look: colour, blur, border, radius.
+  const chipBox = compact
+    ? { top: 14, right: 14, bottom: "auto", left: "auto", fontSize: 10, padding: "5px 10px", letterSpacing: ".12em" }
+    : { top: 96, right: 40, bottom: "auto", left: "auto" };
+  const dotsBox = compact ? { right: 14, bottom: 14 } : { right: 40, bottom: 40 };
+
   useEffect(() => {
     if (still) return;
     const t = setInterval(() => setIndex((i) => (i + 1) % slides.length), interval);
@@ -4398,13 +4413,14 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome =
       {anyLoaded && <div className="hc-shade" />}
       {/* The brand slide has no caption, and an empty pill reads as a bug. */}
       {chrome && anyLoaded && slides[index].caption && (
-        <div className="hc-chip">{slides[index].caption}</div>
+        <div className="hc-chip" style={chipBox}>{slides[index].caption}</div>
       )}
       {chrome && anyLoaded && (
-        <div className="hc-dots">
+        <div className="hc-dots" style={dotsBox}>
           {slides.map((s, i) => (
             <button key={s.key} type="button" tabIndex={-1} className={i === index ? "on" : ""}
-              onClick={() => setIndex(i)} aria-label={s.caption} />
+              onClick={() => setIndex(i)} aria-label={s.caption}
+              style={{ width: i === index ? (compact ? 26 : 34) : (compact ? 16 : 22) }} />
           ))}
         </div>
       )}
