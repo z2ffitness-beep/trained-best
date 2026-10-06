@@ -4349,7 +4349,12 @@ function prefersReducedMotion() {
 // `chrome` draws the caption pill and the progress dots. They belong on a tall
 // band and only crowd a shallow one, so the thin strip above the sign-up steps
 // gets the photography without the furniture.
-function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true }) {
+// `compact` is the app layout — the phone, the native build, or ?view=app. It
+// is passed in rather than read from a CSS media query because isWideScreen()
+// is not a width test: it also answers false inside the iPhone app and follows
+// the ?view= override. A breakpoint in the stylesheet would disagree with the
+// layout the app actually chose.
+function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true, compact = false }) {
   const [index, setIndex] = useState(0);
   const [loaded, setLoaded] = useState({});
   // Read once, on mount. Someone who has asked their machine for less movement
@@ -4375,7 +4380,7 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome =
   }, [index, still]);
 
   return (
-    <div className="hero-carousel" aria-hidden="true">
+    <div className={"hero-carousel" + (compact ? " compact" : "")} aria-hidden="true">
       {slides.map((s, i) => (
         <div key={s.key} className={"hc-slide" + (i === index ? " on" : "") + (loaded[s.key] ? "" : " empty")}>
           {s.type === "brand" ? null : s.type === "image" ? (
@@ -6024,7 +6029,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // form underneath starts as high up the screen as it can.
   const brandPanel = (wide, bandHeight = 240) => (
     <HeroPanel style={{ borderRadius: 0, border: 0 }}
-      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} />}>
+      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} compact={!wide} />}>
       {/* The height lives on THIS div, not on the panel. HeroPanel wraps its
           children in a relatively-positioned box of automatic height, so a
           height:100% here resolved against nothing and collapsed - which is
