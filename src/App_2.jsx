@@ -1,16 +1,14 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { supabase } from "./supabaseClient";
 import {
-  Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen,
-  Flame, TrendingUp, Clock, ChevronRight, ChevronLeft, Plus, X,
-  Search, Check, User, LogOut, Send, Image as ImageIcon, Settings,
-  Target, Award, Activity, BarChart3, Salad, ClipboardList, Play,
-  Pause, RotateCcw, ArrowRight, Shield, Zap, Trophy, Home, Mail,
-  ChevronDown, ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2,
-  Sparkles, Bot, RefreshCw, AlertCircle, Swords, HeartPulse, Ruler,
-  Scale, ChevronsUpDown, Wand2, Loader2, Eye, EyeOff, UserPlus,
-  Bell, MapPin, Video, Inbox,
-  Smartphone, Monitor, Moon, Leaf, Heart, Phone,
+  Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen, Flame, TrendingUp, Clock,
+  ChevronRight, ChevronLeft, Plus, X, Search, Check, User, LogOut, Send,
+  Image as ImageIcon, Settings, Target, Award, Activity, BarChart3, Salad, ClipboardList,
+  Play, Pause, RotateCcw, ArrowRight, Shield, Zap, Trophy, Home, Mail, ChevronDown,
+  ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
+  AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
+  MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
+  Moon, Leaf, Heart, Phone
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -1430,6 +1428,33 @@ function sessionKey(name) {
   // a generator that zero-pads for sort order would otherwise orphan every
   // log the athlete had against it.
   return numbered ? `day ${Number(numbered[1])}` : clean;
+}
+
+// What identifies one session from one app launch to the next.
+//
+// NOT day.id. A program's days are stored in the database with no id of their
+// own, so every time one is read back the app mints a fresh
+// "d" + Math.random() for each day. day.id is therefore different on every
+// single page load.
+//
+// Everything that has to survive being closed mid-workout was keyed on it:
+// the draft of ticked sets and typed weights, and the running session timer.
+// Both were written under a key that could never be looked up again, so an
+// athlete who closed the app four exercises in came back to exercise one with
+// nothing kept — while the draft sat in storage under its orphaned key until
+// it aged out.
+//
+// The program's id and the day's name both come from the database and both
+// survive a reload, and sessionKey() already treats "Day 01" and "Day 1" as
+// the same session.
+function sessionIdentity(program, day) {
+  if (!day) return null;
+  const pid = program?.id || "program";
+  const name = sessionKey(day.name);
+  // The name is what makes this stable. Falling back to day.id keeps a
+  // nameless day working for the length of one visit, which is still better
+  // than no draft at all.
+  return `${pid}|${name || day.id || "day"}`;
 }
 
 // "Day 1 — Lower Power" -> "Day 1", for referring to a session in a sentence.
@@ -3279,6 +3304,13 @@ function describeNotification(n) {
     if (d.setsPrescribed) bits.push(`${d.setsCompleted}/${d.setsPrescribed} sets`);
     return { title: n.title, detail: bits.join(" · "), accent: C.olive, icon: CheckCircle2 };
   }
+  // The athlete said they are doing today's session. Distinct from
+  // "session_completed", which is them having finished it — a coach needs the
+  // first one during the day and the second one after.
+  if (n?.kind === "session_confirmed") {
+    const d = n.data || {};
+    return { title: n.title, detail: d.programDay || "Confirmed for today", accent: C.blue, icon: Calendar };
+  }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
     // The summary when a caller knew what changed, the program's name when it
@@ -3302,6 +3334,27 @@ async function notifyCoachOfSession({ dayName, date, timedSeconds, setsCompleted
       p_sets_prescribed: setsPrescribed ?? null,
     });
   } catch { /* the session is already saved; this is the notice, not the record */ }
+}
+
+// The athlete confirming they are doing today's session. This was the missing
+// half of the pair: finishing a workout notified the coach, but CONFIRMING one
+// wrote a session_checkins row and told nobody, so a coach had to go looking
+// through each athlete in turn to find out who had shown up. Same
+// fire-and-forget contract as the others — the check-in is already saved, and
+// a failed notice must never turn it into an error.
+//
+// Like notifyAthleteOfProgramChange, this is called without checking who is
+// calling: notify_coach_session_confirmed returns null unless the caller
+// actually has a coach, so a self-guided athlete quietly sends nothing. It
+// also collapses repeat taps on the same day into one notice, in the database,
+// where the client cannot get it wrong.
+async function notifyCoachOfCheckin({ programDay, date }) {
+  try {
+    await supabase.rpc("notify_coach_session_confirmed", {
+      p_program_day: programDay || null,
+      p_date: date,
+    });
+  } catch { /* the check-in is already saved; this is the notice, not the record */ }
 }
 
 // The same thing in the other direction: the coach changed something, so the
@@ -4020,6 +4073,117 @@ function timedSessions(logs) {
   return (logs || []).filter(isTimedLog);
 }
 
+// Hours and minutes, for a figure that can run to a whole year of training.
+// formatClock is the stopwatch format and reads as nonsense past an hour or
+// two: 41:07:12 is not how anybody says "forty-one hours".
+function formatTrainedTime(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!total) return "0m";
+  let h = Math.floor(total / 3600);
+  let m = Math.round((total % 3600) / 60);
+  // 59m30s rounds to 60 minutes, which must read as the next hour rather than
+  // as "3h 60m".
+  if (m === 60) { h += 1; m = 0; }
+  if (!h) return `${m}m`;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Time trained over the windows an athlete actually thinks in.
+//
+// ONLY timed sessions count. Every log also carries `duration`, which is how
+// long the workout screen was open — it keeps running while the phone sits in
+// a locker — so adding that up would produce a year total made largely of
+// idle time. An untimed session has no honest duration, so it is counted as a
+// session and left out of the time, and the panel says how many those were
+// rather than quietly shrinking the number.
+function trainingTotals(logs, todayIso) {
+  const timed = timedSessions(logs);
+  const weekStart = weekStartFor(todayIso);
+  const weekEnd = weekStart ? shiftDays(weekStart, 6) : null;
+  const inRange = (l) => weekStart && weekEnd && l.date >= weekStart && l.date <= weekEnd;
+  const seconds = (list) => list.reduce((n, l) => n + Math.round(l.timedSeconds), 0);
+
+  const week = timed.filter(inRange);
+  const month = timed.filter(l => (l.date || "").slice(0, 7) === (todayIso || "").slice(0, 7));
+  const year = timed.filter(l => (l.date || "").slice(0, 4) === (todayIso || "").slice(0, 4));
+
+  return {
+    week:  { seconds: seconds(week),  sessions: week.length },
+    month: { seconds: seconds(month), sessions: month.length },
+    year:  { seconds: seconds(year),  sessions: year.length },
+    all:   { seconds: seconds(timed), sessions: timed.length },
+    untimed: Math.max(0, (logs || []).length - timed.length),
+  };
+}
+
+// ---- points ----
+//
+// Ten for turning up, up to fifteen for doing the sets that were actually
+// prescribed, and twenty-five for a week in which every scheduled session got
+// done.
+//
+// Deliberately NOT scaled by weight or volume. A deload week is supposed to be
+// lighter, and a score that rewarded tonnage would tell an athlete to ignore
+// the one week of a block that most needs obeying. Beating the prescription
+// earns nothing extra for the same reason — the target is the programme, not
+// the biggest number.
+const POINTS = { session: 10, compliance: 15, perfectWeek: 25 };
+
+function sessionPoints(log) {
+  if (!log) return 0;
+  const prescribed = Number(log.setsPrescribed);
+  const completed = Number(log.setsCompleted);
+  // A session with nothing prescribed — a mobility day, a walk — cannot be
+  // under-completed, so it scores the full share rather than nothing.
+  const ratio = Number.isFinite(prescribed) && prescribed > 0
+    ? Math.min(1, Math.max(0, (Number.isFinite(completed) ? completed : 0) / prescribed))
+    : 1;
+  return POINTS.session + Math.round(POINTS.compliance * ratio);
+}
+
+// The weeks in which the athlete did every session their programme schedules.
+// Each bonus is filed under that week's Monday, so it lands in the same month
+// and year as the sessions that earned it.
+function perfectWeeks(logs, sessionsPerWeek) {
+  const per = Number(sessionsPerWeek);
+  if (!Number.isFinite(per) || per <= 0) return [];
+  const byWeek = new Map();
+  for (const l of logs || []) {
+    const start = l?.date ? weekStartFor(l.date) : null;
+    if (!start) continue;
+    byWeek.set(start, (byWeek.get(start) || 0) + 1);
+  }
+  return [...byWeek.entries()].filter(([, n]) => n >= per).map(([start]) => start).sort();
+}
+
+function pointsTotals(logs, sessionsPerWeek, todayIso) {
+  const list = (logs || []).filter(Boolean);
+  const weekStart = weekStartFor(todayIso);
+  const weekEnd = weekStart ? shiftDays(weekStart, 6) : null;
+
+  const inWeek  = (iso) => !!iso && !!weekStart && !!weekEnd && iso >= weekStart && iso <= weekEnd;
+  const inMonth = (iso) => !!iso && iso.slice(0, 7) === (todayIso || "").slice(0, 7);
+  const inYear  = (iso) => !!iso && iso.slice(0, 4) === (todayIso || "").slice(0, 4);
+
+  const bonusWeeks = perfectWeeks(list, sessionsPerWeek);
+  const tally = (keep) => {
+    const sessions = list.filter(l => keep(l.date));
+    const bonuses = bonusWeeks.filter(keep);
+    return {
+      points: sessions.reduce((n, l) => n + sessionPoints(l), 0) + bonuses.length * POINTS.perfectWeek,
+      sessions: sessions.length,
+      bonuses: bonuses.length,
+    };
+  };
+
+  return {
+    week: tally(inWeek),
+    month: tally(inMonth),
+    year: tally(inYear),
+    all: tally(() => true),
+  };
+}
+
 function complianceBaseline(logs) {
   const timed = timedSessions(logs);
   if (timed.length < COMPLIANCE_MIN_SAMPLES) return null;
@@ -4275,6 +4439,11 @@ function HeroPanel({ children, ghostNumber, style, backdrop }) {
 // carousel turns off along with the rest of the desktop layout instead of
 // second-guessing it with its own media query.
 const HERO_SLIDES = [
+  // The first slide carries no picture on purpose. The band opens as plain
+  // navy with the wordmark over it — the way the app has always introduced
+  // itself — and the photography fades up behind the logo from there. It also
+  // means the first thing anyone sees is never a half-decoded image.
+  { key: "brand", caption: null, type: "brand", src: null },
   { key: "strength", caption: "Strength", type: "image", src: "media/strength.jpg" },
   { key: "coaching", caption: "Coaching", type: "image", src: "media/coaching.jpg" },
   { key: "conditioning", caption: "Conditioning", type: "image", src: "media/conditioning.jpg" },
@@ -4286,8 +4455,15 @@ function prefersReducedMotion() {
   try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; }
 }
 
-function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
-  const show = useWide();
+// `chrome` draws the caption pill and the progress dots. They belong on a tall
+// band and only crowd a shallow one, so the thin strip above the sign-up steps
+// gets the photography without the furniture.
+// `compact` is the app layout — the phone, the native build, or ?view=app. It
+// is passed in rather than read from a CSS media query because isWideScreen()
+// is not a width test: it also answers false inside the iPhone app and follows
+// the ?view= override. A breakpoint in the stylesheet would disagree with the
+// layout the app actually chose.
+function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS, chrome = true, compact = false, focusTop = false }) {
   const [index, setIndex] = useState(0);
   const [loaded, setLoaded] = useState({});
   // Read once, on mount. Someone who has asked their machine for less movement
@@ -4296,11 +4472,57 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
   const videos = useRef([]);
   const anyLoaded = Object.values(loaded).some(Boolean);
 
+  // Where the caption pill and the dots sit, written as inline style rather
+  // than left to the stylesheet.
+  //
+  // This is deliberate and it is not decoration. The app ships as two files
+  // uploaded by hand, and twice now App.jsx has gone up without index.css —
+  // which left the new centred wordmark from this file sitting underneath the
+  // old stylesheet's pill at top:96px/right:40px, exactly the overlap this was
+  // meant to cure. An inline style beats a stylesheet rule, so the component
+  // now places its own furniture and cannot be half-deployed into a broken
+  // state. The classes stay for the look: colour, blur, border, radius.
+  const chipBox = compact
+    ? { top: 14, right: 14, bottom: "auto", left: "auto", fontSize: 10, padding: "5px 10px", letterSpacing: ".12em" }
+    : { top: 96, right: 40, bottom: "auto", left: "auto" };
+  const dotsBox = compact ? { right: 14, bottom: 14 } : { right: 40, bottom: 40 };
+
+  // Where in the photograph the band looks.
+  //
+  // The four files are square, 1600x1600, and every one of them is a person
+  // standing up with their head in the top quarter of the frame. On the web
+  // the panel is the full-height left half - taller than it is wide - so the
+  // whole height of the picture is on screen and nothing is lost. On a phone
+  // the same picture is squeezed into a band about 390 wide by 240 tall, which
+  // can only show about three fifths of its height. Cropped from the middle,
+  // as object-fit does by default, those three fifths are the torso: every
+  // head was cut off above the chin.
+  //
+  // So a deep phone band reads from the TOP of the picture instead. Two
+  // properties, and both are needed - setting one without the other does not
+  // work:
+  //
+  //   objectPosition   anchors the crop to the top of the photo.
+  //   transformOrigin  anchors the slow zoom there too. Without it the 1.12x
+  //                    zoom still grows out of the middle and pushes the head
+  //                    straight back off the top edge, undoing the first.
+  //
+  // Not applied to the shallow 92px strip above the sign-up steps. A band that
+  // thin cannot hold a person at any crop, and anchoring it to the top would
+  // fill it with the tops of heads sliced off at the eyebrows - the very thing
+  // this is fixing. Centred, it stays an abstract band of movement, which is
+  // all a strip that size was ever doing.
+  //
+  // Inline rather than in index.css, for the same reason the chip and dots are:
+  // the two files are uploaded by hand and App.jsx has twice gone up without
+  // the stylesheet. Framing that lives in the component cannot be half-shipped.
+  const frame = focusTop ? { objectPosition: "50% 0%", transformOrigin: "50% 0%" } : undefined;
+
   useEffect(() => {
-    if (!show || still) return;
+    if (still) return;
     const t = setInterval(() => setIndex((i) => (i + 1) % slides.length), interval);
     return () => clearInterval(t);
-  }, [show, still, slides.length, interval]);
+  }, [still, slides.length, interval]);
 
   // Only the slide you can see plays. The others stay paused so a welcome page
   // left open is not decoding three videos at once.
@@ -4312,31 +4534,33 @@ function HeroCarousel({ slides = HERO_SLIDES, interval = HERO_SLIDE_MS }) {
     });
   }, [index, still]);
 
-  if (!show) return null;
-
   return (
-    <div className="hero-carousel" aria-hidden="true">
+    <div className={"hero-carousel" + (compact ? " compact" : "")} aria-hidden="true">
       {slides.map((s, i) => (
         <div key={s.key} className={"hc-slide" + (i === index ? " on" : "") + (loaded[s.key] ? "" : " empty")}>
-          {s.type === "image" ? (
-            <img src={s.src} alt=""
+          {s.type === "brand" ? null : s.type === "image" ? (
+            <img src={s.src} alt="" decoding="async" style={frame}
               onLoad={() => setLoaded((l) => ({ ...l, [s.key]: true }))}
               onError={() => setLoaded((l) => ({ ...l, [s.key]: false }))} />
           ) : (
             <video ref={(el) => (videos.current[i] = el)} src={s.src} muted playsInline loop
-              preload={i === 0 ? "auto" : "metadata"}
+              style={frame} preload={i === 0 ? "auto" : "metadata"}
               onLoadedData={() => setLoaded((l) => ({ ...l, [s.key]: true }))}
               onError={() => setLoaded((l) => ({ ...l, [s.key]: false }))} />
           )}
         </div>
       ))}
       {anyLoaded && <div className="hc-shade" />}
-      {anyLoaded && <div className="hc-chip">{slides[index].caption}</div>}
-      {anyLoaded && (
-        <div className="hc-dots">
+      {/* The brand slide has no caption, and an empty pill reads as a bug. */}
+      {chrome && anyLoaded && slides[index].caption && (
+        <div className="hc-chip" style={chipBox}>{slides[index].caption}</div>
+      )}
+      {chrome && anyLoaded && (
+        <div className="hc-dots" style={dotsBox}>
           {slides.map((s, i) => (
             <button key={s.key} type="button" tabIndex={-1} className={i === index ? "on" : ""}
-              onClick={() => setIndex(i)} aria-label={s.caption} />
+              onClick={() => setIndex(i)} aria-label={s.caption}
+              style={{ width: i === index ? (compact ? 26 : 34) : (compact ? 16 : 22) }} />
           ))}
         </div>
       )}
@@ -5711,6 +5935,13 @@ const looksLikeEmail = (v) => EMAIL_RE.test((v || "").trim());
 // What is wrong with the account step, in the order somebody reads the form.
 // Returns null when nothing is. Used for the message AND the Continue gate, so
 // they cannot drift apart.
+// True when the signup failure is "this account already exists" — the one
+// failure the athlete can act on themselves, by logging in rather than signing
+// up. Matched on the message because that is all handleOnboardComplete returns.
+function signupNeedsLogin(message) {
+  return /already exists|already registered|log(ging)? in instead/i.test(message || "");
+}
+
 function accountStepProblems(data) {
   const out = {};
   if ((data?.name || "").trim().length < 2) out.name = "Please enter your name.";
@@ -5904,6 +6135,9 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     if (!canProceed || submitting) return;
     if (isLast) {
       setSubmitting(true);
+      // Clear the previous reason before trying again, so a fixed problem does
+      // not keep showing the error it already fixed.
+      setData(d => (d.signupError ? { ...d, signupError: null } : d));
       onComplete(role, data)
         .then(err => {
           if (err) setData(d => ({ ...d, signupError: err }));
@@ -5950,7 +6184,8 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // On a phone it is a band across the top and the logo sits TOP centre, so the
   // form underneath starts as high up the screen as it can.
   const brandPanel = (wide, bandHeight = 240) => (
-    <HeroPanel style={{ borderRadius: 0, border: 0 }} backdrop={<HeroCarousel />}>
+    <HeroPanel style={{ borderRadius: 0, border: 0 }}
+      backdrop={<HeroCarousel chrome={wide || bandHeight >= 160} compact={!wide} focusTop={!wide && bandHeight >= 160} />}>
       {/* The height lives on THIS div, not on the panel. HeroPanel wraps its
           children in a relatively-positioned box of automatic height, so a
           height:100% here resolved against nothing and collapsed - which is
@@ -5959,7 +6194,10 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         minHeight: wide ? "100dvh" : bandHeight,
         padding: wide ? "48px 56px" : "28px 24px",
         display: "flex",
-        alignItems: wide ? "center" : "flex-start",
+        // Centred on the phone as well now. Sitting the wordmark at the top of
+        // a 240px band left most of the navy empty, and with photography
+        // running behind it the logo belongs in the middle of the frame.
+        alignItems: "center",
         justifyContent: wide ? "flex-start" : "center",
       }}>
         <div style={{
@@ -6011,7 +6249,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
             "Build programs, track athletes, message your roster")}
           {roleCard("athlete_coached", Users, C.blue, "I have a coach",
             "Join your coach's roster with an invite code")}
-          {roleCard("athlete", Zap, C.olive, "Self-guided athlete",
+          {roleCard("athlete", Zap, C.olive, "Solo training",
             "Get a program built from your answers and train on your own")}
         </div>
 
@@ -6060,6 +6298,31 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
       <div className="flex-1 px-6 overflow-y-auto pb-4">
         <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: DISPLAY, color: C.text }}>{stepName}</h2>
         <OnboardingStepBody role={role} stepName={stepName} data={data} setData={setData} />
+      </div>
+
+      {/* The signup error belongs HERE, beside the button that causes it.
+          It used to be rendered only inside the "Create Account" step body —
+          which is step 1, while Finish Setup is pressed on step 15. So a failed
+          signup wrote the reason into state and then displayed it on a screen
+          fourteen steps behind the user: the button flicked from "Setting up…"
+          back to "Finish Setup" and, as far as anyone could tell, nothing
+          happened at all. Two people with existing accounts hit exactly this
+          and had no way of knowing why the app was ignoring them. */}
+      <div className="px-6 shrink-0">
+        {data.signupError && (
+          <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
+            <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
+            {/* An account that already exists is not a dead end, so don't
+                present it as one — hand them the door out. */}
+            {signupNeedsLogin(data.signupError) && onSwitchToLogin && (
+              <button type="button" onClick={onSwitchToLogin}
+                className="text-[13px] font-semibold mt-2 underline"
+                style={{ color: C.red }}>
+                Log in instead
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
@@ -6575,36 +6838,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     case "🩹 Injuries": {
       const current = data.injuries || [];
       const picked = current.filter(a => a !== "None currently");
-      return (
-        <div>
-          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>We'll prime and work around these in every session.</p>
-          <div className="grid grid-cols-1 gap-2.5">
-            {INJURY_AREAS.map(opt => {
-              const isActive = current.includes(opt);
-              return (
-                <button key={opt} onClick={() => {
-                  if (opt === "None currently") {
-                    setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
-                    return;
-                  }
-                  const without = current.filter(x => x !== "None currently");
-                  const next = isActive ? without.filter(x => x !== opt) : [...without, opt];
-                  // Detail for an area that was just deselected would keep
-                  // reaching the generator after they changed their mind.
-                  setData(d => ({ ...d, injuries: next, injuryDetail: pruneInjuryDetail(d.injuryDetail, next) }));
-                }} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
-                  style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
-                  <span style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
-                  {isActive && <Check size={16} style={{ color: C.orange }} />}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* One card per selected area. "Knee" on its own tells a coach
-              almost nothing — tendon pain, a tear and arthritis are three
-              different programs. */}
-          {picked.map(area => {
+      // One card per selected area, rendered directly under the body part
+      // it belongs to. They used to collect in a stack BELOW the whole list,
+      // so after tapping a knee you scrolled past nine other body parts to
+      // answer a question about it - and with two areas selected nothing on
+      // screen tied a card to the area it came from.
+      const injuryCard = (area) => {
             const detail = injuryDetailFor(data, area) || {};
             const status = detail.status || DEFAULT_INJURY_STATUS;
             return (
@@ -6673,7 +6912,39 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                   onChange={e => setData(d => ({ ...d, injuryDetail: setInjuryDetail(d, area, { note: e.target.value }) }))} />
               </div>
             );
-          })}
+      };
+      return (
+        <div>
+          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>We'll prime and work around these in every session.</p>
+          <div className="grid grid-cols-1 gap-2.5">
+            {INJURY_AREAS.map(opt => {
+              const isActive = current.includes(opt);
+              return (
+                <React.Fragment key={opt}>
+                <button onClick={() => {
+                  if (opt === "None currently") {
+                    setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
+                    return;
+                  }
+                  const without = current.filter(x => x !== "None currently");
+                  const next = isActive ? without.filter(x => x !== opt) : [...without, opt];
+                  // Detail for an area that was just deselected would keep
+                  // reaching the generator after they changed their mind.
+                  setData(d => ({ ...d, injuries: next, injuryDetail: pruneInjuryDetail(d.injuryDetail, next) }));
+                }} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
+                  style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
+                  <span style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
+                  {isActive && <Check size={16} style={{ color: C.orange }} />}
+                </button>
+                {isActive && opt !== "None currently" && injuryCard(opt)}
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {/* One card per selected area. "Knee" on its own tells a coach
+              almost nothing — tendon pain, a tear and arthritis are three
+              different programs. */}
 
           {/* A disabled Continue with no reason on screen is the single most
               common way a sign-up form loses somebody. */}
@@ -6891,7 +7162,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       const list = [
         "Full gym access", "MMA gym (bags, mats, etc.)", "Barbell + rack", "Dumbbells",
         "Kettlebells", "Resistance bands", "Pull-up bar", "Med ball", "Sled / prowler",
-        "Cardio equipment (bike, rower, etc.)", "Bodyweight only"
+        "Cardio equipment (bike, rower, etc.)", "Bodyweight"
       ];
       const current = data.equipment || [];
       return (
@@ -6974,6 +7245,138 @@ function NotificationBell({ count, onClick }) {
     </button>
   );
 }
+
+// ---- first run ----
+//
+// Four cards, once, for somebody who has just signed up. Not a spotlight tour
+// over the live screens: those break the moment a label moves, and this app's
+// bar changes shape depending on whether the athlete has a coach.
+//
+// Remembered per account rather than per device, so a second phone does not
+// replay it, and gated on having logged nothing yet — an athlete who has been
+// training for a month is not a first-time starter even on a new handset.
+const TOUR_SEEN_KEY = "tb_tour_seen";
+
+function tourAlreadySeen(userId) {
+  // No id means nobody to remember it for. Treat that as seen rather than
+  // showing a tour that can never be dismissed for good.
+  if (!userId) return true;
+  try {
+    const seen = JSON.parse(localStorage.getItem(TOUR_SEEN_KEY) || "{}");
+    return !!seen[userId];
+  } catch { return false; }
+}
+
+function markTourSeen(userId) {
+  if (!userId) return;
+  try {
+    const seen = JSON.parse(localStorage.getItem(TOUR_SEEN_KEY) || "{}");
+    seen[userId] = true;
+    localStorage.setItem(TOUR_SEEN_KEY, JSON.stringify(seen));
+  } catch { /* storage blocked; the in-memory flag still stops a repeat today */ }
+}
+
+// Written for the app the athlete actually has. A self-guided athlete has no
+// coach to message and no sessions to book, and telling them otherwise on
+// their first screen is how an app teaches somebody to distrust it.
+function tourCards(hasCoach) {
+  return [
+    {
+      key: "program", icon: Dumbbell, title: "Your training lives in Program",
+      body: "Today's session sits at the top of the Program tab. One tap on Start and you are training — no hunting for it.",
+    },
+    {
+      key: "log", icon: CheckCircle2, title: "Log it as you lift",
+      body: "Tick each set as you finish it and type the weight you used. Put your phone away mid-session and it picks up exactly where you left off.",
+    },
+    hasCoach
+      ? {
+          key: "week", icon: Calendar, title: "Your week, and your coach",
+          body: "Week shows what is coming. Book takes a session with your coach, and Coach is where you message them.",
+        }
+      : {
+          key: "week", icon: Calendar, title: "Your week at a glance",
+          body: "Week shows what is coming up. Swap any movement you cannot do and the rest of the plan stays intact.",
+        },
+    hasCoach
+      ? {
+          key: "sync", icon: Bell, title: "You both stay in the loop",
+          body: "Finish a session and your coach is told. Change something in your program and you get a notice back.",
+        }
+      : {
+          key: "progress", icon: Sparkles, title: "Watch it add up",
+          body: "Every logged set feeds your progress. Check it any time from your Profile.",
+        },
+  ];
+}
+
+function FirstRunTour({ hasCoach, onDone }) {
+  const [i, setI] = useState(0);
+  const cards = tourCards(hasCoach);
+  const card = cards[Math.min(i, cards.length - 1)];
+  const last = i >= cards.length - 1;
+  const Icon = card.icon;
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 60, background: HERO.bg,
+      display: "flex", flexDirection: "column",
+      paddingTop: "calc(24px + env(safe-area-inset-top, 0px))",
+      paddingBottom: "calc(28px + env(safe-area-inset-bottom, 0px))",
+      paddingLeft: 24, paddingRight: 24,
+    }}>
+      <div style={{ position: "absolute", inset: 0, background: HERO.glow, pointerEvents: "none" }} />
+
+      <div className="flex justify-end relative">
+        <button type="button" onClick={onDone}
+          className="text-[15px] font-semibold px-2 py-1" style={{ color: HERO.sub }}>
+          Skip
+        </button>
+      </div>
+
+      <div className="flex-1 flex flex-col justify-center relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
+        <div style={{
+          width: 62, height: 62, borderRadius: 20, display: "grid", placeItems: "center",
+          background: HERO.glass, border: `1px solid ${HERO.glassLine}`, marginBottom: 26,
+        }}>
+          <Icon size={28} style={{ color: HERO.accentText }} />
+        </div>
+        <div style={{
+          fontFamily: DISPLAY, fontWeight: 800, color: HERO.text, letterSpacing: "-.02em",
+          fontSize: "clamp(26px, 7vw, 32px)", lineHeight: 1.15, textWrap: "balance",
+        }}>
+          {card.title}
+        </div>
+        <p className="text-[17px] mt-4 leading-relaxed" style={{ color: HERO.body }}>{card.body}</p>
+      </div>
+
+      <div className="relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
+        <div className="flex items-center gap-2 mb-5" aria-hidden="true">
+          {cards.map((c, n) => (
+            <div key={c.key} style={{
+              height: 4, borderRadius: 2, transition: "width .25s ease, background .25s ease",
+              width: n === i ? 26 : 16,
+              background: n === i ? HERO.accent : "rgba(255,255,255,.26)",
+            }} />
+          ))}
+        </div>
+        <button type="button"
+          onClick={() => (last ? onDone() : setI(n => n + 1))}
+          className="w-full inline-flex items-center justify-center gap-2 rounded-full font-bold"
+          style={{ height: 54, fontSize: 16, background: HERO.accent, color: "#fff", border: 0 }}>
+          {last ? "Start training" : "Next"}
+          {!last && <ChevronRight size={18} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Screens that belong under a tab without being one. The bar falls back to its
+// first item for anything it cannot find, so without this an athlete running a
+// workout had Home lit up underneath them.
+const NAV_PARENT = {
+  "athlete-workout": "athlete-program",
+};
 
 function BottomNav({ items, active, onChange }) {
   // An athlete with a coach now carries seven tabs. At 390px that is about
@@ -7685,11 +8088,17 @@ function useMessageThread(athleteId, myUserId) {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
 
+  // deleted_at / deleted_by / hidden_for arrived with the message-deletion
+  // migration. hidden_for is a uuid[] of people who hid the message from their
+  // own view only; deleted_at means the sender withdrew it for both sides, and
+  // the body is blanked server-side at that point.
+  const COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for";
+
   const load = React.useCallback(async () => {
     if (!athleteId) { setMessages([]); setLoading(false); return; }
     const { data, error: loadError } = await supabase
       .from("messages")
-      .select("id, athlete_id, sender_id, body, created_at, read_at")
+      .select(COLS)
       .eq("athlete_id", athleteId)
       .order("created_at", { ascending: true });
 
@@ -7698,8 +8107,12 @@ function useMessageThread(athleteId, myUserId) {
     setMessages(data || []);
     setLoading(false);
 
-    // Mark the other person's messages as read.
-    const unread = (data || []).filter(m => m.sender_id !== myUserId && !m.read_at).map(m => m.id);
+    // Mark the other person's messages as read. Deleted ones are skipped: a
+    // withdrawn message has nothing left to read, and the guard trigger would
+    // reject the update anyway.
+    const unread = (data || [])
+      .filter(m => m.sender_id !== myUserId && !m.read_at && !m.deleted_at)
+      .map(m => m.id);
     if (unread.length) {
       await supabase.from("messages").update({ read_at: new Date().toISOString() }).in("id", unread);
     }
@@ -7734,6 +8147,16 @@ function useMessageThread(athleteId, myUserId) {
           }
         }
       )
+      .on(
+        // Without this, a message the other person withdrew stays fully visible
+        // here until a reload — so "delete for everyone" would quietly fail to
+        // reach the one person it is meant to reach.
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages", filter: `athlete_id=eq.${athleteId}` },
+        (payload) => {
+          setMessages(prev => prev.map(m => (m.id === payload.new.id ? { ...m, ...payload.new } : m)));
+        }
+      )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [athleteId, load, myUserId]);
@@ -7750,7 +8173,7 @@ function useMessageThread(athleteId, myUserId) {
     const { data, error: sendError } = await supabase
       .from("messages")
       .insert({ athlete_id: athleteId, sender_id: myUserId, body: text })
-      .select()
+      .select(COLS)
       .single();
     sendingRef.current = false;
     setSending(false);
@@ -7762,7 +8185,69 @@ function useMessageThread(athleteId, myUserId) {
     return true;
   };
 
-  return { messages, loading, error, sending, send, reload: load };
+  // Withdraw your OWN message from both sides. The database enforces this too
+  // — the guard trigger rejects it if you are not the sender — so this check
+  // exists for the error message, not for the rule.
+  const deleteForEveryone = async (messageId) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg || msg.deleted_at) return false;
+    if (msg.sender_id !== myUserId) {
+      setError("You can only delete your own messages for both of you.");
+      return false;
+    }
+    const when = new Date().toISOString();
+    // The body is blanked server-side, so blank it here too rather than leaving
+    // the old text on screen until the echo lands.
+    setMessages(prev => prev.map(m => (
+      m.id === messageId ? { ...m, deleted_at: when, deleted_by: myUserId, body: "" } : m
+    )));
+    const { error: delError } = await supabase
+      .from("messages")
+      .update({ deleted_at: when })
+      .eq("id", messageId);
+    if (delError) {
+      setError("Couldn't delete that message. Check your connection and try again.");
+      load();
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  // Hide a message from your own view; the other person still sees it. Sent as
+  // the whole array because the guard trigger compares old against new and only
+  // allows your own id to move in or out.
+  const hideForMe = async (messageId) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg || !myUserId) return false;
+    const current = msg.hidden_for || [];
+    if (current.includes(myUserId)) return true;
+    const next = [...current, myUserId];
+    setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, hidden_for: next } : m)));
+    const { error: hideError } = await supabase
+      .from("messages")
+      .update({ hidden_for: next })
+      .eq("id", messageId);
+    if (hideError) {
+      setError("Couldn't hide that message. Check your connection and try again.");
+      load();
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  // What the screens render: anything this user hid is gone entirely, anything
+  // withdrawn stays as a tombstone rather than vanishing, so the other person
+  // can see that something was there.
+  const visible = messages.filter(m => !(m.hidden_for || []).includes(myUserId));
+
+  return {
+    messages: visible,
+    loading, error, sending, send,
+    deleteForEveryone, hideForMe,
+    reload: load,
+  };
 }
 
 // Gives ONE athlete their own copy of a template and makes it their active
@@ -8025,49 +8510,148 @@ function apiUrl(path) {
 const MODEL_PROGRAM = "claude-sonnet-5";
 const MODEL_CHAT = "claude-haiku-4-5";
 
+// How long we are willing to wait before giving up on a generation. The server
+// is capped at 300s; allowing a little more here means a server-side cut always
+// reports itself as a server-side cut, instead of racing our own abort and
+// getting blamed on the phone.
+const AI_TIMEOUT_MS = 320_000;
+
+// Turns a dead request into an honest sentence.
+//
+// This used to say "your connection dropped — find better signal" for EVERY
+// failure where fetch() threw, and that was wrong far more often than it was
+// right. A Vercel function being killed at its duration cap also closes the
+// socket, so athletes sitting on full-strength wifi were told to go find
+// better signal while the real fault was entirely server-side. Checking
+// navigator.onLine and the elapsed time separates the two cases.
+function aiNetworkError(elapsedMs, aborted) {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (offline) {
+    return new Error("You're offline. Reconnect and tap Try Again — nothing was lost.");
+  }
+  if (aborted || elapsedMs >= AI_TIMEOUT_MS - 5_000) {
+    return new Error("The program took too long to build and the request timed out. Tap Try Again — nothing was lost.");
+  }
+  return new Error("The connection to the server broke before the program came back. Tap Try Again — nothing was lost.");
+}
+
+// Reads the server's SSE relay. Each frame is either a text chunk, an in-band
+// error, or the terminator carrying stop_reason.
+//
+// stop_reason matters: "max_tokens" means the model ran out of room and the
+// JSON is truncated, which is a specific, explainable failure rather than the
+// generic parse error the athlete used to see.
+async function readAIStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let streamError = null;
+  let stopReason = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const line = frame.split("\n").find(l => l.startsWith("data:"));
+      if (!line) continue;                       // ": keepalive" comments land here
+      const raw = line.slice(5).trim();
+      if (!raw) continue;
+      let evt;
+      try { evt = JSON.parse(raw); } catch { continue; }
+      if (typeof evt.t === "string") text += evt.t;
+      else if (evt.error) streamError = evt.error;
+      else if (evt.done) stopReason = evt.stop_reason;
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (stopReason === "max_tokens") {
+    throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+  }
+  if (!text.trim()) throw new Error("The AI returned an empty response. Please try again.");
+  return text;
+}
+
 async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
-  const post = () => fetch(apiUrl("/api/chat"), {
+  // Streaming is what keeps a two-to-four minute generation alive. With nothing
+  // on the wire, the platform, the CDN and the phone's radio all eventually
+  // decide the request is dead and kill it. The server answers a non-streaming
+  // request exactly as before, so an older deployed copy of /api/chat still
+  // works — the response's content-type decides how we read it below.
+  const post = (signal) => fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.access_token}`,
     },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages, ...(system ? { system } : {}) }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages, stream: true, ...(system ? { system } : {}) }),
+    signal,
   });
 
-  // Building a program is a single request that can run for a minute with
-  // nothing coming back down the wire, and a phone on one bar in a gym drops
-  // it - which fetch reports as the bare, unattributable "Load failed". One
-  // silent retry catches most of those; a second failure is a real connection
-  // problem and worth saying so plainly, because "Load failed" tells the
-  // athlete neither what broke nor what to do.
-  let response;
-  try {
-    response = await post();
-  } catch {
-    await new Promise(r => setTimeout(r, 1500));
+  // One silent retry absorbs a genuine blip. It deliberately does NOT retry a
+  // request that got far enough to start streaming, because re-running a
+  // three-minute generation on a timeout just burns another three minutes and
+  // another call's worth of tokens before failing the same way.
+  const attempt = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    const began = Date.now();
     try {
-      response = await post();
-    } catch {
-      throw new Error("Your connection dropped before the program came back. Find better signal and tap Try Again — nothing was lost.");
+      return { response: await post(controller.signal) };
+    } catch (err) {
+      return { failure: aiNetworkError(Date.now() - began, err?.name === "AbortError"), started: began };
+    } finally {
+      clearTimeout(timer);
     }
+  };
+
+  let { response, failure } = await attempt();
+  if (failure) {
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    const timedOut = /timed out/.test(failure.message);
+    if (offline || timedOut) throw failure;
+    await new Promise(r => setTimeout(r, 1500));
+    ({ response, failure } = await attempt());
+    if (failure) throw failure;
   }
 
-  let data = null;
-  try { data = await response.json(); } catch { /* non-JSON error page */ }
-
   if (!response.ok) {
+    let data = null;
+    try { data = await response.json(); } catch { /* non-JSON error page */ }
     const detail = data?.error?.message || data?.error || "";
     if (response.status === 401) throw new Error("Your session expired. Sign in again to use AI features.");
     if (response.status === 429) throw new Error(detail || "The AI is rate limited right now. Wait a minute and try again.");
     if (response.status === 502) throw new Error(detail || "The AI service is having problems. This is on our side, not yours.");
+    if (response.status === 504) throw new Error("The server gave up before the program finished building. Tap Try Again — nothing was lost.");
     if (response.status >= 500) throw new Error(detail || "The AI service is unavailable right now. Please try again shortly.");
     throw new Error(detail || `AI request failed (${response.status}).`);
   }
 
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/event-stream") && response.body) {
+    try {
+      return await readAIStream(response);
+    } catch (err) {
+      // A socket that dies mid-stream surfaces here as a TypeError, not as a
+      // message we wrote. Only those get re-labelled as a network fault.
+      if (err instanceof TypeError) throw aiNetworkError(AI_TIMEOUT_MS, false);
+      throw err;
+    }
+  }
+
+  // Older server, or a non-streaming reply: the original path, unchanged.
+  let data = null;
+  try { data = await response.json(); } catch { /* non-JSON error page */ }
+  if (data?.stop_reason === "max_tokens") {
+    throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+  }
   const textBlock = (data?.content || []).find(b => b.type === "text");
   if (!textBlock?.text) throw new Error("The AI returned an empty response. Please try again.");
   return textBlock.text;
@@ -8596,6 +9180,51 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
   );
 }
 
+// Puts whoever is training soonest at the top of the roster. The coach's
+// question when they open this screen is almost always "who am I seeing today",
+// and alphabetical never answers it.
+//
+// Reuses HOLDS_SPOT rather than testing status by hand: mapBooking does not
+// carry cancelled_at at all, so status IS the only signal that a booking is
+// live, and keeping one definition means a new status never has to be
+// remembered in two places.
+function withNextSession(athletes, booking, todayStr = todayISO()) {
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const now = new Date();
+
+  const nextByAthlete = new Map();
+  for (const b of booking?.bookings || []) {
+    if (!HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime()) || when < now) continue;
+    const held = nextByAthlete.get(b.athleteId);
+    if (!held || when < held.when) nextByAthlete.set(b.athleteId, { when, slot, booking: b });
+  }
+
+  // Local date parts, not toISOString(): that shifts an early-morning or
+  // late-evening session into the wrong day for anyone off UTC.
+  const localDay = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  const rows = athletes.map(a => {
+    const next = nextByAthlete.get(a.id) || null;
+    return {
+      ...a,
+      nextSession: next,
+      sessionToday: !!next && localDay(next.when) === todayStr,
+    };
+  });
+
+  return rows.sort((x, y) => {
+    if (x.nextSession && y.nextSession) return x.nextSession.when - y.nextSession.when;
+    if (x.nextSession) return -1;
+    if (y.nextSession) return 1;
+    return (x.name || "").localeCompare(y.name || "");
+  });
+}
+
 function CoachAthletes({ state, setState, nav, myUserId }) {
   const wide = useIsWide();
   const [search, setSearch] = useState("");
@@ -8623,12 +9252,23 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   const groups = state.groups || [];
   const inviteCode = state.coachProfile?.inviteCode;
 
-  const filtered = state.athletes.filter(a => {
-    if (!a.name.toLowerCase().includes(search.toLowerCase())) return false;
-    if (groupFilter === "all") return true;
-    if (groupFilter === "ungrouped") return !a.groupId;
-    return a.groupId === groupFilter;
-  });
+  // The roster ordering needs slots and bookings. booking.loaded starts false
+  // and is only filled on demand, so without this the Today ordering silently
+  // does nothing until the coach has opened the Sessions tab first — which
+  // reads as the feature being broken rather than the data being absent.
+  useEffect(() => {
+    if (!state.booking?.loaded) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+
+  const filtered = useMemo(() => withNextSession(
+    state.athletes.filter(a => {
+      if (!a.name.toLowerCase().includes(search.toLowerCase())) return false;
+      if (groupFilter === "all") return true;
+      if (groupFilter === "ungrouped") return !a.groupId;
+      return a.groupId === groupFilter;
+    }),
+    state.booking
+  ), [state.athletes, state.booking, search, groupFilter]);
 
   const groupName = (id) => groups.find(g => g.id === id)?.name;
 
@@ -11508,12 +12148,143 @@ function CoachPayments({ state, setState, nav, myUserId }) {
   );
 }
 
+// A visible dot-dot-dot on every message. This started as long-press only,
+// which was a mistake: a gesture with no affordance is undiscoverable, and
+// indistinguishable from a broken deploy when something goes wrong. The button
+// is the way in now; long-press stays as a shortcut for people who expect it.
+function MessageMoreButton({ onOpen }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+      aria-label="Message options"
+      className="shrink-0 self-center rounded-full p-1.5"
+      style={{ color: C.sub, background: "transparent", opacity: .75 }}
+    >
+      <MoreHorizontal size={16} />
+    </button>
+  );
+}
+
+// Long-press a message to open this. The two actions are worded so the
+// difference is obvious before you commit: withdrawing your own message changes
+// what the other person sees; hiding only changes your own screen.
+function MessageActionSheet({ message, myUserId, onHide, onDeleteForEveryone, onClose }) {
+  if (!message) return null;
+  const mine = message.sender_id === myUserId;
+  const canWithdraw = mine && !message.deleted_at;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end p-3.5"
+         style={{ background: "rgba(4,6,11,.7)" }}
+         onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}>
+        <div className="rounded-2xl overflow-hidden mb-2.5" style={card({ borderRadius: 16 })}>
+          <div className="px-4 pt-3.5 pb-2.5 text-[13px]"
+               style={{ color: C.sub, borderBottom: `1px solid ${C.border}` }}>
+            {mine ? "Your message" : "Their message"}
+          </div>
+
+          {!message.deleted_at && (
+            <button type="button"
+              onClick={() => { navigator.clipboard?.writeText(message.body || ""); onClose(); }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+              style={{ borderBottom: `1px solid ${C.border}`, color: C.text }}>
+              <Copy size={18} style={{ color: C.sub }} />
+              <span className="text-[16.5px]">Copy text</span>
+            </button>
+          )}
+
+          <button type="button"
+            onClick={() => { onHide(message.id); onClose(); }}
+            className="w-full flex items-start gap-3 px-4 py-3.5 text-left"
+            style={{ color: C.text, borderBottom: canWithdraw ? `1px solid ${C.border}` : "none" }}>
+            <EyeOff size={18} className="shrink-0 mt-0.5" style={{ color: C.sub }} />
+            <span className="flex-1 min-w-0">
+              <span className="block text-[16.5px] font-semibold">Hide from my view</span>
+              <span className="block text-[13px] mt-0.5" style={{ color: C.sub }}>Only you stop seeing it.</span>
+            </span>
+          </button>
+
+          {canWithdraw && (
+            <button type="button"
+              onClick={() => { onDeleteForEveryone(message.id); onClose(); }}
+              className="w-full flex items-start gap-3 px-4 py-3.5 text-left"
+              style={{ color: C.red }}>
+              <Trash2 size={18} className="shrink-0 mt-0.5" />
+              <span className="flex-1 min-w-0">
+                <span className="block text-[16.5px] font-semibold">Delete for everyone</span>
+                <span className="block text-[13px] mt-0.5" style={{ color: C.sub }}>
+                  Both sides see "deleted" instead. Can't be undone.
+                </span>
+              </span>
+            </button>
+          )}
+        </div>
+
+        <button type="button" onClick={onClose}
+                className="w-full rounded-2xl py-4 text-[17px] font-semibold"
+                style={{ ...card({ borderRadius: 16 }), color: C.text }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Opens the action sheet on long-press (touch) or right-click (desktop),
+// without swallowing an ordinary tap.
+function useLongPress(onFire) {
+  const timer = useRef(null);
+  const clear = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
+  return {
+    onContextMenu: (e) => { e.preventDefault(); onFire(); },
+    onTouchStart: () => { clear(); timer.current = setTimeout(onFire, 500); },
+    onTouchEnd: clear,
+    onTouchMove: clear,
+    onTouchCancel: clear,
+  };
+}
+
+// One bubble. A withdrawn message keeps its place as a tombstone rather than
+// vanishing, so the other person can see that something was said and removed.
+function MessageRow({ m, mine, onHold }) {
+  const hold = useLongPress(onHold);
+  if (m.deleted_at) {
+    return (
+      <div className={`flex items-center gap-1 ${mine ? "justify-end" : "justify-start"}`}>
+        <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5 flex items-center gap-2"
+             style={{ background: "transparent", border: `1px dashed ${C.border}` }}>
+          <X size={13} style={{ color: C.sub }} />
+          <span className="text-[14.5px] italic" style={{ color: C.sub }}>
+            {mine ? "You deleted this message" : "This message was deleted"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  // The button sits on the outside edge of the bubble so it never crowds the
+  // text and lands in a predictable place on both sides of the conversation.
+  return (
+    <div className={`flex items-center gap-1 ${mine ? "justify-end" : "justify-start"}`}>
+      {mine && <MessageMoreButton onOpen={onHold} />}
+      <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }} {...hold}>
+        <div className="text-[15px] whitespace-pre-wrap">{m.body}</div>
+        <div className="text-[11px] mt-1 opacity-70">{timeAgo(m.created_at)}</div>
+      </div>
+      {!mine && <MessageMoreButton onOpen={onHold} />}
+    </div>
+  );
+}
+
 function CoachMessages({ state, setState, nav, myUserId }) {
   const [activeId, setActiveId] = useState(state.athletes[0]?.id);
   const [draft, setDraft] = useState("");
   const active = state.athletes.find(a => a.id === activeId);
   const myId = myUserId;
-  const { messages, loading, error, sending, send } = useMessageThread(activeId, myId);
+  const { messages, loading, error, sending, send, deleteForEveryone, hideForMe } = useMessageThread(activeId, myId);
+  // Which message the long-press sheet is open on, or null.
+  const [actionOn, setActionOn] = useState(null);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, activeId]);
@@ -11555,17 +12326,16 @@ function CoachMessages({ state, setState, nav, myUserId }) {
             {!loading && messages.length === 0 && (
               <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>
             )}
-            {messages.map(m => {
-              const mine = m.sender_id === myId;
-              return (
-                <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                  <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }}>
-                    <div className="text-[15px] whitespace-pre-wrap">{m.body}</div>
-                    <div className="text-[11px] mt-1 opacity-70">{timeAgo(m.created_at)}</div>
-                  </div>
-                </div>
-              );
-            })}
+            {messages.map(m => (
+              <MessageRow key={m.id} m={m} mine={m.sender_id === myId} onHold={() => setActionOn(m)} />
+            ))}
+            <MessageActionSheet
+              message={actionOn}
+              myUserId={myId}
+              onHide={hideForMe}
+              onDeleteForEveryone={deleteForEveryone}
+              onClose={() => setActionOn(null)}
+            />
             <div ref={endRef} />
           </div>
           {error && <div className="px-4 pb-2 text-[12.5px]" style={{ color: C.red }}>{error}</div>}
@@ -12725,6 +13495,10 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
       }
     }
 
+    // After the row is safe, and deliberately not awaited. The coach hears
+    // about it now rather than finding out by scrolling a roster later.
+    notifyCoachOfCheckin({ programDay, date: today });
+
     setState(s => ({
       ...s,
       sessionCheckins: {
@@ -12735,34 +13509,41 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
     setCheckinSaving(false);
   };
 
-  // Build reminder banners
-  const reminders = [];
-  if (myProgram) {
-    const totalDays = myProgram.days?.length || 0;
-    const logCount = (state.workoutLogs || []).length;
+  // The reminder banners that used to sit above Today's Workout are gone.
+  // "You train today", "<program> is ready to begin" and the final-stretch
+  // note all restated what the session card underneath them already showed,
+  // and three stacked pills pushed the one thing an athlete opens this screen
+  // for below the fold. The card leads the page now.
 
-    // Session today. This used to be gated on the coach's accountability
-    // setting, which is a different feature entirely — an athlete whose coach
-    // had check-ins switched off was never reminded that they trained today.
-    const doneToday = (state.workoutLogs || []).some(l => l?.date === today);
-    if (todayDay && !doneToday) {
-      const mode = sessionModeMeta(sessionModeFor(todayDay, today));
-      reminders.push({
-        type: "session",
-        icon: mode.key === "online" ? "💻" : "💪",
-        text: `You train today — ${todayDay.name} (${mode.short.toLowerCase()})`,
-        color: C.orange,
-      });
-    }
-    // Program starting (first log)
-    if (logCount === 0 && myProgram) {
-      reminders.push({ type: "start", icon: "🚀", text: `${myProgram.name} is ready to begin. Hit Start Workout to kick things off.`, color: C.blue });
-    }
-    // Program ending — last 2 sessions
-    if (logCount >= totalDays * (myProgram.weeks || 4) - 2 && logCount > 0) {
-      reminders.push({ type: "end", icon: "🏁", text: "You're in the final stretch of your program — finish strong!", color: C.amber });
-    }
-  }
+  // Still the coach's record that the athlete turned up: it keeps its Confirm
+  // button and still sends the coach a notice. Only its position changed — it
+  // now sits under Today's Workout rather than above it, so the session is the
+  // first thing on the screen.
+  const checkinCard = accountabilityOn && todayDay ? (
+    <div className="rounded-xl p-4 mb-5" style={{ background: alreadyCheckedIn ? `${C.olive}18` : `${C.orange}12`, border: `1px solid ${alreadyCheckedIn ? C.olive : C.orange}55` }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[15px] font-semibold" style={{ color: alreadyCheckedIn ? C.olive : C.text }}>
+            {alreadyCheckedIn ? "✅ Session confirmed!" : "📋 Session check-in required"}
+          </div>
+          <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
+            {alreadyCheckedIn
+              ? `Checked in at ${todayCheckin.confirmedAt}`
+              : "Your coach requires you to confirm completed sessions."}
+          </div>
+        </div>
+        {!alreadyCheckedIn && (
+          <button onClick={confirmCheckin} disabled={checkinSaving} className="rounded-full px-3 py-2 text-[12.5px] font-semibold shrink-0"
+            style={{ background: C.orange, color: "#fff", opacity: checkinSaving ? 0.6 : 1 }}>
+            {checkinSaving ? "Saving…" : "Confirm"}
+          </button>
+        )}
+      </div>
+      {checkinError && (
+        <div className="text-[12.5px] mt-2.5" style={{ color: C.red }}>{checkinError}</div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="pb-28">
@@ -12802,44 +13583,6 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
-        {/* Reminder banners */}
-        {reminders.length > 0 && (
-          <div className="space-y-2.5 mb-5">
-            {reminders.map((r, i) => (
-              <div key={i} className="rounded-xl px-4 py-3 flex items-start gap-3" style={{ background: `${r.color}18`, border: `1px solid ${r.color}55` }}>
-                <span className="text-[19px] shrink-0">{r.icon}</span>
-                <span className="text-[15px]" style={{ color: C.text }}>{r.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Session check-off — only when accountability is on */}
-        {accountabilityOn && todayDay && (
-          <div className="rounded-xl p-4 mb-5" style={{ background: alreadyCheckedIn ? `${C.olive}18` : `${C.orange}12`, border: `1px solid ${alreadyCheckedIn ? C.olive : C.orange}55` }}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[15px] font-semibold" style={{ color: alreadyCheckedIn ? C.olive : C.text }}>
-                  {alreadyCheckedIn ? "✅ Session confirmed!" : "📋 Session check-in required"}
-                </div>
-                <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                  {alreadyCheckedIn
-                    ? `Checked in at ${todayCheckin.confirmedAt}`
-                    : "Your coach requires you to confirm completed sessions."}
-                </div>
-              </div>
-              {!alreadyCheckedIn && (
-                <button onClick={confirmCheckin} disabled={checkinSaving} className="rounded-full px-3 py-2 text-[12.5px] font-semibold shrink-0"
-                  style={{ background: C.orange, color: "#fff", opacity: checkinSaving ? 0.6 : 1 }}>
-                  {checkinSaving ? "Saving…" : "Confirm"}
-                </button>
-              )}
-            </div>
-            {checkinError && (
-              <div className="text-[12.5px] mt-2.5" style={{ color: C.red }}>{checkinError}</div>
-            )}
-          </div>
-        )}
         {todayDay ? (
           (() => {
             // The first movement with a photo, shown as a tilted tile in the
@@ -12928,6 +13671,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
             )}
           </div>
         )}
+
+        {checkinCard}
 
         {/* Calories and Protein were hardcoded to 0 with nothing anywhere in
             the app able to change them — a permanent "you've eaten nothing"
@@ -14023,6 +14768,48 @@ function AthleteProgram({ state, setState, nav }) {
           </div>
         </div>
 
+        {/* Today's session, pinned above the rest of the programme.
+            With the Workout tab gone this is the main way in, so it states
+            what is on and starts it in one tap. Every day further down keeps
+            its own Start button for training out of order. */}
+        {(() => {
+          const todayIso = todayISO();
+          const todaysDay = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
+          const doneToday = (state.workoutLogs || []).some(l => l?.date === todayIso);
+          if (!todaysDay) {
+            return (
+              <div className="rounded-3xl p-5 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: C.sub }}>Today</div>
+                <div className="text-[15px] mt-1.5" style={{ color: C.text }}>Rest day — nothing scheduled.</div>
+                <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>Start any session below if you want to train anyway.</div>
+              </div>
+            );
+          }
+          return (
+            <div className="rounded-3xl p-5 mb-5" style={{
+              background: C.panel,
+              border: `1px solid ${doneToday ? C.olive : C.orange}`,
+            }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: doneToday ? C.olive : C.orange }}>
+                    {doneToday ? "Today · logged" : "Today"}
+                  </div>
+                  <div className="text-xl mt-1" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{todaysDay.name}</div>
+                  <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>
+                    {(todaysDay.exercises || []).length} exercises
+                  </div>
+                </div>
+                <button onClick={() => nav.go("athlete-workout", todaysDay.id)}
+                  className="inline-flex items-center gap-1.5 rounded-full px-5 py-3 font-semibold text-[15px] shrink-0"
+                  style={{ background: doneToday ? C.panel : C.orange, color: doneToday ? C.text : "#fff", border: doneToday ? `1px solid ${C.border}` : "none" }}>
+                  <Play size={14} fill={doneToday ? "none" : "#fff"} /> {doneToday ? "Open" : "Start"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         <ProgramExplainer program={myProgram} state={state} />
 
         {/* ---- super tabs: the blocks ----
@@ -14479,6 +15266,7 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
   }, [secondsLeft]);
 
   const adherence = setsPrescribed ? Math.round((setsCompleted / setsPrescribed) * 100) : null;
+  const earned = sessionPoints({ setsCompleted, setsPrescribed });
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
@@ -14505,6 +15293,17 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
           label={timedSeconds != null ? "Timed" : "Minutes"} />
         <PlateBadge value={setsPrescribed ? `${setsCompleted}/${setsPrescribed}` : "—"} label="Sets" accent={C.olive} />
         <PlateBadge value={EFFORT_LABEL(effort)} label="Effort" accent={C.blue} />
+      </div>
+
+      {/* The score, where it was earned. A number that only ever appears on a
+          profile screen is a number nobody connects to anything they did. */}
+      <div className="rounded-full px-4 py-2 mt-5 flex items-center gap-2"
+        style={{ background: `${C.amber}1A`, border: `1px solid ${C.amber}66` }}>
+        <Trophy size={14} style={{ color: C.amber }} />
+        <span className="text-[15px] font-bold tabular-nums" style={{ color: C.amber }}>+{earned}</span>
+        <span className="text-[12.5px]" style={{ color: C.sub }}>
+          points{setsPrescribed ? ` · ${setsCompleted}/${setsPrescribed} sets` : ""}
+        </span>
       </div>
 
       {timedSeconds != null && (
@@ -14670,6 +15469,12 @@ function readSessionDraft(dayId, dateStr, userId) {
   if (!draft || typeof draft !== "object") return null;
   const age = Date.now() - (Number(draft.savedAt) || 0);
   if (!Number.isFinite(age) || age < 0 || age > SESSION_DRAFT_MAX_AGE_MS) return null;
+  // The date this draft belongs to, which was being stored and then ignored.
+  // Age alone does not say what the comment above promises: train at 11pm,
+  // come back at 11am, and last night's half-finished session is only twelve
+  // hours old — inside the fourteen-hour window — so it would reattach itself
+  // to this morning's workout on the same day of the programme.
+  if (dateStr && draft.date && draft.date !== dateStr) return null;
   return draft;
 }
 
@@ -14697,13 +15502,62 @@ function clearSessionDraft(dayId, userId) {
 // Is there anything in here worth keeping? An empty draft written over a real
 // one on the first render would defeat the whole mechanism, so nothing is
 // stored until the athlete has actually entered something.
+// Draft storage has to survive a reload, and the ids the UI keys its sets on
+// do not. Every exercise in a program is handed an "x" + Math.random() id when
+// the program is read out of the database, because the stored JSON carries
+// only a name — so the SAME exercise has a different id on every launch.
+//
+// That is why a draft could be found and still restore nothing: the weights
+// and ticks inside it were filed under last launch's ids, and the day on
+// screen had all new ones.
+//
+// Position in the day plus the normalised name is stable across loads, stays
+// unique when the same movement appears twice in a session, and declines to
+// match if the coach has since reordered the day — which is the safe way to
+// fail, because attaching yesterday's top set to a different lift is worse
+// than losing it.
+function stableExerciseKeys(day, resolveName) {
+  const toStable = new Map();   // this launch's id -> durable key
+  const toCurrent = new Map();  // durable key      -> this launch's id
+  (day?.exercises || []).forEach((x, i) => {
+    if (!x?.id) return;
+    // A day entry carries no name of its own — only a reference into the
+    // exercise library, which is itself minted fresh for any movement the
+    // library has not persisted. So the caller resolves the name, the same way
+    // on the way in and on the way out. Without it the key is the position
+    // alone, and a reordered day would hand one lift's top set to another.
+    const name = normalizeExerciseName((resolveName ? resolveName(x) : x.name) || "");
+    const key = `${i}:${name}`;
+    toStable.set(x.id, key);
+    toCurrent.set(key, x.id);
+  });
+  return { toStable, toCurrent };
+}
+
+// Rewrites the keys of one of the per-exercise maps. Anything with no match on
+// the other side is dropped rather than carried across under a stale key.
+function remapExerciseKeys(map, lookup) {
+  const out = {};
+  for (const [key, value] of Object.entries(map || {})) {
+    const next = lookup.get(key);
+    if (next !== undefined) out[next] = value;
+  }
+  return out;
+}
+
 function draftHasContent(draft) {
   if (!draft) return false;
   const filled = (map) => Object.values(map || {}).some(list => (list || []).some(v => v !== "" && v != null));
   return filled(draft.setWeights) || filled(draft.setReps) ||
          Object.values(draft.setChecks || {}).some(list => (list || []).length > 0) ||
          Object.keys(draft.swappedMap || {}).length > 0 ||
-         !!(draft.notes || "").trim();
+         !!(draft.notes || "").trim() ||
+         // Being four exercises into a session is progress worth keeping even
+         // when nothing has been written down yet. A warm-up has no weights or
+         // reps to log, so an athlete who worked through one and then had the
+         // phone kill the tab came back to exercise one with no record that
+         // they had started at all.
+         Number(draft.exIdx) > 0;
 }
 
 // ---- 2. finished sessions that could not be sent ----
@@ -14799,6 +15653,57 @@ async function flushPendingLogs(userId) {
     if (entry.meta) notifyCoachOfSession(entry.meta);
   }
   return sent;
+}
+
+// How much room the scrolling column above a FIXED bottom bar has to leave.
+//
+// This was a hard-coded 184px, guessed once from one phone. A guess is wrong
+// the moment anything changes height — a label wrapping onto a second line, a
+// larger accessibility text size, a different home-indicator inset, an extra
+// button — and when it is wrong the last controls in the column sit underneath
+// the bar where they cannot be read or tapped. "Send this to my coach" was
+// lost that way once, and "Swap This Exercise" a second time after the first
+// fix was tuned to the device it was tested on.
+//
+// So measure the bar rather than predicting it. Returns a ref to put on the
+// bar and the padding to put under the column. The observer re-runs on
+// rotation, on a text-size change, and whenever the bar's own contents change.
+function useBarClearance(gap = 24) {
+  const ref = useRef(null);
+  // The old constant, used only until the first measurement lands on the very
+  // first frame. Never worse than what was there before.
+  const [pad, setPad] = useState(184);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof window === "undefined") return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      // height covers the bar including its own safe-area padding; the space
+      // BELOW it covers whatever it floats above (the phone nav bar and the
+      // home indicator). Together they are the whole obstruction.
+      const below = Math.max(0, window.innerHeight - r.bottom);
+      const next = Math.ceil(r.height + below + gap);
+      // Guard against a zero-height measurement while the bar is still laying
+      // out, which would briefly remove all clearance.
+      if (next > gap) setPad(next);
+    };
+    measure();
+    let ro;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+    }
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [gap]);
+
+  return [ref, pad];
 }
 
 // Whether this device currently believes it has a connection. navigator.onLine
@@ -15094,6 +15999,8 @@ function LastSessionRecap({ session }) {
 
 function Workout({ state, setState, nav, dayId }) {
   const wideWorkout = useIsWide();
+  // Measured, not assumed — see useBarClearance.
+  const [workoutBarRef, workoutBarPad] = useBarClearance();
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   // Run the day the athlete actually chose. This used to be hardcoded to
   // days[0], so tapping Start on Day 3 handed you Day 1's exercises and there
@@ -15117,6 +16024,13 @@ function Workout({ state, setState, nav, dayId }) {
       || days[0];
   }, [myProgram, dayId, dayOverride]);
   const exById = id => state.exercises.find(e => e.id === id);
+  // Resolves the name used in the durable draft keys. Memoised so the save and
+  // restore effects get a stable reference rather than a new function every
+  // render.
+  const nameOfEntry = React.useCallback(
+    (x) => state.exercises.find(e => e.id === x?.exerciseId)?.name || "",
+    [state.exercises],
+  );
   const sortedExercises = useMemo(() => day ? day.exercises : [], [day]);
 
   // A session only means something against a date. A day with no weekday isn't
@@ -15202,20 +16116,22 @@ function Workout({ state, setState, nav, dayId }) {
   // day's ticked sets, typed weights, swaps and elapsed timer into the new
   // session, and left the "session logged" screen showing instead of the new
   // workout. All of it belongs to one specific day.
-  const dayKey = day?.id;
+  // Stable across reloads, unlike day.id — see sessionIdentity.
+  const dayKey = sessionIdentity(myProgram, day);
   useEffect(() => {
     // Anything this device already holds for this same session today wins
     // over a blank slate. Without this, reloading the app mid-workout - or
     // the phone killing a backgrounded tab, which it does constantly - threw
     // away every set already ticked.
     const draft = dayKey ? readSessionDraft(dayKey, todayISO(), state.me.id) : null;
+    const { toCurrent } = stableExerciseKeys(day, nameOfEntry);
     setExIdx(draft?.exIdx || 0);
-    setSetChecks(draft?.setChecks || {});
-    setSetWeights(draft?.setWeights || {});
-    setSetReps(draft?.setReps || {});
+    setSetChecks(remapExerciseKeys(draft?.setChecks, toCurrent));
+    setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
+    setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
-    setSwappedMap(draft?.swappedMap || {});
+    setSwappedMap(remapExerciseKeys(draft?.swappedMap, toCurrent));
     setResting(0);
     setRestDone(false);
     setPendingDay(null);
@@ -15241,7 +16157,14 @@ function Workout({ state, setState, nav, dayId }) {
       setTimerSeconds(0);
       setTimerMode(state.me.intake?.workoutTimer === false ? "off" : "ask");
     }
-  }, [dayKey, state.me.intake?.workoutTimer]);
+    // state.me.id is in the dependency list because the draft is stored under
+    // it. On a cold start this effect fires the moment `day` resolves, which
+    // can be BEFORE the profile has hydrated — so it looked for the draft under
+    // "anon:<dayId>", found nothing, and started the athlete at exercise one.
+    // The draft itself was fine: saved correctly under the real id, still on
+    // the phone, simply never read. Depending on the id means the lookup is
+    // retried the instant it arrives.
+  }, [dayKey, state.me.id, state.me.intake?.workoutTimer]);
 
   // 3 — 2 — 1, then the clock starts. Kept above every early return: React
   // counts hooks per render, and a hook that only runs on some renders is the
@@ -15276,7 +16199,16 @@ function Workout({ state, setState, nav, dayId }) {
   // for another session - never by writing a blank.
   useEffect(() => {
     if (!dayKey || finished) return;
-    const draft = { dayId: dayKey, date: sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes };
+    // Re-read on every save, so if the program is refetched mid-session the
+    // next write already uses the new ids' durable keys.
+    const { toStable } = stableExerciseKeys(day, nameOfEntry);
+    const draft = {
+      dayId: dayKey, date: sessionDay, exIdx, notes,
+      setChecks: remapExerciseKeys(setChecks, toStable),
+      setWeights: remapExerciseKeys(setWeights, toStable),
+      setReps: remapExerciseKeys(setReps, toStable),
+      swappedMap: remapExerciseKeys(swappedMap, toStable),
+    };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
   }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes, finished]);
@@ -15915,14 +16847,10 @@ function Workout({ state, setState, nav, dayId }) {
               )
             }
           </div>
-          {/* The Back / Next bar below is FIXED, so it floats over whatever
-              is at the end of this column. p-5 left 20px of clearance against
-              a bar roughly 78px tall - which on a phone also sits above the
-              64px navigation - and the last thing in the column is "Send this
-              to my coach". It was being covered completely. */}
-          <div className="p-5" style={{
-            paddingBottom: wideWorkout ? 120 : "calc(184px + env(safe-area-inset-bottom, 0px))",
-          }}>
+          {/* The Back / Next bar below is FIXED, so it floats over whatever is
+              at the end of this column. The clearance is measured from that
+              bar rather than guessed — see useBarClearance. */}
+          <div className="p-5" style={{ paddingBottom: workoutBarPad }}>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.orange }}>{phaseLabel}</div>
             <div className="text-2xl font-bold mt-1" style={{ fontFamily: DISPLAY, color: C.text }}>{ex?.name}</div>
             {!hasExerciseImage(ex?.name) && (
@@ -16209,23 +17137,44 @@ function Workout({ state, setState, nav, dayId }) {
         )}
 
         <ChalkDivider />
-        {!block?.grouped && (
-          <Btn variant="ghost" icon={RotateCcw} onClick={() => setSwapItem(x)}>Swap This Exercise</Btn>
-        )}
-        {/* Filed from the session it happened in, so the clip arrives already
-            labelled with the movement and the day rather than as an
-            unexplained video. */}
-        {state.me.coachId && (
-          <Btn variant="ghost" className="mt-2" icon={Video} onClick={() => setFormCheckOpen(true)}>
-            Send this to my coach
-          </Btn>
-        )}
+        {/* Side by side rather than stacked. Two full-width buttons at the end
+            of a long column pushed the second one under the fixed bar on a
+            phone; as a row they take one button's height instead of two, and
+            they read as the pair of options they are. flex-wrap puts them back
+            on separate lines if the screen is genuinely too narrow.
+            The wrapper divs carry the sizing because Btn is shrink-0. */}
+        <div className="flex flex-wrap gap-2">
+          {!block?.grouped && (
+            <div className="flex-1" style={{ minWidth: 150 }}>
+              {/* Shorter label and a smaller button on a phone. Btn is
+                  whitespace-nowrap, so a label wider than half the screen does
+                  not wrap or ellipsise — it overflows its own pill and takes
+                  the icon off the edge with it. There is room for the full
+                  wording on the web. */}
+              <Btn variant="ghost" className="w-full" size={wideWorkout ? "md" : "sm"}
+                icon={RotateCcw} onClick={() => setSwapItem(x)}>
+                {wideWorkout ? "Swap This Exercise" : "Swap Exercise"}
+              </Btn>
+            </div>
+          )}
+          {/* Filed from the session it happened in, so the clip arrives already
+              labelled with the movement and the day rather than as an
+              unexplained video. */}
+          {state.me.coachId && (
+            <div className="flex-1" style={{ minWidth: 150 }}>
+              <Btn variant="ghost" className="w-full" size={wideWorkout ? "md" : "sm"}
+                icon={Video} onClick={() => setFormCheckOpen(true)}>
+                {wideWorkout ? "Send this to my coach" : "Send to Coach"}
+              </Btn>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Sits on top of the nav bar, which grows by the home-indicator inset
           on an iPhone - so this has to move up by the same amount or the
           Back / Next buttons hide behind the nav. */}
-      <div className="fixed px-5 py-4 flex gap-3 z-30" style={{
+      <div ref={workoutBarRef} className="fixed px-5 py-4 flex gap-3 z-30" style={{
         ...bottomBarBox(wideWorkout),
         background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         borderTop: `1px solid ${C.border}`,
@@ -16859,6 +17808,43 @@ function SegmentedTabs({ value, onChange, options }) {
 }
 
 // Combined messages page: tabs for Coach chat and AI Assistant
+// The athlete side renders coach messages and AI replies through one shape, so
+// this takes the normalised row. Only coach messages carry `raw`, and only
+// those can be held to open the action sheet.
+function AthleteMessageRow({ m, coachName, onHold }) {
+  const hold = useLongPress(onHold || (() => {}));
+  const handlers = onHold ? hold : {};
+  if (m.deletedAt) {
+    return (
+      <div className={`flex items-center gap-1 ${m.mine ? "justify-end" : "justify-start"}`}>
+        <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5 flex items-center gap-2"
+             style={{ background: "transparent", border: `1px dashed ${C.border}` }}>
+          <X size={13} style={{ color: C.sub }} />
+          <span className="text-[14.5px] italic" style={{ color: C.sub }}>
+            {m.mine ? "You deleted this message" : "This message was deleted"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`flex items-center gap-1 ${m.mine ? "justify-end" : "justify-start"}`}>
+      {onHold && m.mine && <MessageMoreButton onOpen={onHold} />}
+      <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5" style={{
+        background: bubbleBg(m.kind),
+        color: m.mine ? "#fff" : C.text,
+        border: m.mine ? "none" : `1px solid ${C.border}`
+      }} {...handlers}>
+        {m.kind === "ai" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.blue }}><Bot size={11} /> AI Assistant</div>}
+        {m.kind === "coach" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.orange }}>{coachName}</div>}
+        <div className="text-[15px] whitespace-pre-wrap">{m.text}</div>
+        {m.time && <div className="text-[11px] mt-1 opacity-70">{m.time}</div>}
+      </div>
+      {onHold && !m.mine && <MessageMoreButton onOpen={onHold} />}
+    </div>
+  );
+}
+
 function AthleteMessages({ state, setState, nav, myUserId }) {
   const myId = myUserId || state.me.id;
   const hasCoach = !!state.me.coachId;
@@ -16868,8 +17854,12 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   const [tab, setTab] = useState(hasCoach || !FEATURES.aiAssistant ? "coach" : "ai");
   const [draft, setDraft] = useState("");
   // The athlete owns the thread, so the thread id is their own id.
-  const { messages: coachThread, loading: coachLoading, error: coachError, sending: coachSending, send: sendToCoach } =
+  const { messages: coachThread, loading: coachLoading, error: coachError, sending: coachSending, send: sendToCoach,
+          deleteForEveryone, hideForMe } =
     useMessageThread(hasCoach ? myId : null, myId);
+  // Which coach message the long-press sheet is open on, or null. AI replies
+  // are local and have nothing to delete, so only the coach tab sets this.
+  const [actionOn, setActionOn] = useState(null);
   const [aiThread, setAiThread] = useState(state.aiThread || AI_SUGGESTED);
   const [aiLoading, setAiLoading] = useState(false);
   const endRef = useRef(null);
@@ -16933,6 +17923,10 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         kind: m.sender_id === myId ? "me" : "coach",
         text: m.body,
         time: timeAgo(m.created_at),
+        // Kept so the bubble can render a tombstone and the sheet knows which
+        // row it is acting on.
+        raw: m,
+        deletedAt: m.deleted_at,
       }))
     : aiThread.map(m => ({
         id: m.id,
@@ -16974,19 +17968,20 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
           </div>
         )}
         {rendered.map(m => (
-          <div key={m.id} className={`flex ${m.mine ? "justify-end" : "justify-start"}`}>
-            <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5" style={{
-              background: bubbleBg(m.kind),
-              color: m.mine ? "#fff" : C.text,
-              border: m.mine ? "none" : `1px solid ${C.border}`
-            }}>
-              {m.kind === "ai" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.blue }}><Bot size={11} /> AI Assistant</div>}
-              {m.kind === "coach" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.orange }}>{state.coachProfile?.name || "Coach"}</div>}
-              <div className="text-[15px] whitespace-pre-wrap">{m.text}</div>
-              {m.time && <div className="text-[11px] mt-1 opacity-70">{m.time}</div>}
-            </div>
-          </div>
+          <AthleteMessageRow
+            key={m.id}
+            m={m}
+            coachName={state.coachProfile?.name || "Coach"}
+            onHold={m.raw ? () => setActionOn(m.raw) : null}
+          />
         ))}
+        <MessageActionSheet
+          message={actionOn}
+          myUserId={myId}
+          onHide={hideForMe}
+          onDeleteForEveryone={deleteForEveryone}
+          onClose={() => setActionOn(null)}
+        />
         {aiLoading && tab === "ai" && (
           <div className="flex justify-start"><div className="rounded-2xl px-3.5 py-2.5" style={{ background: `${C.steel}55`, border: `1px solid ${C.border}` }}><Loader2 size={14} className="animate-spin" style={{ color: C.blue }} /></div></div>
         )}
@@ -17586,6 +18581,105 @@ function AthletePreferences({ state, setState }) {
 // The per-session average is the headline: it's what "am I getting through my
 // workouts more efficiently" actually means, and it isn't skewed by training
 // four times one week and three the next.
+function PointsPanel({ logs, sessionsPerWeek }) {
+  const totals = pointsTotals(logs, sessionsPerWeek, todayISO());
+  const rows = [
+    { key: "week", label: "This week", value: totals.week },
+    { key: "month", label: "This month", value: totals.month },
+    { key: "year", label: "This year", value: totals.year },
+    { key: "all", label: "All time", value: totals.all },
+  ];
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-center gap-2 mb-3">
+        <Trophy size={15} style={{ color: C.amber }} />
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold flex-1" style={{ color: C.sub }}>Points</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>{POINTS.session} + up to {POINTS.compliance} a session</span>
+      </div>
+      {totals.all.sessions === 0 ? (
+        <div className="text-[15px]" style={{ color: C.sub }}>
+          Log a session and your first points land here.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2.5">
+            {rows.map(r => (
+              <div key={r.key} className="rounded-xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                <div className="text-[11px] uppercase tracking-[.12em] font-semibold" style={{ color: C.sub }}>{r.label}</div>
+                <div className="text-xl mt-1 tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>
+                  {r.value.points.toLocaleString("en-US")}
+                </div>
+                <div className="text-[12px] mt-0.5" style={{ color: C.faint }}>
+                  {r.value.sessions} {r.value.sessions === 1 ? "session" : "sessions"}
+                  {r.value.bonuses > 0 ? ` · ${r.value.bonuses} full ${r.value.bonuses === 1 ? "week" : "weeks"}` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Said plainly. A score nobody can explain is a score nobody
+              trusts, and this one is meant to be arguable with. */}
+          <div className="text-[12.5px] mt-3 leading-relaxed" style={{ color: C.sub }}>
+            {POINTS.session} for finishing a session, up to {POINTS.compliance} more for completing the sets your
+            programme asked for, and {POINTS.perfectWeek} for a week where you did every scheduled session.
+            Lifting heavier than prescribed does not score extra — hitting the plan does.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TrainingTotalsPanel({ logs }) {
+  const totals = trainingTotals(logs, todayISO());
+  if (!totals.all.sessions) {
+    return (
+      <div className="rounded-2xl p-4 mb-5" style={card()}>
+        <div className="flex items-center gap-2 mb-2">
+          <Clock size={15} style={{ color: C.orange }} />
+          <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Time Trained</span>
+        </div>
+        <div className="text-[15px]" style={{ color: C.sub }}>
+          Nothing timed yet. Start the clock when you begin a session and it adds up here.
+        </div>
+      </div>
+    );
+  }
+  const rows = [
+    { key: "week", label: "This week", value: totals.week },
+    { key: "month", label: "This month", value: totals.month },
+    { key: "year", label: "This year", value: totals.year },
+    { key: "all", label: "All time", value: totals.all },
+  ];
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-center gap-2 mb-3">
+        <Clock size={15} style={{ color: C.orange }} />
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold flex-1" style={{ color: C.sub }}>Time Trained</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        {rows.map(r => (
+          <div key={r.key} className="rounded-xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+            <div className="text-[11px] uppercase tracking-[.12em] font-semibold" style={{ color: C.sub }}>{r.label}</div>
+            <div className="text-xl mt-1 tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>
+              {formatTrainedTime(r.value.seconds)}
+            </div>
+            <div className="text-[12px] mt-0.5" style={{ color: C.faint }}>
+              {r.value.sessions} {r.value.sessions === 1 ? "session" : "sessions"}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Said out loud rather than folded into the totals. An athlete who times
+          half their sessions should know which half the number covers. */}
+      {totals.untimed > 0 && (
+        <div className="text-[12.5px] mt-3" style={{ color: C.sub }}>
+          {totals.untimed} {totals.untimed === 1 ? "session was" : "sessions were"} logged without the clock running, so {totals.untimed === 1 ? "it is" : "they are"} not counted above.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TimeTrainedPanel({ logs }) {
   const cmp = trainingWeekComparison(logs);
   if (!cmp) return null;
@@ -17676,10 +18770,20 @@ function AthleteProfile({ state, setState, nav }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const m = state.me;
   const { ft, inch } = cmToFtIn(m.heightCm);
-  const latestProgress = state.progress[state.progress.length - 1];
-  const firstProgress = state.progress[0];
-  const weightChange = latestProgress && firstProgress ? (latestProgress.weightKg - firstProgress.weightKg) : 0;
-  const totalMinutes = state.workoutLogs.reduce((sum, l) => sum + (l.duration || 0), 0);
+  // Only entries that actually carry a weight. A check-in can record sleep,
+  // stress and energy and no weight at all — which is most of them — and
+  // subtracting one undefined from another put a literal "NaN lb" on the
+  // profile. Two weighed entries are needed before there is any change to
+  // report; one is a starting point, not a trend.
+  const weighedProgress = (state.progress || []).filter(e => typeof e?.weightKg === "number");
+  const weightChange = weighedProgress.length >= 2
+    ? weighedProgress[weighedProgress.length - 1].weightKg - weighedProgress[0].weightKg
+    : null;
+  // How many sessions a full week is, for the perfect-week bonus. Zero when
+  // there is no programme yet, which turns the bonus off rather than handing
+  // it out for a single session.
+  const pointsProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  const pointsPerWeekTarget = pointsProgram?.days?.length || 0;
 
   // Persist to profiles.photo_url. This was local-state only, so the athlete
   // picked a photo, saw it apply, and lost it on the next login — and it never
@@ -17792,10 +18896,19 @@ function AthleteProfile({ state, setState, nav }) {
           {FEATURES.achievements && <StatCard icon={Award} label="PRs" value={0} accent={C.olive} />}
         </div>
         <TimeTrainedPanel logs={state.workoutLogs} />
+        <TrainingTotalsPanel logs={state.workoutLogs} />
+        <PointsPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} />
 
-        <div className="grid grid-cols-2 gap-2.5 mb-5">
-          <StatCard icon={Clock} label="All Time" value={totalMinutes} sub="minutes" accent={C.orange} />
-          <StatCard icon={TrendingUp} label="Weight Change" value={`${weightChange > 0 ? "+" : ""}${kgToLb(weightChange).toFixed(1)}`} sub="lb" accent={weightChange < 0 ? C.olive : C.amber} />
+        {/* The "All Time · minutes" tile that used to sit here summed `duration`,
+            which is how long the workout SCREEN was open — it keeps counting
+            while the phone is in a locker. It read as time trained and was
+            nothing of the sort. TrainingTotalsPanel above gives the same
+            headline from the stopwatch instead. */}
+        <div className="grid grid-cols-1 gap-2.5 mb-5">
+          <StatCard icon={TrendingUp} label="Weight Change"
+            value={weightChange == null ? "\u2014" : `${weightChange > 0 ? "+" : ""}${kgToLb(weightChange).toFixed(1)}`}
+            sub={weightChange == null ? "weigh in twice" : "lb"}
+            accent={weightChange != null && weightChange < 0 ? C.olive : C.amber} />
         </div>
 
         <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Body Metrics</div>
@@ -20803,14 +21916,14 @@ function storedView() {
   if (forced === "app" || forced === "phone") return "app";
   if (forced === "web" || forced === "full") return "web";
   if (forced === "auto") return "auto";
-  try {
-    const v = localStorage.getItem(VIEW_PREF_KEY);
-    // "phone" and "full" are what earlier builds wrote; read them rather than
-    // dumping anyone who already made a choice back to the default.
-    if (v === "phone") return "app";
-    if (v === "full") return "web";
-    return VIEW_MODES.includes(v) ? v : "auto";
-  } catch { return "auto"; }
+  // No stored preference any more. The device decides: the native build and
+  // anything under 960px get the app layout, everything else gets the web one.
+  // A saved choice was a way to end up permanently in the wrong layout on a
+  // phone with no obvious way back, and asking somebody to choose between
+  // "App" and "Web" before they have seen either is a question the app can
+  // answer for itself. The query parameter stays, unadvertised, for sending a
+  // link that opens a particular way.
+  return "auto";
 }
 
 function setStoredView(mode) {
@@ -20844,53 +21957,6 @@ function useWide() {
 // The switch itself. Bottom right, above the nav bar, on every screen - the
 // point of it is being able to flip between the two without hunting for a
 // setting.
-function ViewSwitch() {
-  const wideSwitch = useIsWide();
-  const [mode, setMode] = useState(storedView);
-  useEffect(() => {
-    const on = () => setMode(storedView());
-    window.addEventListener("tb-view-change", on);
-    return () => window.removeEventListener("tb-view-change", on);
-  }, []);
-  if (typeof window === "undefined" || isNativeApp() || isStandaloneApp()) return null;
-
-  const choose = (m) => { setMode(m); setStoredView(m); };
-  const opts = [
-    { key: "app", label: "App", icon: Smartphone },
-    { key: "web", label: "Web", icon: Monitor },
-    { key: "auto", label: "Auto", icon: null },
-  ];
-  return (
-    <div style={{
-      position: "fixed", right: 14,
-      // Clear of BOTH bottom bars. The workout screen stacks a Back/Next bar on
-      // top of the nav, and at 4.75rem this sat directly on the Next Exercise
-      // button - the one control somebody is reaching for mid-set.
-      bottom: wideSwitch ? 96 : "calc(10rem + env(safe-area-inset-bottom, 0px))",
-      zIndex: 70, display: "flex", gap: 2, padding: 4, borderRadius: 999,
-      background: C.nav, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
-      border: `1px solid ${C.border}`, boxShadow: "0 10px 30px rgba(0,0,0,.45)",
-    }}>
-      {opts.map(o => {
-        const on = mode === o.key;
-        return (
-          <button key={o.key} onClick={() => choose(o.key)} aria-pressed={on}
-            title={o.key === "auto" ? "Follow the window width" : `Always use the ${o.label.toLowerCase()} layout`}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 5,
-              padding: "7px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700,
-              background: on ? `${C.orange}29` : "transparent",
-              color: on ? C.blue : C.sub,
-              boxShadow: on ? `inset 0 0 0 1.5px ${C.orange}` : "none",
-            }}>
-            {o.icon && <o.icon size={14} />}
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 // A context so a screen deep in the tree can lay itself out in two columns
 // without every component between here and there having to pass the flag down.
@@ -20918,7 +21984,7 @@ function wantsPhoneFrame() {
 // The desktop sidebar. Same nav items, same conditions, same order as the
 // bottom bar - it is handed the identical list, so a tab that appears on a
 // phone appears here and one behind a feature flag stays behind it.
-function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, program }) {
+function SideNav({ items, active, onChange, me, roleLabel, modeSwitch }) {
   return (
     <aside style={{
       width: SIDEBAR_W, flexShrink: 0, borderRight: `1px solid ${C.border}`, background: C.panelAlt,
@@ -20957,22 +22023,6 @@ function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, program }
         })}
       </nav>
 
-      {program && (
-        <div style={{ ...card({ borderRadius: 14 }), padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 11, letterSpacing: ".16em", textTransform: "uppercase", fontWeight: 600, color: C.sub }}>This program</div>
-          <b style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 700, lineHeight: 1.3, color: C.text }}>{program.name}</b>
-          <div style={{ display: "flex", gap: 4 }}>
-            {Array.from({ length: program.weeks || 6 }).map((_, i) => (
-              <i key={i} style={{
-                flex: 1, height: 5, borderRadius: 3,
-                background: i + 1 < program.currentWeek ? C.olive : i + 1 === program.currentWeek ? C.orange : C.steel,
-              }} />
-            ))}
-          </div>
-          <small style={{ color: C.sub, fontSize: 12 }}>Week {program.currentWeek} of {program.weeks}</small>
-        </div>
-      )}
-
       <div style={{ marginTop: "auto", display: "flex", alignItems: "center", gap: 12, paddingLeft: 4 }}>
         <Avatar initials={me?.avatar || "??"} size={42} photoUrl={me?.photoUrl} />
         <div style={{ minWidth: 0 }}>
@@ -20998,9 +22048,7 @@ function PhoneFrame({ children }) {
     document.documentElement.classList.toggle("tb-framed", framed);
   }, [framed]);
 
-  // The switch is rendered OUTSIDE the phone, so it stays reachable while the
-  // app is boxed into a 390px frame.
-  if (!framed) return <>{children}<ViewSwitch /></>;
+  if (!framed) return <>{children}</>;
 
   return (
     <>
@@ -21012,7 +22060,6 @@ function PhoneFrame({ children }) {
           <span>iPhone {"\u00b7"} {PHONE_SCREEN.width} {"\u00d7"} {PHONE_SCREEN.height}</span>
         </div>
       </div>
-      <ViewSwitch />
     </>
   );
 }
@@ -21092,6 +22139,12 @@ function AppInner() {
   const [navParam, setNavParam] = useState(null);
   const [state, setState] = useState(initialState);
   const [sessionLoading, setSessionLoading] = useState(true);
+  // The first-run cards. Declared up here with the other AppInner state
+  // because React counts hooks per render and this component has several early
+  // returns below — a hook placed after one of them runs on some renders and
+  // not others, which is the "rendered fewer hooks than expected" crash.
+  const [tourOpen, setTourOpen] = useState(false);
+  const tourDecided = useRef(false);
   const [authMode, setAuthMode] = useState("onboarding"); // 'onboarding' | 'login'
   const [pendingConfirmEmail, setPendingConfirmEmail] = useState(null);
   // Onboarding answers held in memory while the user goes off to confirm their
@@ -21846,6 +22899,22 @@ function AppInner() {
     }));
   });
 
+  // Decide once per session whether this is somebody's first time. Gated on
+  // having logged nothing: an athlete a month into training is not a first-time
+  // starter, even on a handset that has never seen the app.
+  useEffect(() => {
+    if (tourDecided.current) return;
+    const id = state.me?.id;
+    if (!authed || authed === "coach" || !id) return;
+    tourDecided.current = true;
+    if ((state.workoutLogs || []).length === 0 && !tourAlreadySeen(id)) setTourOpen(true);
+  }, [authed, state.me?.id, state.workoutLogs]);
+
+  const closeTour = React.useCallback(() => {
+    setTourOpen(false);
+    markTourSeen(state.me?.id);
+  }, [state.me?.id]);
+
   // Ahead of everything else: someone who has just clicked a reset link must
   // choose a password before being dropped into the app.
   if (recoveringPassword) {
@@ -21923,7 +22992,11 @@ function AppInner() {
   // labels room to breathe; eight was 48px and pushed them to 9px.
   const athleteNavItems = [
     { key: "athlete-dashboard", label: "Home", icon: LayoutGrid },
-    { key: "athlete-workout", label: "Workout", icon: Flame },
+    // Workout is no longer a tab of its own. It is the same screen, reached
+    // from the session pinned at the top of Program and from the card on Home,
+    // which is where somebody about to train is already looking. The route
+    // stays — eight places link to it — only the bar entry is gone, and that
+    // takes the athlete bar from seven tabs to six.
     { key: "athlete-program", label: "Program", icon: Dumbbell },
     { key: "calendar", label: "Week", icon: Calendar },
     // Book and Coach are STATIC - they are here whether or not this athlete has
@@ -21993,17 +23066,13 @@ function AppInner() {
     ...(FEATURES.nutrition ? { "nutrition": <NutritionPage state={state} nav={nav} /> } : {}),
   };
 
-  const activeNavKey = navItems.find(i => i.key === view) ? view : navItems[0].key;
+  const activeNavKey = navItems.find(i => i.key === view) ? view
+    : navItems.find(i => i.key === NAV_PARENT[view]) ? NAV_PARENT[view]
+    : navItems[0].key;
 
   const screen = (authed === "coach" && trainingMode && !state.me?.intake && view !== "athlete-profile")
     ? pages["coach-training-intake"]
     : (pages[view] || pages[coaching ? "coach-dashboard" : "athlete-dashboard"]);
-
-  // The sidebar's program card, for an athlete who has one.
-  const activeProgram = state.programs.find(p => p.id === state.me?.program) || null;
-  const sideProgram = activeProgram
-    ? { name: activeProgram.name, weeks: activeProgram.weeks || 6, currentWeek: programWeekFor(activeProgram, todayISO()) || 1 }
-    : null;
 
   const font = "DM Sans, system-ui, sans-serif";
 
@@ -22013,6 +23082,7 @@ function AppInner() {
   return (
     <NotificationContext.Provider value={notificationContext}>
       <WideContext.Provider value={wide}>
+        {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} onDone={closeTour} />}
         {wide ? (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100dvh", display: "flex", alignItems: "flex-start" }}>
             <SideNav
@@ -22020,7 +23090,6 @@ function AppInner() {
               me={coaching ? { ...state.coachProfile, avatar: state.coachProfile?.avatar || "CO" } : state.me}
               roleLabel={coaching ? "Coach" : "Athlete"}
               modeSwitch={authed === "coach" ? <ModeSwitch training={trainingMode} onChange={setTrainingMode} className="" /> : null}
-              program={coaching ? null : sideProgram}
             />
             <div style={{ flex: 1, minWidth: 0, height: "100dvh", overflowY: "auto" }}>
               <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
