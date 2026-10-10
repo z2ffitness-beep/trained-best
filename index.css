@@ -171,22 +171,6 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
 }
 .hc-dots button.on { background: #2E86FF; width: 34px; }
 
-/* The app layout. The band here is 240px, not a full screen, and the wordmark
-   sits in the middle of it — so at the desktop offsets the caption pill landed
-   straight on the logo. Caption into the top right corner, clear of the
-   wordmark's line; dots stay bottom right.
-
-   Driven by a class, not a media query: isWideScreen() is not a width test
-   (the native app is always the phone layout, and ?view= overrides both), so a
-   breakpoint here would disagree with the layout the app picked. */
-.hero-carousel.compact .hc-chip {
-  top: 14px; right: 14px; bottom: auto; left: auto;
-  font-size: 10px; padding: 5px 10px; letter-spacing: .12em;
-}
-.hero-carousel.compact .hc-dots { right: 14px; bottom: 14px; }
-.hero-carousel.compact .hc-dots button { width: 16px; }
-.hero-carousel.compact .hc-dots button.on { width: 26px; }
-
 @media (prefers-reduced-motion: reduce) {
   .hc-slide, .hc-slide video, .hc-slide img { transition: none !important; transform: none !important; }
 }
