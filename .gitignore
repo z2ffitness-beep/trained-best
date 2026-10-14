@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+design-handoff/
+TrainedBest-redesign-handoff.zip
+dist/
+.env
+.env.local
