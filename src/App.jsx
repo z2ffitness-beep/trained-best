@@ -1,16 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { supabase } from "./supabaseClient";
 import {
-  Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen,
-  Flame, TrendingUp, Clock, ChevronRight, ChevronLeft, Plus, X,
-  Search, Check, User, LogOut, Send, Image as ImageIcon, Settings,
-  Target, Award, Activity, BarChart3, Salad, ClipboardList, Play,
-  Pause, RotateCcw, ArrowRight, Shield, Zap, Trophy, Home, Mail,
-  ChevronDown, ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2,
-  Sparkles, Bot, RefreshCw, AlertCircle, Swords, HeartPulse, Ruler,
-  Scale, ChevronsUpDown, Wand2, Loader2, Eye, EyeOff, UserPlus,
-  Bell, MapPin, Video, Inbox,
-  Smartphone, Monitor, Moon, Leaf, Heart, Phone,
+  Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen, Flame, TrendingUp, Clock,
+  ChevronRight, ChevronLeft, Plus, X, Search, Check, User, LogOut, Send,
+  Image as ImageIcon, Settings, Target, Award, Activity, BarChart3, Salad, ClipboardList,
+  Play, Pause, RotateCcw, ArrowRight, Shield, Zap, Trophy, Home, Mail, ChevronDown,
+  ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
+  AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
+  MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
+  Moon, Leaf, Heart, Phone
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -8090,11 +8088,17 @@ function useMessageThread(athleteId, myUserId) {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
 
+  // deleted_at / deleted_by / hidden_for arrived with the message-deletion
+  // migration. hidden_for is a uuid[] of people who hid the message from their
+  // own view only; deleted_at means the sender withdrew it for both sides, and
+  // the body is blanked server-side at that point.
+  const COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for";
+
   const load = React.useCallback(async () => {
     if (!athleteId) { setMessages([]); setLoading(false); return; }
     const { data, error: loadError } = await supabase
       .from("messages")
-      .select("id, athlete_id, sender_id, body, created_at, read_at")
+      .select(COLS)
       .eq("athlete_id", athleteId)
       .order("created_at", { ascending: true });
 
@@ -8103,8 +8107,12 @@ function useMessageThread(athleteId, myUserId) {
     setMessages(data || []);
     setLoading(false);
 
-    // Mark the other person's messages as read.
-    const unread = (data || []).filter(m => m.sender_id !== myUserId && !m.read_at).map(m => m.id);
+    // Mark the other person's messages as read. Deleted ones are skipped: a
+    // withdrawn message has nothing left to read, and the guard trigger would
+    // reject the update anyway.
+    const unread = (data || [])
+      .filter(m => m.sender_id !== myUserId && !m.read_at && !m.deleted_at)
+      .map(m => m.id);
     if (unread.length) {
       await supabase.from("messages").update({ read_at: new Date().toISOString() }).in("id", unread);
     }
@@ -8139,6 +8147,16 @@ function useMessageThread(athleteId, myUserId) {
           }
         }
       )
+      .on(
+        // Without this, a message the other person withdrew stays fully visible
+        // here until a reload — so "delete for everyone" would quietly fail to
+        // reach the one person it is meant to reach.
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages", filter: `athlete_id=eq.${athleteId}` },
+        (payload) => {
+          setMessages(prev => prev.map(m => (m.id === payload.new.id ? { ...m, ...payload.new } : m)));
+        }
+      )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [athleteId, load, myUserId]);
@@ -8155,7 +8173,7 @@ function useMessageThread(athleteId, myUserId) {
     const { data, error: sendError } = await supabase
       .from("messages")
       .insert({ athlete_id: athleteId, sender_id: myUserId, body: text })
-      .select()
+      .select(COLS)
       .single();
     sendingRef.current = false;
     setSending(false);
@@ -8167,7 +8185,69 @@ function useMessageThread(athleteId, myUserId) {
     return true;
   };
 
-  return { messages, loading, error, sending, send, reload: load };
+  // Withdraw your OWN message from both sides. The database enforces this too
+  // — the guard trigger rejects it if you are not the sender — so this check
+  // exists for the error message, not for the rule.
+  const deleteForEveryone = async (messageId) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg || msg.deleted_at) return false;
+    if (msg.sender_id !== myUserId) {
+      setError("You can only delete your own messages for both of you.");
+      return false;
+    }
+    const when = new Date().toISOString();
+    // The body is blanked server-side, so blank it here too rather than leaving
+    // the old text on screen until the echo lands.
+    setMessages(prev => prev.map(m => (
+      m.id === messageId ? { ...m, deleted_at: when, deleted_by: myUserId, body: "" } : m
+    )));
+    const { error: delError } = await supabase
+      .from("messages")
+      .update({ deleted_at: when })
+      .eq("id", messageId);
+    if (delError) {
+      setError("Couldn't delete that message. Check your connection and try again.");
+      load();
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  // Hide a message from your own view; the other person still sees it. Sent as
+  // the whole array because the guard trigger compares old against new and only
+  // allows your own id to move in or out.
+  const hideForMe = async (messageId) => {
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg || !myUserId) return false;
+    const current = msg.hidden_for || [];
+    if (current.includes(myUserId)) return true;
+    const next = [...current, myUserId];
+    setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, hidden_for: next } : m)));
+    const { error: hideError } = await supabase
+      .from("messages")
+      .update({ hidden_for: next })
+      .eq("id", messageId);
+    if (hideError) {
+      setError("Couldn't hide that message. Check your connection and try again.");
+      load();
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  // What the screens render: anything this user hid is gone entirely, anything
+  // withdrawn stays as a tombstone rather than vanishing, so the other person
+  // can see that something was there.
+  const visible = messages.filter(m => !(m.hidden_for || []).includes(myUserId));
+
+  return {
+    messages: visible,
+    loading, error, sending, send,
+    deleteForEveryone, hideForMe,
+    reload: load,
+  };
 }
 
 // Gives ONE athlete their own copy of a template and makes it their active
@@ -9100,6 +9180,51 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
   );
 }
 
+// Puts whoever is training soonest at the top of the roster. The coach's
+// question when they open this screen is almost always "who am I seeing today",
+// and alphabetical never answers it.
+//
+// Reuses HOLDS_SPOT rather than testing status by hand: mapBooking does not
+// carry cancelled_at at all, so status IS the only signal that a booking is
+// live, and keeping one definition means a new status never has to be
+// remembered in two places.
+function withNextSession(athletes, booking, todayStr = todayISO()) {
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const now = new Date();
+
+  const nextByAthlete = new Map();
+  for (const b of booking?.bookings || []) {
+    if (!HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime()) || when < now) continue;
+    const held = nextByAthlete.get(b.athleteId);
+    if (!held || when < held.when) nextByAthlete.set(b.athleteId, { when, slot, booking: b });
+  }
+
+  // Local date parts, not toISOString(): that shifts an early-morning or
+  // late-evening session into the wrong day for anyone off UTC.
+  const localDay = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  const rows = athletes.map(a => {
+    const next = nextByAthlete.get(a.id) || null;
+    return {
+      ...a,
+      nextSession: next,
+      sessionToday: !!next && localDay(next.when) === todayStr,
+    };
+  });
+
+  return rows.sort((x, y) => {
+    if (x.nextSession && y.nextSession) return x.nextSession.when - y.nextSession.when;
+    if (x.nextSession) return -1;
+    if (y.nextSession) return 1;
+    return (x.name || "").localeCompare(y.name || "");
+  });
+}
+
 function CoachAthletes({ state, setState, nav, myUserId }) {
   const wide = useIsWide();
   const [search, setSearch] = useState("");
@@ -9127,12 +9252,23 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   const groups = state.groups || [];
   const inviteCode = state.coachProfile?.inviteCode;
 
-  const filtered = state.athletes.filter(a => {
-    if (!a.name.toLowerCase().includes(search.toLowerCase())) return false;
-    if (groupFilter === "all") return true;
-    if (groupFilter === "ungrouped") return !a.groupId;
-    return a.groupId === groupFilter;
-  });
+  // The roster ordering needs slots and bookings. booking.loaded starts false
+  // and is only filled on demand, so without this the Today ordering silently
+  // does nothing until the coach has opened the Sessions tab first — which
+  // reads as the feature being broken rather than the data being absent.
+  useEffect(() => {
+    if (!state.booking?.loaded) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+
+  const filtered = useMemo(() => withNextSession(
+    state.athletes.filter(a => {
+      if (!a.name.toLowerCase().includes(search.toLowerCase())) return false;
+      if (groupFilter === "all") return true;
+      if (groupFilter === "ungrouped") return !a.groupId;
+      return a.groupId === groupFilter;
+    }),
+    state.booking
+  ), [state.athletes, state.booking, search, groupFilter]);
 
   const groupName = (id) => groups.find(g => g.id === id)?.name;
 
@@ -12012,12 +12148,143 @@ function CoachPayments({ state, setState, nav, myUserId }) {
   );
 }
 
+// A visible dot-dot-dot on every message. This started as long-press only,
+// which was a mistake: a gesture with no affordance is undiscoverable, and
+// indistinguishable from a broken deploy when something goes wrong. The button
+// is the way in now; long-press stays as a shortcut for people who expect it.
+function MessageMoreButton({ onOpen }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+      aria-label="Message options"
+      className="shrink-0 self-center rounded-full p-1.5"
+      style={{ color: C.sub, background: "transparent", opacity: .75 }}
+    >
+      <MoreHorizontal size={16} />
+    </button>
+  );
+}
+
+// Long-press a message to open this. The two actions are worded so the
+// difference is obvious before you commit: withdrawing your own message changes
+// what the other person sees; hiding only changes your own screen.
+function MessageActionSheet({ message, myUserId, onHide, onDeleteForEveryone, onClose }) {
+  if (!message) return null;
+  const mine = message.sender_id === myUserId;
+  const canWithdraw = mine && !message.deleted_at;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end p-3.5"
+         style={{ background: "rgba(4,6,11,.7)" }}
+         onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}>
+        <div className="rounded-2xl overflow-hidden mb-2.5" style={card({ borderRadius: 16 })}>
+          <div className="px-4 pt-3.5 pb-2.5 text-[13px]"
+               style={{ color: C.sub, borderBottom: `1px solid ${C.border}` }}>
+            {mine ? "Your message" : "Their message"}
+          </div>
+
+          {!message.deleted_at && (
+            <button type="button"
+              onClick={() => { navigator.clipboard?.writeText(message.body || ""); onClose(); }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+              style={{ borderBottom: `1px solid ${C.border}`, color: C.text }}>
+              <Copy size={18} style={{ color: C.sub }} />
+              <span className="text-[16.5px]">Copy text</span>
+            </button>
+          )}
+
+          <button type="button"
+            onClick={() => { onHide(message.id); onClose(); }}
+            className="w-full flex items-start gap-3 px-4 py-3.5 text-left"
+            style={{ color: C.text, borderBottom: canWithdraw ? `1px solid ${C.border}` : "none" }}>
+            <EyeOff size={18} className="shrink-0 mt-0.5" style={{ color: C.sub }} />
+            <span className="flex-1 min-w-0">
+              <span className="block text-[16.5px] font-semibold">Hide from my view</span>
+              <span className="block text-[13px] mt-0.5" style={{ color: C.sub }}>Only you stop seeing it.</span>
+            </span>
+          </button>
+
+          {canWithdraw && (
+            <button type="button"
+              onClick={() => { onDeleteForEveryone(message.id); onClose(); }}
+              className="w-full flex items-start gap-3 px-4 py-3.5 text-left"
+              style={{ color: C.red }}>
+              <Trash2 size={18} className="shrink-0 mt-0.5" />
+              <span className="flex-1 min-w-0">
+                <span className="block text-[16.5px] font-semibold">Delete for everyone</span>
+                <span className="block text-[13px] mt-0.5" style={{ color: C.sub }}>
+                  Both sides see "deleted" instead. Can't be undone.
+                </span>
+              </span>
+            </button>
+          )}
+        </div>
+
+        <button type="button" onClick={onClose}
+                className="w-full rounded-2xl py-4 text-[17px] font-semibold"
+                style={{ ...card({ borderRadius: 16 }), color: C.text }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Opens the action sheet on long-press (touch) or right-click (desktop),
+// without swallowing an ordinary tap.
+function useLongPress(onFire) {
+  const timer = useRef(null);
+  const clear = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
+  return {
+    onContextMenu: (e) => { e.preventDefault(); onFire(); },
+    onTouchStart: () => { clear(); timer.current = setTimeout(onFire, 500); },
+    onTouchEnd: clear,
+    onTouchMove: clear,
+    onTouchCancel: clear,
+  };
+}
+
+// One bubble. A withdrawn message keeps its place as a tombstone rather than
+// vanishing, so the other person can see that something was said and removed.
+function MessageRow({ m, mine, onHold }) {
+  const hold = useLongPress(onHold);
+  if (m.deleted_at) {
+    return (
+      <div className={`flex items-center gap-1 ${mine ? "justify-end" : "justify-start"}`}>
+        <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5 flex items-center gap-2"
+             style={{ background: "transparent", border: `1px dashed ${C.border}` }}>
+          <X size={13} style={{ color: C.sub }} />
+          <span className="text-[14.5px] italic" style={{ color: C.sub }}>
+            {mine ? "You deleted this message" : "This message was deleted"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  // The button sits on the outside edge of the bubble so it never crowds the
+  // text and lands in a predictable place on both sides of the conversation.
+  return (
+    <div className={`flex items-center gap-1 ${mine ? "justify-end" : "justify-start"}`}>
+      {mine && <MessageMoreButton onOpen={onHold} />}
+      <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }} {...hold}>
+        <div className="text-[15px] whitespace-pre-wrap">{m.body}</div>
+        <div className="text-[11px] mt-1 opacity-70">{timeAgo(m.created_at)}</div>
+      </div>
+      {!mine && <MessageMoreButton onOpen={onHold} />}
+    </div>
+  );
+}
+
 function CoachMessages({ state, setState, nav, myUserId }) {
   const [activeId, setActiveId] = useState(state.athletes[0]?.id);
   const [draft, setDraft] = useState("");
   const active = state.athletes.find(a => a.id === activeId);
   const myId = myUserId;
-  const { messages, loading, error, sending, send } = useMessageThread(activeId, myId);
+  const { messages, loading, error, sending, send, deleteForEveryone, hideForMe } = useMessageThread(activeId, myId);
+  // Which message the long-press sheet is open on, or null.
+  const [actionOn, setActionOn] = useState(null);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, activeId]);
@@ -12059,17 +12326,16 @@ function CoachMessages({ state, setState, nav, myUserId }) {
             {!loading && messages.length === 0 && (
               <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>
             )}
-            {messages.map(m => {
-              const mine = m.sender_id === myId;
-              return (
-                <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                  <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }}>
-                    <div className="text-[15px] whitespace-pre-wrap">{m.body}</div>
-                    <div className="text-[11px] mt-1 opacity-70">{timeAgo(m.created_at)}</div>
-                  </div>
-                </div>
-              );
-            })}
+            {messages.map(m => (
+              <MessageRow key={m.id} m={m} mine={m.sender_id === myId} onHold={() => setActionOn(m)} />
+            ))}
+            <MessageActionSheet
+              message={actionOn}
+              myUserId={myId}
+              onHide={hideForMe}
+              onDeleteForEveryone={deleteForEveryone}
+              onClose={() => setActionOn(null)}
+            />
             <div ref={endRef} />
           </div>
           {error && <div className="px-4 pb-2 text-[12.5px]" style={{ color: C.red }}>{error}</div>}
@@ -17542,6 +17808,43 @@ function SegmentedTabs({ value, onChange, options }) {
 }
 
 // Combined messages page: tabs for Coach chat and AI Assistant
+// The athlete side renders coach messages and AI replies through one shape, so
+// this takes the normalised row. Only coach messages carry `raw`, and only
+// those can be held to open the action sheet.
+function AthleteMessageRow({ m, coachName, onHold }) {
+  const hold = useLongPress(onHold || (() => {}));
+  const handlers = onHold ? hold : {};
+  if (m.deletedAt) {
+    return (
+      <div className={`flex items-center gap-1 ${m.mine ? "justify-end" : "justify-start"}`}>
+        <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5 flex items-center gap-2"
+             style={{ background: "transparent", border: `1px dashed ${C.border}` }}>
+          <X size={13} style={{ color: C.sub }} />
+          <span className="text-[14.5px] italic" style={{ color: C.sub }}>
+            {m.mine ? "You deleted this message" : "This message was deleted"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`flex items-center gap-1 ${m.mine ? "justify-end" : "justify-start"}`}>
+      {onHold && m.mine && <MessageMoreButton onOpen={onHold} />}
+      <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5" style={{
+        background: bubbleBg(m.kind),
+        color: m.mine ? "#fff" : C.text,
+        border: m.mine ? "none" : `1px solid ${C.border}`
+      }} {...handlers}>
+        {m.kind === "ai" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.blue }}><Bot size={11} /> AI Assistant</div>}
+        {m.kind === "coach" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.orange }}>{coachName}</div>}
+        <div className="text-[15px] whitespace-pre-wrap">{m.text}</div>
+        {m.time && <div className="text-[11px] mt-1 opacity-70">{m.time}</div>}
+      </div>
+      {onHold && !m.mine && <MessageMoreButton onOpen={onHold} />}
+    </div>
+  );
+}
+
 function AthleteMessages({ state, setState, nav, myUserId }) {
   const myId = myUserId || state.me.id;
   const hasCoach = !!state.me.coachId;
@@ -17551,8 +17854,12 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   const [tab, setTab] = useState(hasCoach || !FEATURES.aiAssistant ? "coach" : "ai");
   const [draft, setDraft] = useState("");
   // The athlete owns the thread, so the thread id is their own id.
-  const { messages: coachThread, loading: coachLoading, error: coachError, sending: coachSending, send: sendToCoach } =
+  const { messages: coachThread, loading: coachLoading, error: coachError, sending: coachSending, send: sendToCoach,
+          deleteForEveryone, hideForMe } =
     useMessageThread(hasCoach ? myId : null, myId);
+  // Which coach message the long-press sheet is open on, or null. AI replies
+  // are local and have nothing to delete, so only the coach tab sets this.
+  const [actionOn, setActionOn] = useState(null);
   const [aiThread, setAiThread] = useState(state.aiThread || AI_SUGGESTED);
   const [aiLoading, setAiLoading] = useState(false);
   const endRef = useRef(null);
@@ -17616,6 +17923,10 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         kind: m.sender_id === myId ? "me" : "coach",
         text: m.body,
         time: timeAgo(m.created_at),
+        // Kept so the bubble can render a tombstone and the sheet knows which
+        // row it is acting on.
+        raw: m,
+        deletedAt: m.deleted_at,
       }))
     : aiThread.map(m => ({
         id: m.id,
@@ -17657,19 +17968,20 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
           </div>
         )}
         {rendered.map(m => (
-          <div key={m.id} className={`flex ${m.mine ? "justify-end" : "justify-start"}`}>
-            <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5" style={{
-              background: bubbleBg(m.kind),
-              color: m.mine ? "#fff" : C.text,
-              border: m.mine ? "none" : `1px solid ${C.border}`
-            }}>
-              {m.kind === "ai" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.blue }}><Bot size={11} /> AI Assistant</div>}
-              {m.kind === "coach" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.orange }}>{state.coachProfile?.name || "Coach"}</div>}
-              <div className="text-[15px] whitespace-pre-wrap">{m.text}</div>
-              {m.time && <div className="text-[11px] mt-1 opacity-70">{m.time}</div>}
-            </div>
-          </div>
+          <AthleteMessageRow
+            key={m.id}
+            m={m}
+            coachName={state.coachProfile?.name || "Coach"}
+            onHold={m.raw ? () => setActionOn(m.raw) : null}
+          />
         ))}
+        <MessageActionSheet
+          message={actionOn}
+          myUserId={myId}
+          onHide={hideForMe}
+          onDeleteForEveryone={deleteForEveryone}
+          onClose={() => setActionOn(null)}
+        />
         {aiLoading && tab === "ai" && (
           <div className="flex justify-start"><div className="rounded-2xl px-3.5 py-2.5" style={{ background: `${C.steel}55`, border: `1px solid ${C.border}` }}><Loader2 size={14} className="animate-spin" style={{ color: C.blue }} /></div></div>
         )}
