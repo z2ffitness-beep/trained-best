@@ -236,6 +236,41 @@ const EXERCISE_IMAGE_INDEX = (() => {
 const UPLOADED_EXERCISE_PHOTOS = {};
 const EXERCISE_PHOTO_BUCKET = "exercise-photos";
 
+// A coach's branding colour. Fixed swatches rather than a free picker — the
+// colour has to read well as a wordmark accent and a card border in both
+// themes, which a hex input invites a coach to break on the first try.
+const COACH_LOGO_BUCKET = "coach-logos";
+const BRAND_COLORS = ["#7C5CFC", "#2E86FF", "#2BC47A", "#F0A93C", "#FF5D6E", "#E7EBF2"];
+
+function coachLogoUrl(path) {
+  if (!path) return null;
+  const { data } = supabase.storage.from(COACH_LOGO_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || null;
+}
+
+// Same shape as uploadExercisePhoto: shrink in the browser, upload under the
+// coach's own uid (the bucket's write policy requires it), then point the
+// profile row at the new file. A fresh random name per upload rather than a
+// fixed one, so a coach replacing their logo doesn't collide with whatever
+// the public bucket's CDN still has cached under the old URL.
+async function uploadCoachLogo(coachId, file) {
+  const blob = await shrinkImage(file, 480, 0.88);
+  const path = `${coachId}/${crypto.randomUUID()}.jpg`;
+
+  const { error: upErr } = await supabase.storage
+    .from(COACH_LOGO_BUCKET)
+    .upload(path, blob, { contentType: "image/jpeg", upsert: false });
+  if (upErr) throw new Error(upErr.message || "Couldn't upload that logo.");
+
+  const { error: rowErr } = await supabase.from("profiles").update({ logo_path: path }).eq("id", coachId);
+  if (rowErr) {
+    await supabase.storage.from(COACH_LOGO_BUCKET).remove([path]);
+    throw new Error(rowErr.message || "Uploaded, but couldn't save it to your profile.");
+  }
+
+  return { path, url: coachLogoUrl(path) };
+}
+
 // A coach's own photo wins over the built-in one: if they went and shot a
 // better Back Squat than the stock image, that is the one their athletes
 // should see.
@@ -4678,6 +4713,30 @@ function Avatar({ initials, size = 40, accent = C.orange, photoUrl }) {
   );
 }
 
+// One component for every place a coach's branding appears: the signup
+// card, the My Info preview, the sidebar wordmark, the phone header strip.
+// Falls back to a coloured square of initials when there's no logo yet, so
+// it never renders a blank box while a coach is mid-setup.
+function CoachBrandMark({ name, logoUrl, color, initials, size = 36 }) {
+  const accent = color || C.orange;
+  return (
+    <div className="flex items-center gap-2.5 min-w-0">
+      <div className="rounded-lg overflow-hidden shrink-0 flex items-center justify-center"
+        style={{ width: size, height: size, background: logoUrl ? "transparent" : accent }}>
+        {logoUrl
+          ? <img src={logoUrl} alt="" className="w-full h-full object-cover" />
+          : <span style={{ color: "#fff", fontFamily: DISPLAY, fontWeight: 700, fontSize: size * 0.4 }}>{initials || "?"}</span>}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate" style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: size * 0.42, letterSpacing: "-.01em", color: C.text, lineHeight: 1.15 }}>{name}</div>
+        <div style={{ fontSize: Math.max(10, size * 0.24), color: C.sub }}>
+          by <span style={{ color: accent, fontWeight: 700 }}>Trained.Best</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EditableAvatar({ initials, size = 72, accent = C.orange, photoUrl, onChange }) {
   const inputRef = useRef(null);
 
@@ -6418,6 +6477,9 @@ function useCoachCodeLookup(code) {
         avatar: row.avatar,
         photo_url: row.photo_url,
         accountabilityEnabled: row.accountability_enabled ?? true,
+        businessName: row.business_name || null,
+        brandColor: row.brand_color || null,
+        logoPath: row.logo_path || null,
       } : null);
       // A dropped connection is not a wrong code. Reporting one as the other
       // sends someone off to re-type a code that was right all along.
@@ -6494,7 +6556,13 @@ function InviteCodeStep({ code, setData, set }) {
             style={{ background: i < code.length ? C.orange : C.border, transform: i < code.length ? "scale(1.3)" : "scale(1)" }} />
         ))}
       </div>
-      {valid && (
+      {valid && coach.businessName && (
+        <div className="rounded-xl p-3.5 mb-3" style={{ background: `${C.olive}0F`, border: `1px solid ${C.olive}55` }}>
+          <CoachBrandMark name={coach.businessName} logoUrl={coachLogoUrl(coach.logoPath)} color={coach.brandColor} initials={coach.avatar} size={40} />
+          <div className="text-[12.5px] mt-2" style={{ color: C.olive }}>Joining {coachName}'s roster</div>
+        </div>
+      )}
+      {valid && !coach.businessName && (
         <div className="rounded-lg p-3 mb-3 text-center text-[15px]" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55`, color: C.olive }}>
           Joining <strong>{coachName}</strong>'s roster
         </div>
@@ -13065,6 +13133,9 @@ function CoachProfile({ state, setState, nav }) {
   // Kept as a draft while being typed, so a half-deleted "2" isn't saved as a
   // two-hour policy on its way to becoming 24.
   const [cancelHoursDraft, setCancelHoursDraft] = useState(String(cancelHours));
+  const [businessNameDraft, setBusinessNameDraft] = useState(coach.businessName || "");
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef(null);
 
   // Both of these were local-state only. The headshot reverted to initials on
   // the next login (hydrate reads profiles.photo_url, which was never written),
@@ -13125,6 +13196,49 @@ function CoachProfile({ state, setState, nav }) {
     }
   };
 
+  // Direct column writes, not set_profile_setting — business_name and
+  // brand_color are real columns (the migration added them), unlike the
+  // settings above, which live inside intake jsonb.
+  const saveBusinessName = async (raw) => {
+    const trimmed = raw.trim();
+    const value = trimmed || null;
+    setBusinessNameDraft(trimmed);
+    if (value === (coach.businessName || null)) return;
+    setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), businessName: value } }));
+    if (!coach.id) return;
+    const { error } = await supabase.from("profiles").update({ business_name: value }).eq("id", coach.id);
+    if (error) {
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), businessName: coach.businessName || null } }));
+      setBusinessNameDraft(coach.businessName || "");
+      setSettingError("Couldn't save that setting. Check your connection and try again.");
+    }
+  };
+
+  const saveBrandColor = async (hex) => {
+    const prev = coach.brandColor || null;
+    if (hex === prev) return;
+    setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: hex } }));
+    if (!coach.id) return;
+    const { error } = await supabase.from("profiles").update({ brand_color: hex }).eq("id", coach.id);
+    if (error) {
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: prev } }));
+      setSettingError("Couldn't save that setting. Check your connection and try again.");
+    }
+  };
+
+  const uploadLogo = async (file) => {
+    if (!coach.id || !file) return;
+    if (!file.type.startsWith("image/")) { setSettingError("That file isn't an image we can use."); return; }
+    setLogoUploading(true);
+    try {
+      const { path } = await uploadCoachLogo(coach.id, file);
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), logoPath: path } }));
+    } catch (err) {
+      setSettingError(err.message || "Couldn't upload that logo.");
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   // Recomputed whenever a photo lands, because UPLOADED_EXERCISE_PHOTOS is a
   // plain module-level map - it changes without React knowing, so photoVersion
@@ -13174,6 +13288,82 @@ function CoachProfile({ state, setState, nav }) {
           <EditableAvatar initials={coach.avatar} size={84} photoUrl={coach.photoUrl} onChange={setPhoto} />
           <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{coach.name}</div>
           <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} athletes · {activePrograms} programs</div>
+        </div>
+
+        {/* Your branding */}
+        <div className="rounded-xl p-4 mb-5" style={card()}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Your branding</div>
+            <div className="text-[12.5px]" style={{ color: C.sub }}>Clients see this</div>
+          </div>
+
+          <div className="flex items-center gap-3 mb-4">
+            <div className="relative shrink-0">
+              <div className="rounded-xl overflow-hidden flex items-center justify-center"
+                style={{ width: 56, height: 56, background: coach.logoPath ? "transparent" : (coach.brandColor || C.orange) }}>
+                {coach.logoPath
+                  ? <img src={coachLogoUrl(coach.logoPath)} alt="" className="w-full h-full object-cover" />
+                  : <span style={{ color: "#fff", fontFamily: DISPLAY, fontWeight: 700, fontSize: 20 }}>{coach.avatar}</span>}
+              </div>
+              {logoUploading && (
+                <div className="absolute inset-0 rounded-xl flex items-center justify-center" style={{ background: "rgba(0,0,0,.45)" }}>
+                  <Loader2 size={18} className="animate-spin" style={{ color: "#fff" }} />
+                </div>
+              )}
+            </div>
+            <div className="min-w-0">
+              <button onClick={() => logoInputRef.current?.click()} disabled={logoUploading}
+                className="rounded-full font-semibold text-[13px]"
+                style={{ padding: "8px 16px", background: C.panel2, border: `1px solid ${C.border}`, color: C.text }}>
+                {coach.logoPath ? "Change logo" : "Upload logo"}
+              </button>
+              <div className="text-[11.5px] mt-1.5" style={{ color: C.faint }}>Square works best. PNG or JPG.</div>
+              <input ref={logoInputRef} type="file" accept="image/*" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) uploadLogo(f); }} />
+            </div>
+          </div>
+
+          <Field label="Business name">
+            <input
+              value={businessNameDraft}
+              onChange={e => setBusinessNameDraft(e.target.value)}
+              onBlur={e => saveBusinessName(e.target.value)}
+              placeholder="Your business name"
+              maxLength={60}
+              style={inputStyle}
+            />
+          </Field>
+
+          <div className="mb-4">
+            <label className="block text-[12.5px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>Colour</label>
+            <div className="flex gap-2">
+              {BRAND_COLORS.map(hex => (
+                <button key={hex} onClick={() => saveBrandColor(hex)} aria-label={`Use ${hex} as your brand colour`}
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%", background: hex,
+                    boxShadow: coach.brandColor === hex ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${hex}` : `0 0 0 1px ${C.border}`,
+                  }} />
+              ))}
+            </div>
+          </div>
+
+          {(coach.businessName || coach.logoPath) && (
+            <div className="pt-1">
+              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>What your clients see</div>
+              <div className="rounded-xl p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                <CoachBrandMark
+                  name={coach.businessName || coach.name}
+                  logoUrl={coachLogoUrl(coach.logoPath)}
+                  color={coach.brandColor}
+                  initials={coach.avatar}
+                  size={40}
+                />
+              </div>
+              <div className="text-[11.5px] mt-2" style={{ color: C.faint }}>
+                Their app header, sign-up screen and printed workouts show your name and logo. "by Trained.Best" stays small underneath.
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Accountability Toggle */}
@@ -18081,7 +18271,13 @@ function JoinCoachModal({ open, onClose, athleteId, onJoined }) {
 
       <div className="min-h-[52px] mt-3">
         {checking && <p className="text-[12.5px] text-center" style={{ color: C.sub }}>Checking…</p>}
-        {coach && (
+        {coach && coach.businessName && (
+          <div className="rounded-xl p-3.5" style={{ background: `${C.olive}0F`, border: `1px solid ${C.olive}55` }}>
+            <CoachBrandMark name={coach.businessName} logoUrl={coachLogoUrl(coach.logoPath)} color={coach.brandColor} initials={coach.avatar} size={40} />
+            <div className="text-[12.5px] mt-2" style={{ color: C.olive }}>Joining {coach.name}'s roster</div>
+          </div>
+        )}
+        {coach && !coach.businessName && (
           <div className="rounded-lg p-3 text-center text-[15px]" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55`, color: C.olive }}>
             Joining <strong>{coach.name}</strong>'s roster
           </div>
@@ -18812,6 +19008,9 @@ function AthleteProfile({ state, setState, nav }) {
         // default of `true` until their next login, so someone joining a coach
         // who has session check-ins switched off gets check-in prompts anyway.
         accountabilityEnabled: row.accountabilityEnabled ?? true,
+        businessName: row.businessName || null,
+        brandColor: row.brandColor || null,
+        logoPath: row.logoPath || null,
       },
     }));
   };
@@ -18835,7 +19034,7 @@ function AthleteProfile({ state, setState, nav }) {
       // Reset the ex-coach out of local state. Left behind, their name and
       // photo kept rendering and their accountability setting kept driving
       // this athlete's check-in prompts for the rest of the session.
-      coachProfile: { ...s.coachProfile, id: null, name: null, avatar: null, photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS },
+      coachProfile: { ...s.coachProfile, id: null, name: null, avatar: null, photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS, businessName: null, brandColor: null, logoPath: null },
     }));
     setLeaveOpen(false);
   };
@@ -21809,7 +22008,7 @@ const initialState = () => ({
   // React cannot see, so without this the picture appears only on the next
   // navigation.
   photoVersion: 0,
-  coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS },
+  coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS, businessName: null, brandColor: null, logoPath: null },
   payments: { rates: [], clientBilling: {}, methods: [] },
   groups: [], // coach's roster groups (pro team / amateur / youth / gen-pop)
   communityPosts: [],
@@ -21984,16 +22183,22 @@ function wantsPhoneFrame() {
 // The desktop sidebar. Same nav items, same conditions, same order as the
 // bottom bar - it is handed the identical list, so a tab that appears on a
 // phone appears here and one behind a feature flag stays behind it.
-function SideNav({ items, active, onChange, me, roleLabel, modeSwitch }) {
+function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, brand }) {
   return (
     <aside style={{
       width: SIDEBAR_W, flexShrink: 0, borderRight: `1px solid ${C.border}`, background: C.panelAlt,
       padding: "30px 20px", display: "flex", flexDirection: "column", gap: 26,
       height: "100dvh", position: "sticky", top: 0, overflowY: "auto",
     }}>
-      <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontStyle: "italic", fontSize: 24, letterSpacing: "-.03em", color: C.text, paddingLeft: 4 }}>
-        TRAINED<span style={{ color: C.orange }}>.BEST</span>
-      </div>
+      {brand ? (
+        <div style={{ paddingLeft: 4 }}>
+          <CoachBrandMark name={brand.name} logoUrl={brand.logoUrl} color={brand.color} initials={brand.initials} size={34} />
+        </div>
+      ) : (
+        <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontStyle: "italic", fontSize: 24, letterSpacing: "-.03em", color: C.text, paddingLeft: 4 }}>
+          TRAINED<span style={{ color: C.orange }}>.BEST</span>
+        </div>
+      )}
 
       {modeSwitch}
 
@@ -22219,6 +22424,9 @@ function AppInner() {
           accountabilityEnabled: profile.intake?.accountabilityEnabled ?? true,
           complianceAlerts: profile.intake?.complianceAlerts ?? true,
           cancellationHours: profile.intake?.cancellationHours ?? DEFAULT_CANCELLATION_HOURS,
+          businessName: profile.business_name || null,
+          brandColor: profile.brand_color || null,
+          logoPath: profile.logo_path || null,
         },
       }));
 
@@ -22381,7 +22589,7 @@ function AppInner() {
       if (profile.coach_id) {
         const { data: coachRow } = await supabase
           .from("profiles")
-          .select("id, name, avatar, photo_url, intake")
+          .select("id, name, avatar, photo_url, intake, business_name, brand_color, logo_path")
           .eq("id", profile.coach_id)
           .maybeSingle();
         if (coachRow) {
@@ -22398,6 +22606,9 @@ function AppInner() {
               // and in the confirmation before a late cancel, so it has to be
               // the COACH's real setting, not this device's default.
               cancellationHours: coachRow.intake?.cancellationHours ?? DEFAULT_CANCELLATION_HOURS,
+              businessName: coachRow.business_name || null,
+              brandColor: coachRow.brand_color || null,
+              logoPath: coachRow.logo_path || null,
             },
           }));
         }
@@ -22795,6 +23006,9 @@ function AppInner() {
             // Read back from the row the trigger just populated.
             inviteCode: savedProfile?.invite_code || null,
             accountabilityEnabled: true,
+            businessName: null,
+            brandColor: null,
+            logoPath: null,
           },
         }));
         setAuthed(role);
@@ -23076,6 +23290,20 @@ function AppInner() {
 
   const font = "DM Sans, system-ui, sans-serif";
 
+  // Shows wherever the plain wordmark would otherwise sit: this sidebar, the
+  // phone header below, the signup card, and (once phase 1 builds it) the
+  // print sheet. `coachProfile` already holds the right row either way - a
+  // coach's own data when signed in as a coach, their linked coach's data
+  // when signed in as an athlete - so one check covers both.
+  const coachBrand = (state.coachProfile?.id && state.coachProfile?.businessName)
+    ? {
+        name: state.coachProfile.businessName,
+        color: state.coachProfile.brandColor,
+        logoUrl: coachLogoUrl(state.coachProfile.logoPath),
+        initials: state.coachProfile.avatar,
+      }
+    : null;
+
   // Two shells, one set of pages. Everything inside `screen` is identical
   // either way: the desktop version changes what surrounds the page, not the
   // page. That is the whole reason the nav items are passed to both.
@@ -23090,6 +23318,7 @@ function AppInner() {
               me={coaching ? { ...state.coachProfile, avatar: state.coachProfile?.avatar || "CO" } : state.me}
               roleLabel={coaching ? "Coach" : "Athlete"}
               modeSwitch={authed === "coach" ? <ModeSwitch training={trainingMode} onChange={setTrainingMode} className="" /> : null}
+              brand={coachBrand}
             />
             <div style={{ flex: 1, minWidth: 0, height: "100dvh", overflowY: "auto" }}>
               <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
@@ -23099,6 +23328,16 @@ function AppInner() {
         ) : (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100vh" }}>
             <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
+            {coachBrand && (
+              <div className="sticky top-0 z-30 flex items-center px-4 safe-top"
+                style={{
+                  paddingTop: 10, paddingBottom: 10,
+                  background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+                  borderBottom: `1px solid ${C.border}`,
+                }}>
+                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={26} />
+              </div>
+            )}
             {screen}
             <BottomNav items={navItems} active={activeNavKey} onChange={(key) => nav.go(key)} />
           </div>
