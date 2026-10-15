@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 43 suites, 1102 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1176 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -74,7 +74,9 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | 1b. Rewards screen | **Done.** Medal, points counting up, week dots, level bar, badges, new bests, See summary. Reduced motion skips the movement AND the waiting |
 | 1b. Print sheet | **Done.** One A4 page, black and white, from the home card and the Plan |
 | **Phase 1 overall** | **Complete**, except pull-forward, which Isaiah moved to the Plan rebuild |
-| Plan rebuild | Not started. Week ring, 7-day strip, day list with Done/Missed/Moved/Paused/Skipped, Move, Skip, Do it today, add a workout. **"Pulled-forward goes back" belongs here** - Isaiah chose 15 Oct to do it with the rebuild rather than bolt it onto the current screen |
+| Plan rebuild | **Nearly done.** `session_moves` table (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet (move, skip, do it today, train anyway, put it back), the missed card on Today, and "pulled-forward goes back". **One thing left: "I did it on Mon, log it"** - see section 8 |
+| `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
+| `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
 | 1b. Points, levels, badges | Not started |
 | 2. Signup in 5 steps | Not started |
 | 3. Coach home | Not started |
@@ -148,6 +150,16 @@ message-deletion half of that doc did ship; this half did not.
 - **`_verify/hooks.mjs` earns its keep.** It caught a `useState` below an
   early return in `AthleteProgram` during the print-sheet work - the
   "Rendered fewer hooks than expected" crash, before it ever ran.
+- **`chat.js` at the repo root is NOT the file that runs.** `api/chat.js`
+  is. They had drifted 265 lines apart and each had something the other
+  lacked. The one thing worth keeping - a 404 retry on a known model - was
+  ported into `api/chat.js` on 15 Oct. The root copy is still there, left
+  deliberately until the fallback has been seen working in production, and
+  should be deleted after that.
+- **Measure layouts at 320px rather than reasoning about them.** Three real
+  bugs came out of doing it: the workout header truncating the session name
+  to "D...", the level bar rendering as an empty track because an `<i>` is
+  inline, and the Plan's day strip trying to fit "Upcoming" into 30px.
 
 ## 6. Corrections to earlier documents
 
@@ -184,25 +196,34 @@ Three commits on `redesign-branding`, 15 Oct:
 
 ## 8. Next action
 
-**Phase 1 is done.** What is left, in order:
+**One thing left in the Plan rebuild, and it needs a decision:**
 
-1. **The Plan rebuild.** Week ring, 7-day strip, day list showing Done /
-   Missed / Moved from / Paused / Skipped / Rest, and tapping a day to Move
-   it, Skip it, Do it today instead, or add a workout. **"Pulled-forward
-   goes back" lands here** - it is the rule that a workout pulled to today
-   with "Do it today instead" and then stopped returns to its own planned
-   day, still paused, while one moved with Move stays where it was moved.
-   This is also where "missed" becomes a real concept, at which point the
-   Caught Up badge can become the spec's Comeback.
-2. **Phase 2: signup in 5 steps**, three paths. No migration.
-3. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
+**"I did it on Mon, log it."** The spec's missed card offers it; the card
+currently offers Do it today / Move it / Let it go. What should it record?
+
+- *A bare adherence tick* - a log on that date with no sets behind it. One
+  tap, honest about the date, but it carries no weights, so it counts for
+  nothing under the 50% rule and leaves a hole in strength history.
+- *The workout screen with the date pinned back* - they type in what they
+  actually did and it logs against Monday. More taps, real numbers. Needs
+  the workout screen to accept a date other than today, which it currently
+  assumes everywhere.
+
+Then:
+
+1. **Phase 2: signup in 5 steps**, three paths. No migration.
+2. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
    Training.
-4. **Phase 4: schedule.** Month calendar, direct booking, requests,
+3. **Phase 4: schedule.** Month calendar, direct booking, requests,
    no-show. Needs INSERT and UPDATE policies on `session_change_requests`.
-5. **Phase 5: messages with media**, extending `form_checks`. Mind the
+4. **Phase 5: messages with media**, extending `form_checks`. Mind the
    column-level UPDATE grant on `messages`.
 
 Stripe stays out.
 
-Run `sh _verify/run.sh` before every commit. It was 1102/1102 on 15 Oct.
+Also worth doing once phase 1's work has been seen running: the **Caught
+Up** badge can become the spec's **Comeback**, now that "missed" is a real
+concept rather than an approximation.
+
+Run `sh _verify/run.sh` before every commit. It was 1176/1176 on 15 Oct.
 Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
