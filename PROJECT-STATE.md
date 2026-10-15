@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 42 suites, 1033 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 43 suites, 1102 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -70,8 +70,10 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | 1a. Typo warning | **Done.** More than double the other sets is queried, and barred from being a personal best |
 | 1a. lb/kg in My Info | **Done.** Same writer as the table header |
 | 1a. Appearance | **Done** (it already existed). Now stored in `profiles.theme_pref`, with `intake.theme` kept as the pre-mount copy |
-| 1b. Points, levels, badges | Not started. The 50% flag and `is_pr` are already stored, so the data is there |
-| 1b. Print sheet | Not started |
+| 1b. Points, levels, badges | **Done.** Levels (one per 5 counted), perfect-week streaks with one shield a month, 13 badges, all derived from the logs and nothing stored |
+| 1b. Rewards screen | **Done.** Medal, points counting up, week dots, level bar, badges, new bests, See summary. Reduced motion skips the movement AND the waiting |
+| 1b. Print sheet | **Done.** One A4 page, black and white, from the home card and the Plan |
+| **Phase 1 overall** | **Complete**, except pull-forward, which Isaiah moved to the Plan rebuild |
 | Plan rebuild | Not started. Week ring, 7-day strip, day list with Done/Missed/Moved/Paused/Skipped, Move, Skip, Do it today, add a workout. **"Pulled-forward goes back" belongs here** - Isaiah chose 15 Oct to do it with the rebuild rather than bolt it onto the current screen |
 | 1b. Points, levels, badges | Not started |
 | 2. Signup in 5 steps | Not started |
@@ -133,6 +135,17 @@ message-deletion half of that doc did ship; this half did not.
 - **`device_commit_files` can write a stale copy** when the same
   `stagedPath` was committed earlier in a session. Use a fresh filename, or
   `force`, and check with md5sum. It silently cost a test file once.
+- **`src/index.css` is the stylesheet that is built.** `main.jsx` imports it.
+  There is a BYTE-IDENTICAL `index.css` at the repo root that nothing
+  imports or links; editing it changes nothing at all. The rewards
+  animations went in there first and did nothing. Same shape as the stale
+  `src/App_1.jsx`, `App_2.jsx`, `App_22.jsx`, `App_23.jsx`, `index_1.css`
+  and `index_OLD.css` sitting in `src/` - none of them are built, all of
+  them are a trap for a hand upload. Worth deleting, but that is Isaiah's
+  call, not a thing to do quietly.
+- **`_verify/hooks.mjs` earns its keep.** It caught a `useState` below an
+  early return in `AthleteProgram` during the print-sheet work - the
+  "Rendered fewer hooks than expected" crash, before it ever ran.
 
 ## 6. Corrections to earlier documents
 
@@ -169,25 +182,25 @@ Three commits on `redesign-branding`, 15 Oct:
 
 ## 8. Next action
 
-**Phase 1b**, which is the rewards half of phase 1 and the last of it:
+**Phase 1 is done.** What is left, in order:
 
-- Points on screen as a rewards sequence: medal with rays and confetti,
-  points counting up with each bonus named, Perfect Week dots filling,
-  the level bar (one level per 5 counted workouts), badges flipping in,
-  new bests listed, then "See summary". Must respect
-  `prefers-reduced-motion`.
-- 13 badges: first workout, Week 1, Perfect Week, Comeback, Every Set
-  Logged, New Best, plus workout-count milestones.
-- One streak shield a month, covering one short week.
-- "Print it for the gym": a one-page sheet with the check-in to circle,
-  each exercise with a small black and white photo, empty reps and weight
-  boxes, and a footer explaining how to type the numbers back in.
+1. **The Plan rebuild.** Week ring, 7-day strip, day list showing Done /
+   Missed / Moved from / Paused / Skipped / Rest, and tapping a day to Move
+   it, Skip it, Do it today instead, or add a workout. **"Pulled-forward
+   goes back" lands here** - it is the rule that a workout pulled to today
+   with "Do it today instead" and then stopped returns to its own planned
+   day, still paused, while one moved with Move stays where it was moved.
+   This is also where "missed" becomes a real concept, at which point the
+   Caught Up badge can become the spec's Comeback.
+2. **Phase 2: signup in 5 steps**, three paths. No migration.
+3. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
+   Training.
+4. **Phase 4: schedule.** Month calendar, direct booking, requests,
+   no-show. Needs INSERT and UPDATE policies on `session_change_requests`.
+5. **Phase 5: messages with media**, extending `form_checks`. Mind the
+   column-level UPDATE grant on `messages`.
 
-The data 1b needs is already stored: `workout_logs.counts`, and
-`workout_sets.is_pr` with the typo guard applied.
-
-Then the **Plan rebuild** (which carries pull-forward), then phases 2 to 5.
 Stripe stays out.
 
-Run `sh _verify/run.sh` before every commit. It was 1033/1033 on 15 Oct.
+Run `sh _verify/run.sh` before every commit. It was 1102/1102 on 15 Oct.
 Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
