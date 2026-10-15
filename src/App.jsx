@@ -16061,6 +16061,213 @@ function RestTimer({ seconds, restKey, onDone, alertSound }) {
 // real duration, sets completed out of prescribed, effort — and then takes the
 // athlete back to their program rather than dead-ending on a screen whose only
 // button went somewhere else entirely.
+// A number climbing to its total, which is most of what makes a score feel
+// earned rather than announced. Returns the target immediately when `run` is
+// false, which is how reduced motion and a re-render mid-count both land on
+// the right number instead of a frozen partial one.
+function useCountUp(target, run, ms = 800) {
+  const [shown, setShown] = useState(run ? 0 : target);
+  useEffect(() => {
+    if (!run) { setShown(target); return; }
+    let frame = 0;
+    let started = null;
+    const tick = (now) => {
+      if (started == null) started = now;
+      const through = Math.min(1, (now - started) / ms);
+      setShown(Math.round(target * through));
+      if (through < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target, run, ms]);
+  return shown;
+}
+
+// What the session earned, before the summary of what it was.
+//
+// The order is deliberate and it is the order in the design: the medal, then
+// the points, then the week, then the level, then anything new. Each arrives
+// on its own so there is a moment to read it - a screen where six things
+// appear at once is a screen nobody reads any of.
+//
+// Sections with nothing in them are left out rather than shown empty. An
+// athlete who earned no badges should not be shown a heading that says "New
+// badges" above a gap, and should not wait a second for it either.
+//
+// Someone who has asked their device for less movement gets the whole thing
+// at once, still. That is both halves of the promise: the stylesheet stops
+// the animation, and this stops the waiting.
+function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, onDone }) {
+  const [still] = useState(prefersReducedMotion);
+  const sections = useMemo(() => ([
+    "medal",
+    points > 0 ? "points" : null,
+    perfect && perfect.planned > 0 ? "perfect" : null,
+    "level",
+    badges?.length ? "badges" : null,
+    bests?.length ? "bests" : null,
+  ].filter(Boolean)), [points, perfect, badges, bests]);
+
+  const [shown, setShown] = useState(still ? sections.length : 1);
+  useEffect(() => {
+    if (still || shown >= sections.length) return;
+    const t = setTimeout(() => setShown(n => n + 1), 850);
+    return () => clearTimeout(t);
+  }, [shown, sections.length, still]);
+
+  const at = (key) => sections.indexOf(key);
+  const seen = (key) => at(key) >= 0 && at(key) < shown;
+  const finished = shown >= sections.length;
+  const climbing = useCountUp(points, !still && seen("points"));
+  // The bar animates from where it was to where it is. Rendering it at its
+  // final width on the first frame means the transition has nothing to move.
+  const barWidth = seen("level") ? Math.round((level?.progress ?? 0) * 100) : 0;
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10 relative" style={{ background: C.bg }}>
+      {/* The confetti gets its own fixed layer, with the clipping on THAT
+          rather than on the column. Clipping the column is the obvious way to
+          write this and it silently breaks the screen: a session with three
+          badges and two new bests is taller than a phone, and
+          `overflow: hidden` on the thing that is too tall means the athlete
+          cannot reach the button at the bottom of it.
+
+          Not rendered at all under reduced motion, rather than rendered and
+          frozen - a still frame of eighteen rectangles stuck along the top
+          edge is not a quieter version of confetti. */}
+      {!still && (
+        <div aria-hidden="true" className="fixed inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 0 }}>
+          {Array.from({ length: 18 }).map((_, i) => (
+            <span key={i} className="rw-fall" style={{
+              position: "absolute", top: 0, left: `${(i * 53) % 100}%`,
+              width: 7, height: 12, borderRadius: 2,
+              background: BRAND_COLORS[i % BRAND_COLORS.length],
+              "--rw-delay": `${(i % 6) * 0.17}s`,
+              "--rw-dur": `${2.2 + (i % 5) * 0.34}s`,
+            }} />
+          ))}
+        </div>
+      )}
+
+      <div className="relative flex items-center justify-center rw-pop" style={{ width: 128, height: 128, zIndex: 1 }}>
+        {/* Rays, not a smudge. The first version faded each spoke to a
+            transparent amber, which over a near-black background renders as
+            a dark grey blur rather than light - the colour channels go to
+            amber as the alpha goes to zero, and the result reads as dirt on
+            the screen. Fading to white at low alpha is what actually looks
+            like light. */}
+        <div className="rw-rays absolute inset-0" aria-hidden="true" style={{
+          background: `conic-gradient(from 0deg, rgba(255,255,255,0) 0deg, ${C.amber}aa 14deg, rgba(255,255,255,0) 30deg, rgba(255,255,255,0) 90deg, ${C.amber}aa 104deg, rgba(255,255,255,0) 120deg, rgba(255,255,255,0) 180deg, ${C.amber}aa 194deg, rgba(255,255,255,0) 210deg, rgba(255,255,255,0) 270deg, ${C.amber}aa 284deg, rgba(255,255,255,0) 300deg)`,
+          borderRadius: "50%",
+          // Fades the spokes out at the rim instead of cutting them off at a
+          // hard circular edge.
+          WebkitMaskImage: "radial-gradient(circle, #000 34%, rgba(0,0,0,.55) 62%, transparent 78%)",
+          maskImage: "radial-gradient(circle, #000 34%, rgba(0,0,0,.55) 62%, transparent 78%)",
+        }} />
+        <div className="relative flex items-center justify-center" style={{
+          width: 84, height: 84, borderRadius: "50%",
+          background: `radial-gradient(circle at 35% 30%, ${C.amber}, ${C.orange})`,
+          boxShadow: `0 10px 30px ${C.amber}55`,
+        }}>
+          <Trophy size={38} style={{ color: "#fff" }} />
+        </div>
+      </div>
+
+      <h2 className="text-2xl font-bold mt-5 text-center rw-pop" style={{ fontFamily: DISPLAY, color: C.text }}>
+        SESSION DONE
+      </h2>
+
+      {seen("points") && (
+        <div className="rw-rise mt-5 rounded-2xl px-5 py-3 text-center" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+          <div className="text-3xl tabular-nums font-bold" style={{ fontFamily: DISPLAY, color: C.amber }}>
+            +{climbing}
+          </div>
+          <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>points this session</div>
+        </div>
+      )}
+
+      {seen("perfect") && (
+        <div className="rw-rise mt-5 text-center">
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>This week</div>
+          <div className="flex items-center justify-center gap-2">
+            {Array.from({ length: perfect.planned }).map((_, i) => (
+              <span key={i} style={{
+                width: 13, height: 13, borderRadius: "50%",
+                background: i < perfect.done ? C.olive : "transparent",
+                border: `2px solid ${i < perfect.done ? C.olive : C.steel}`,
+              }} />
+            ))}
+          </div>
+          <div className="text-[12.5px] mt-2" style={{ color: perfect.done >= perfect.planned ? C.olive : C.sub }}>
+            {perfect.done >= perfect.planned
+              ? "Perfect week"
+              : `${perfect.done} of ${perfect.planned} sessions done`}
+          </div>
+        </div>
+      )}
+
+      {seen("level") && (
+        <div className="rw-rise mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="text-[12.5px] font-semibold" style={{ color: C.text }}>Level {level?.level ?? 1}</span>
+            {levelUp
+              ? <span className="text-[11px] font-bold uppercase tracking-[.14em] rw-pop" style={{ color: C.amber }}>Level up</span>
+              : <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>
+                  {level?.toNext} more to level {(level?.level ?? 1) + 1}
+                </span>}
+          </div>
+          <div className="rw-bar" style={{ height: 8, borderRadius: 4, background: C.panel, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <i style={{ width: `${barWidth}%`, background: `linear-gradient(90deg, ${C.orange}, ${C.amber})` }} />
+          </div>
+        </div>
+      )}
+
+      {seen("badges") && (
+        <div className="mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2 text-center" style={{ color: C.sub }}>
+            {badges.length === 1 ? "New badge" : "New badges"}
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {badges.map((b, i) => (
+              <span key={b.key} className="rw-flip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5"
+                style={{
+                  background: `${C.olive}18`, border: `1px solid ${C.olive}`,
+                  animationDelay: still ? undefined : `${i * 140}ms`,
+                }}>
+                <Award size={13} style={{ color: C.olive }} />
+                <span className="text-[12.5px] font-semibold" style={{ color: C.olive }}>{b.name}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {seen("bests") && (
+        <div className="rw-rise mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2 text-center" style={{ color: C.sub }}>
+            {bests.length === 1 ? "New best" : "New bests"}
+          </div>
+          {bests.map((b, i) => (
+            <div key={`${b.name}-${i}`} className="flex items-center justify-between rounded-xl px-3 py-2 mb-1.5"
+              style={{ background: `${C.amber}10`, border: `1px solid ${C.amber}55` }}>
+              <span className="text-[12.5px] font-semibold min-w-0 truncate" style={{ color: C.text }}>{b.name}</span>
+              <span className="text-[12.5px] tabular-nums font-bold shrink-0 ml-2" style={{ color: C.amber }}>
+                {displayWeight(b.weightLb, "lb", unit)} {unit}{b.reps ? ` × ${b.reps}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Always there, from the first frame. A sequence an athlete cannot get
+          out of is a sequence they resent by the third session. */}
+      <Btn className="mt-8" variant={finished ? "primary" : "ghost"} onClick={onDone}>
+        {finished ? "See summary" : "Skip"}
+      </Btn>
+    </div>
+  );
+}
+
 function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, counts, onDone }) {
   // A queued session gets longer on screen. It is the one case where the
   // athlete has something to read: their work is safe, but it is safe HERE,
@@ -16990,6 +17197,7 @@ function Workout({ state, setState, nav, dayId }) {
   // would take the place of, worked out when the sheet is opened rather than
   // read out of storage on every render.
   const [stopOpen, setStopOpen] = useState(null);
+  const [showRewards, setShowRewards] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -17050,6 +17258,7 @@ function Workout({ state, setState, nav, dayId }) {
     setRestDone(false);
     setPendingDay(null);
     setFinished(false);
+    setShowRewards(false);
     setMood(null);
     setNotes(draft?.notes || "");
     setSaveError(null);
@@ -17685,15 +17894,42 @@ function Workout({ state, setState, nav, dayId }) {
       }
     }
 
-    setState(s => ({
-      ...s,
-      workoutLogs: [
-        // The server's id, not a throwaway, so the row the athlete can already
-        // see is the same row that arrives when the queue drains.
-        { id: rowId, date: dateStr, programDay: day.name, duration: durationMin, timedSeconds, mood, setsCompleted, setsPrescribed, counts: row.counts, notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued },
-        ...s.workoutLogs,
-      ],
-    }));
+    // The server's id, not a throwaway, so the row the athlete can already
+    // see is the same row that arrives when the queue drains. Built once
+    // here because the rewards screen needs to ask what the athlete's history
+    // looks like WITH this session in it, and a second hand-written copy of
+    // the same shape is how the two end up disagreeing.
+    const loggedRow = {
+      id: rowId, date: dateStr, programDay: day.name, duration: durationMin,
+      timedSeconds, mood, setsCompleted, setsPrescribed, counts: row.counts,
+      notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued,
+    };
+
+    // What this session earned. Worked out by asking the same functions the
+    // badge wall asks, once without this session and once with it, so a badge
+    // cannot be announced here and be missing from the wall a minute later.
+    const logsBefore = state.workoutLogs || [];
+    const logsAfter = [loggedRow, ...logsBefore];
+    const perWeek = (myProgram?.days || []).length;
+    const badgeOpts = { sessionsPerWeek: perWeek, program: myProgram, todayIso: dateStr };
+    const weekStart = weekStartFor(dateStr);
+    const rewards = {
+      points: sessionPoints(loggedRow),
+      level: levelFor(logsAfter),
+      levelUp: leveledUp(logsBefore.filter(logCounts).length, logsAfter.filter(logCounts).length),
+      badges: newlyEarnedBadges(logsBefore, logsAfter, badgeOpts),
+      // From the rows that were just written, so the medal and the database
+      // agree about which set was the best one.
+      bests: setRows.filter(r => r.is_pr).map(r => ({
+        name: r.exercise_name, weightLb: r.weight_lb, reps: r.reps,
+      })),
+      perfect: {
+        planned: perWeek,
+        done: logsAfter.filter(l => logCounts(l) && weekStartFor(l.date) === weekStart).length,
+      },
+    };
+
+    setState(s => ({ ...s, workoutLogs: [loggedRow, ...s.workoutLogs] }));
     // The session is on the record now — here, on the server, or in the
     // queue. Leaving the stored timer behind would hand the next workout a
     // stopwatch that had already been stopped, and leaving the draft behind
@@ -17706,7 +17942,14 @@ function Workout({ state, setState, nav, dayId }) {
     clearSessionDraft(dayKey, state.me.id);
     // It is logged, so it is no longer waiting to be finished.
     clearPausedWorkout(state.me.id);
-    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued });
+    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued, rewards });
+    // The rewards sequence first, then the summary - but only when there is
+    // something to celebrate. A session that scored nothing and earned
+    // nothing gets a medal and six seconds of waiting for a blank screen,
+    // which is worse than no sequence at all.
+    setShowRewards(
+      rewards.points > 0 || rewards.levelUp || rewards.badges.length > 0 || rewards.bests.length > 0
+    );
     setSaving(false);
     setFinished(true);
   };
@@ -17762,6 +18005,22 @@ function Workout({ state, setState, nav, dayId }) {
     setStopOpen(null);
     finishWorkout();
   };
+
+  if (finished && showRewards && loggedSummary?.rewards) {
+    const r = loggedSummary.rewards;
+    return (
+      <RewardsScreen
+        points={r.points}
+        level={r.level}
+        levelUp={r.levelUp}
+        perfect={r.perfect}
+        badges={r.badges}
+        bests={r.bests}
+        unit={weightUnit}
+        onDone={() => setShowRewards(false)}
+      />
+    );
+  }
 
   if (finished) {
     return (

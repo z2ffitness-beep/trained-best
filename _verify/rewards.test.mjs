@@ -397,6 +397,146 @@ test("no level, badge or streak column is written to the database", () => {
   }
 });
 
+// ---------- the screen it all lands on ----------
+
+const screen = (() => {
+  const at = src.indexOf("function RewardsScreen(");
+  assert.ok(at > 0, "the rewards screen is gone");
+  return src.slice(at, src.indexOf("\nfunction SessionLoggedScreen", at));
+})();
+
+test("the sequence is in the order the design asks for", () => {
+  const order = ["medal", "points", "perfect", "level", "badges", "bests"];
+  const at = screen.indexOf("const sections = useMemo");
+  const list = screen.slice(at, screen.indexOf("), [", at));
+  let cursor = 0;
+  for (const key of order) {
+    const found = list.indexOf(`"${key}"`, cursor);
+    assert.ok(found > 0, `the ${key} step is missing from the sequence`);
+    cursor = found;
+  }
+});
+
+test("a step with nothing in it is left out, not shown empty", () => {
+  // A heading that says "New badges" above a gap is worse than no heading,
+  // and waiting a second for it is worse again.
+  const at = screen.indexOf("const sections = useMemo");
+  const list = screen.slice(at, screen.indexOf("), [", at));
+  assert.ok(/points > 0 \? "points" : null/.test(list), "the points step shows for a session that scored none");
+  assert.ok(/badges\?\.length \? "badges" : null/.test(list), "the badges step shows with no badges");
+  assert.ok(/bests\?\.length \? "bests" : null/.test(list), "the bests step shows with no bests");
+  assert.ok(/\.filter\(Boolean\)/.test(list), "the empty steps are not filtered out");
+});
+
+test("reduced motion skips the waiting as well as the movement", () => {
+  // Two halves of one promise. The stylesheet stops the animation; this stops
+  // someone who asked for less motion sitting through six still frames
+  // arriving a second apart.
+  assert.ok(/const \[still\] = useState\(prefersReducedMotion\)/.test(screen),
+    "the screen never asks whether the device wants less movement");
+  assert.ok(/useState\(still \? sections\.length : 1\)/.test(screen),
+    "reduced motion still steps through the sequence one card at a time");
+  assert.ok(/if \(still \|\| shown >= sections\.length\) return;/.test(screen),
+    "the timer keeps running under reduced motion");
+});
+
+test("confetti is not rendered at all under reduced motion", () => {
+  // Rendering it and freezing it leaves eighteen rectangles stuck along the
+  // top edge, which is not a quieter version of confetti.
+  assert.ok(/\{!still && \(\s*\n\s*<div aria-hidden="true" className="fixed inset-0 overflow-hidden pointer-events-none"/.test(screen),
+    "the confetti is rendered regardless, or is not in its own layer");
+});
+
+test("the clipping is on the confetti layer, never on the column", () => {
+  // Clipping the column is the obvious way to write it and it silently
+  // breaks the screen: three badges and two new bests is taller than a
+  // phone, and overflow:hidden on the too-tall thing means the athlete
+  // cannot reach the button at the bottom of it.
+  const at = screen.indexOf('<div className="min-h-screen');
+  assert.ok(at > 0, "the rewards column is gone");
+  const openingTag = screen.slice(at, screen.indexOf(">", at));
+  assert.ok(!/overflow-hidden/.test(openingTag),
+    `the rewards column clips its own overflow, so a tall session loses its button: ${openingTag}`);
+  assert.ok(/py-10/.test(openingTag), "the column has no breathing room top and bottom");
+});
+
+test("there is always a way out, from the first frame", () => {
+  // A sequence an athlete cannot leave is a sequence they resent by the
+  // third session.
+  assert.ok(/\{finished \? "See summary" : "Skip"\}/.test(screen),
+    "the button only appears at the end, or never says Skip");
+  const at = screen.indexOf("<Btn className=\"mt-8\"");
+  assert.ok(at > 0, "the button is gone");
+  const before = screen.slice(0, at);
+  assert.ok(!/\{finished && \(\s*$/.test(before.trim()), "the button is behind a condition");
+});
+
+test("new bests are read in the athlete's own unit", () => {
+  assert.ok(/displayWeight\(b\.weightLb, "lb", unit\)/.test(screen),
+    "the bests are printed in pounds whatever the athlete reads in");
+  assert.ok(/unit=\{weightUnit\}/.test(src), "the screen is never told which unit to use");
+});
+
+test("the points number climbs rather than appearing", () => {
+  assert.ok(/useCountUp\(points, !still && seen\("points"\)\)/.test(screen),
+    "the count-up is gone, or runs before the step it belongs to is visible");
+});
+
+test("a session that earned nothing skips the whole sequence", () => {
+  // A medal and six seconds of waiting for a blank screen is worse than no
+  // sequence at all.
+  const at = src.indexOf("setShowRewards(\n      rewards.points");
+  assert.ok(at > 0, "nothing decides whether to show the sequence");
+  const decision = src.slice(at, src.indexOf(");", at));
+  for (const part of ["rewards.points > 0", "rewards.levelUp", "rewards.badges.length > 0", "rewards.bests.length > 0"]) {
+    assert.ok(decision.includes(part), `the decision ignores ${part}`);
+  }
+});
+
+test("the rewards the screen shows are the ones the database recorded", () => {
+  // The bests come from the rows that were just written, not from a second
+  // pass over the logs, so the medal and the table cannot disagree about
+  // which set was the best one.
+  assert.ok(/bests: setRows\.filter\(r => r\.is_pr\)/.test(src),
+    "the new bests are worked out separately from the rows that were saved");
+});
+
+test("the session's own log is built once and reused", () => {
+  // The rewards need to ask what the history looks like WITH this session in
+  // it. A second hand-written copy of the same shape is how the two end up
+  // disagreeing about what was just logged.
+  assert.ok(/const loggedRow = \{/.test(src), "the logged row is no longer built as one object");
+  assert.ok(/const logsAfter = \[loggedRow, \.\.\.logsBefore\]/.test(src),
+    "the rewards are computed against a different list than the one state gets");
+  assert.ok(/workoutLogs: \[loggedRow, \.\.\.s\.workoutLogs\]/.test(src),
+    "state is given a different object than the rewards were computed from");
+});
+
+// ---------- the stylesheet that is actually built ----------
+
+test("the animations live in the stylesheet that is built", () => {
+  // src/index.css is imported by main.jsx. There is a byte-identical
+  // index.css at the repo root that nothing imports or links, and editing
+  // that one changes nothing at all - which cost an afternoon once.
+  const live = readSource(path.join(here, "..", "src", "index.css"));
+  for (const rule of ["rw-pop", "rw-rise", "rw-flip", "rw-rays", "rw-fall", "rw-bar"]) {
+    assert.ok(live.includes(rule), `${rule} is not in src/index.css`);
+  }
+  assert.ok(/prefers-reduced-motion: reduce[\s\S]*rw-fall/.test(live),
+    "the animations are not switched off under reduced motion");
+});
+
+test("the level bar's fill is a block, or it has no width at all", () => {
+  // `i` is inline by default. An inline element ignores width, so the bar
+  // renders as an empty track and the level looks permanently stuck at zero.
+  const live = readSource(path.join(here, "..", "src", "index.css"));
+  const at = live.indexOf(".rw-bar > i");
+  assert.ok(at > 0, "the bar fill has no rule");
+  const rule = live.slice(at, live.indexOf("}", at));
+  assert.ok(/display:\s*block/.test(rule), "the bar fill is still inline, so it has no width");
+  assert.ok(/height:\s*100%/.test(rule), "the bar fill has no height");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
