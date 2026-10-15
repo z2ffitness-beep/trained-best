@@ -4509,6 +4509,204 @@ function pointsTotals(logs, sessionsPerWeek, todayIso) {
   };
 }
 
+// ---------- levels, perfect-week streaks and badges ----------
+//
+// All of it is DERIVED from the logs, every time, and none of it is stored.
+//
+// That is a deliberate choice and the expensive-looking one. A stored level
+// or badge list is a second copy of the truth, and the moment the two
+// disagree the athlete is the one who finds out - a badge that vanishes, a
+// level that goes backwards after a coach edits a programme. Recomputing
+// costs one pass over a list that is, for a real athlete, a few hundred rows.
+//
+// The one thing that IS stored is `workout_logs.counts`, because that is not
+// derivable later: it is a judgement made against the prescription as it
+// stood on the day, and the prescription can change underneath a past
+// session.
+
+const WORKOUTS_PER_LEVEL = 5;
+
+// Level 1 from the first day. Starting at zero means the number an athlete
+// sees before their first session is the same one they see after it, which
+// makes the first session feel like it did nothing.
+function levelFor(logs) {
+  const counted = (logs || []).filter(logCounts).length;
+  const into = counted % WORKOUTS_PER_LEVEL;
+  return {
+    level: Math.floor(counted / WORKOUTS_PER_LEVEL) + 1,
+    counted,
+    into,
+    toNext: WORKOUTS_PER_LEVEL - into,
+    // 0 to 1 across the current level, for the bar.
+    progress: into / WORKOUTS_PER_LEVEL,
+  };
+}
+
+// Did a level boundary fall between these two counts? Used on the finish
+// screen, where the question is "did THIS session level them up", and the
+// answer has to be worked out before and after rather than from a stored
+// number that may already have been written.
+function leveledUp(countedBefore, countedAfter) {
+  return Math.floor(countedAfter / WORKOUTS_PER_LEVEL) > Math.floor(countedBefore / WORKOUTS_PER_LEVEL);
+}
+
+// Perfect weeks in a row, counting back from the last week that has finished.
+//
+// The week in progress is left out on purpose. A Tuesday cannot break a
+// streak: there are still four days in which to do the rest of the week, and
+// a number that drops to zero every Monday morning and climbs back by Sunday
+// is not a streak, it is an anxiety generator.
+//
+// One shield a month covers one week that fell short. The shield is not a
+// currency the athlete spends - it is applied automatically to the first week
+// that needs it in any calendar month, and a shielded week bridges the run
+// without adding to it, because it was not a perfect week and saying it was
+// would be a lie about their training.
+function perfectWeekStreak(logs, sessionsPerWeek, todayIso) {
+  const per = Number(sessionsPerWeek);
+  const thisWeek = weekStartFor(todayIso);
+  if (!Number.isFinite(per) || per <= 0 || !thisWeek) return { weeks: 0, shieldsUsed: [] };
+
+  const perfect = new Set(perfectWeeks(logs, per));
+  // How far back there is any history at all. Without a floor this walks
+  // backwards for ever through weeks that never existed.
+  const first = (logs || []).map(l => l?.date).filter(Boolean).sort()[0];
+  const floor = first ? weekStartFor(first) : null;
+
+  let weeks = 0;
+  const shieldsUsed = [];
+  const monthsShielded = new Set();
+  let cursor = shiftDays(thisWeek, -7);
+
+  // `floor` in the condition rather than an early return above it, so there
+  // is one guard instead of two saying the same thing. With no history there
+  // is no floor and the loop never runs, which is the right answer.
+  while (floor && cursor && cursor >= floor) {
+    if (perfect.has(cursor)) {
+      weeks += 1;
+    } else {
+      const month = cursor.slice(0, 7);
+      if (monthsShielded.has(month)) break;
+      monthsShielded.add(month);
+      shieldsUsed.push(cursor);
+    }
+    cursor = shiftDays(cursor, -7);
+  }
+  return { weeks, shieldsUsed };
+}
+
+// Has this athlete ever beaten their own heaviest set on a movement?
+//
+// Worked out from the logs rather than read back from workout_sets.is_pr,
+// which is the same answer from a table this screen does not otherwise load.
+// Oldest session first, carrying the best forward: a best can only be beaten
+// by something that came after it.
+function hasNewBest(logs) {
+  const ordered = [...(logs || [])].sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const bests = new Map();
+  for (const log of ordered) {
+    for (const ex of log?.exercises || []) {
+      const key = String(ex?.name || "").toLowerCase();
+      if (!key) continue;
+      const others = (ex.sets || []).filter(o => typeof o.weight === "number")
+        .map(o => convertWeight(o.weight, o.unit || "lb", "lb"));
+      for (const entry of ex.sets || []) {
+        if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+        const lb = convertWeight(entry.weight, entry.unit || "lb", "lb");
+        if (lb == null) continue;
+        const rest = others.filter(w => w !== lb);
+        const typo = looksLikeTypo(lb, rest);
+        const best = bests.get(key) || null;
+        if (!typo && best && beatsBest(lb, typeof entry.reps === "number" ? entry.reps : null, best)) return true;
+        if (!typo && (!best || lb > best.weightLb)) {
+          bests.set(key, { weightLb: lb, reps: typeof entry.reps === "number" ? entry.reps : null });
+        } else if (!typo && best && lb === best.weightLb && typeof entry.reps === "number"
+                   && (best.reps == null || entry.reps > best.reps)) {
+          bests.set(key, { weightLb: lb, reps: entry.reps });
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// A session done later in the week than the day it was scheduled for.
+//
+// The spec calls this a missed workout made up on a later day. The app has no
+// concept of "missed" yet - that arrives with the Plan rebuild - so this is
+// the honest version of the same thing: Tuesday's session, trained on
+// Thursday. Earlier in the week does not count; that is being ahead, not
+// catching up.
+function hasCaughtUp(logs, program) {
+  const byName = new Map((program?.days || []).map(d => [d.name, d.weekday]));
+  for (const log of logs || []) {
+    if (!log?.date || !log.programDay) continue;
+    const planned = byName.get(log.programDay);
+    if (!planned) continue;
+    const plannedIdx = WEEKDAY_ORDER.indexOf(planned);
+    const doneIdx = (new Date(log.date + "T00:00:00").getDay() + 6) % 7;
+    if (plannedIdx >= 0 && doneIdx > plannedIdx && logCounts(log)) return true;
+  }
+  return false;
+}
+
+// Thirteen, as the design asks for. Six for things worth doing once and
+// seven for sticking at it, because a wall made only of milestones says
+// nothing until the tenth session and a wall made only of one-offs stops
+// saying anything after the first month.
+const BADGES = [
+  { key: "first",    name: "First Workout", hint: "Log your first session" },
+  { key: "week1",    name: "Week One",      hint: "Train in the first week of your programme" },
+  { key: "perfect",  name: "Perfect Week",  hint: "Do every session a week schedules" },
+  { key: "caughtup", name: "Caught Up",     hint: "Train a session later in the week than it was planned for" },
+  { key: "everyset", name: "Every Set",     hint: "Finish a session with every prescribed set ticked" },
+  { key: "newbest",  name: "New Best",      hint: "Beat your own heaviest set on a movement" },
+  { key: "w10",  name: "10 Sessions",  hint: "Ten sessions that counted",            count: 10 },
+  { key: "w25",  name: "25 Sessions",  hint: "Twenty-five sessions that counted",    count: 25 },
+  { key: "w50",  name: "50 Sessions",  hint: "Fifty sessions that counted",          count: 50 },
+  { key: "w100", name: "100 Sessions", hint: "A hundred sessions that counted",      count: 100 },
+  { key: "w150", name: "150 Sessions", hint: "A hundred and fifty that counted",     count: 150 },
+  { key: "w200", name: "200 Sessions", hint: "Two hundred sessions that counted",    count: 200 },
+  { key: "w250", name: "250 Sessions", hint: "Two hundred and fifty that counted",   count: 250 },
+];
+
+// Which of the thirteen this athlete has. A Set of keys, in BADGES order
+// wherever it is rendered, so the wall does not reshuffle itself as badges
+// arrive.
+function badgesEarned(logs, { sessionsPerWeek, program, todayIso } = {}) {
+  const list = (logs || []).filter(Boolean);
+  const counted = list.filter(logCounts);
+  const earned = new Set();
+  if (counted.length) earned.add("first");
+
+  // Milestones read from the counted sessions only. A wall that counts part
+  // sessions says "100 sessions" to someone who has done sixty.
+  for (const badge of BADGES) {
+    if (badge.count && counted.length >= badge.count) earned.add(badge.key);
+  }
+
+  if (program && counted.some(l => programWeekFor(program, l.date) === 1)) earned.add("week1");
+  if (perfectWeeks(list, sessionsPerWeek).length) earned.add("perfect");
+  if (hasCaughtUp(list, program)) earned.add("caughtup");
+  // Every prescribed set ticked. Guarded on prescribed > 0, or a session with
+  // nothing prescribed hands it out for free.
+  if (counted.some(l => Number(l.setsPrescribed) > 0 && Number(l.setsCompleted) >= Number(l.setsPrescribed))) {
+    earned.add("everyset");
+  }
+  if (hasNewBest(list)) earned.add("newbest");
+  return earned;
+}
+
+// What this session just earned that the athlete did not have before it.
+// Computed by running the whole thing twice, with and without the new log,
+// rather than by a rule per badge - one implementation, so a badge cannot be
+// awarded on the wall and missed on the rewards screen.
+function newlyEarnedBadges(logsBefore, logsAfter, opts) {
+  const before = badgesEarned(logsBefore, opts);
+  const after = badgesEarned(logsAfter, opts);
+  return BADGES.filter(b => after.has(b.key) && !before.has(b.key));
+}
+
 function complianceBaseline(logs) {
   const timed = timedSessions(logs);
   if (timed.length < COMPLIANCE_MIN_SAMPLES) return null;
