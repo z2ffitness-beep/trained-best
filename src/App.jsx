@@ -14362,6 +14362,19 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const [pausedTick, setPausedTick] = useState(0);
   const [confirmDrop, setConfirmDrop] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  // Sessions that were due and did not happen, newest first, going back a
+  // fortnight. Further than that is noise: an offer to catch up on something
+  // from five weeks ago is not help, it is a reminder that you failed.
+  const missed = useMemo(
+    () => missedSessions({
+      program: myProgram,
+      logs: state.workoutLogs,
+      moves: state.sessionMoves,
+      pausedDayKey: pausedWorkoutToShow(state.me.id, today)?.dayKey || null,
+      today,
+    }),
+    [myProgram, state.workoutLogs, state.sessionMoves, state.me.id, today, pausedTick],
+  );
   const pausedWorkout = useMemo(
     () => pausedWorkoutToShow(state.me.id, today),
     [state.me.id, today, pausedTick],
@@ -14581,6 +14594,48 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
             </div>
           </div>
         )}
+
+        {/* What did not happen, and the three things that can be done about
+            it. Above today's workout, because an athlete with a missed
+            Wednesday is deciding between catching it up and carrying on, and
+            that decision belongs before the card that assumes carrying on.
+
+            Capped at two. The whole list is on the Plan; a home screen that
+            leads with five red cards is a home screen people stop opening. */}
+        {missed.slice(0, 2).map(item => (
+          <div key={`${item.date}-${item.day.name}`} className="rounded-2xl p-4 mb-4"
+            style={{ ...card(), border: `1px solid ${C.red}66` }}>
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: C.red }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  You missed {sessionLabel(item.day.name)}
+                </div>
+                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>
+                  It was due {pausedWhenLabel(item.date, today) || "earlier"}. Catch it up, move it, or let it go.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Btn size="sm" variant="primary"
+                    onClick={() => {
+                      // A pull, not a move: if they start it and stop part
+                      // way, it goes back to the day it was due rather than
+                      // quietly rewriting the week.
+                      saveSessionMove(setState, state.me.id, {
+                        programDay: item.day.name, fromDate: item.date, toDate: today, kind: "pull",
+                      });
+                      const target = (myProgram?.days || []).find(d => d.name === item.day.name);
+                      if (target) nav.go("athlete-workout", target.id);
+                    }}>Do it today</Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => nav.go("athlete-program")}>Move it</Btn>
+                  <Btn size="sm" variant="danger"
+                    onClick={() => saveSessionMove(setState, state.me.id, {
+                      programDay: item.day.name, fromDate: item.date, toDate: null, kind: "skip",
+                    })}>Let it go</Btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
 
         {todayDay ? (
           (() => {

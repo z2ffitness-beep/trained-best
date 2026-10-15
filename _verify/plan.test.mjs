@@ -561,6 +561,68 @@ test("the panel shows the week being looked at, not always this one", () => {
   assert.ok(/weekStart: planWeekStart/.test(src), "the rows are built from a different week than the panel shows");
 });
 
+// ---------- the missed card on Today ----------
+
+test("what did not happen comes before the card that assumes carrying on", () => {
+  // An athlete with a missed Wednesday is deciding between catching it up
+  // and carrying on, and that decision belongs above the card that has
+  // already made it for them.
+  const home = (() => {
+    const at = src.indexOf("function AthleteDashboard(");
+    assert.ok(at > 0, "the home screen is gone");
+    return src.slice(at, src.indexOf("\nfunction ", at + 10));
+  })();
+  const missedAt = home.indexOf("You missed {sessionLabel(item.day.name)}");
+  // The rendered heading, not the comments above that mention it by name.
+  const todayAt = home.indexOf(">Today's Workout</div>");
+  assert.ok(missedAt > 0, "there is no missed card on the home screen");
+  assert.ok(todayAt > 0, "today's workout card is gone");
+  assert.ok(missedAt < todayAt, "the missed card sits below today's workout");
+});
+
+test("the card is capped, not a wall of red", () => {
+  // The whole list is on the Plan. A home screen that leads with five red
+  // cards is a home screen people stop opening.
+  assert.ok(/missed\.slice\(0, 2\)\.map/.test(src),
+    "every missed session gets its own card on the home screen");
+});
+
+test("catching up is a pull, so stopping sends it home", () => {
+  const at = src.indexOf("You missed {sessionLabel(item.day.name)}");
+  const card = src.slice(at - 400, at + 2200);
+  assert.ok(/kind: "pull"/.test(card),
+    "'Do it today' writes a move, so stopping part-way would quietly rewrite the week");
+  assert.ok(/fromDate: item\.date, toDate: today/.test(card),
+    "the pull does not record where the session came from");
+});
+
+test("all three answers are offered, and letting go is the destructive-looking one", () => {
+  const at = src.indexOf("You missed {sessionLabel(item.day.name)}");
+  const card = src.slice(at - 400, at + 2200);
+  for (const label of ["Do it today", "Move it", "Let it go"]) {
+    assert.ok(card.includes(label), `the missed card is missing "${label}"`);
+  }
+  assert.ok(/variant="danger"[\s\S]{0,400}Let it go/.test(card),
+    "letting a session go looks like the safe option");
+  assert.ok(/kind: "skip"/.test(card), "letting it go does not actually skip it");
+});
+
+test("the card says when it was due, in words", () => {
+  const at = src.indexOf("You missed {sessionLabel(item.day.name)}");
+  const card = src.slice(at, at + 700);
+  assert.ok(/pausedWhenLabel\(item\.date, today\)/.test(card),
+    "the missed card shows a raw date, or no date at all");
+});
+
+test("the missed list is recomputed when anything it reads changes", () => {
+  const at = src.indexOf("const missed = useMemo(");
+  assert.ok(at > 0, "the missed list is not memoised, so it walks three weeks on every keystroke");
+  const deps = src.slice(src.indexOf("[myProgram, state.workoutLogs", at), src.indexOf("]," , src.indexOf("[myProgram, state.workoutLogs", at)));
+  for (const dep of ["state.workoutLogs", "state.sessionMoves", "today"]) {
+    assert.ok(deps.includes(dep), `${dep} is not a dependency, so the card goes stale`);
+  }
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
