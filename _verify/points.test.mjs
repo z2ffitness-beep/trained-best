@@ -33,6 +33,8 @@ const H = await load(APP, [
   "weekStartFor",
   "shiftDays",
   "sessionPoints",
+  { name: "COUNTS_THRESHOLD", kind: "const" },
+  "sessionCounts", "logCounts", "computeStreak",
   "perfectWeeks",
   "pointsTotals",
 ]);
@@ -203,6 +205,82 @@ test("the rule is explained on screen, not just in the code", () => {
   assert.ok(/for finishing a session/.test(body), "nothing tells the athlete how the score works");
   assert.ok(/does not score extra/.test(body),
     "the one thing athletes will try to game is left unstated");
+});
+
+// ---------- the half-the-sets line, and which side of it each thing sits ----------
+//
+// The spec says a workout counts toward streak, level, points and badges only
+// if at least half its sets are ticked. The app already scored short sessions,
+// and the two were reconciled deliberately rather than by overwriting one with
+// the other: points stay as they were, streak and the perfect-week bonus
+// follow the spec.
+//
+// The reasoning, so it is not quietly undone later. A score of zero for an
+// honest four-of-twelve session teaches two things, and both are bad: stay
+// home, or tick sets you did not do. A STREAK is a different promise - its
+// only value is what it means, and a number a two-set session keeps alive
+// means nothing.
+
+test("an honest short session still scores the turning-up part", () => {
+  assert.equal(H.sessionPoints(log(TODAY, 2, 12)), P.session + Math.round(P.compliance * 2 / 12));
+  assert.ok(H.sessionPoints(log(TODAY, 2, 12)) > 0,
+    "a part session scores nothing, which teaches people not to log one");
+});
+
+test("but it does not extend the streak", () => {
+  // Trained Monday and Tuesday properly, two sets on Wednesday.
+  const logs = [log("2026-06-15", 12, 12), log("2026-06-16", 12, 12)];
+  assert.equal(H.computeStreak(logs, "2026-06-17", false), 2,
+    "a part session extended the streak to three");
+  assert.equal(H.computeStreak(logs, "2026-06-17", true), 3,
+    "a full session today failed to extend it");
+});
+
+test("a part session in the middle breaks the run rather than bridging it", () => {
+  const logs = [
+    log("2026-06-15", 12, 12),
+    log("2026-06-16", 1, 12),   // the part session
+    log("2026-06-17", 12, 12),
+  ];
+  assert.equal(H.computeStreak(logs, "2026-06-17", true), 1,
+    "Tuesday's two sets held a streak together across a day that did not count");
+});
+
+test("a stored flag overrides the arithmetic, both ways", () => {
+  // A coach editing the programme afterwards must not retroactively take away
+  // a streak somebody earned, which is why the flag is stored at all.
+  const logs = [{ date: "2026-06-15", setsCompleted: 1, setsPrescribed: 12, counts: true }];
+  assert.equal(H.computeStreak(logs, "2026-06-16", false), 1,
+    "the stored flag was ignored in favour of recomputing it");
+  const other = [{ date: "2026-06-15", setsCompleted: 12, setsPrescribed: 12, counts: false }];
+  assert.equal(H.computeStreak(other, "2026-06-16", false), 0);
+});
+
+test("logCounts reads a database row and the app's own copy alike", () => {
+  // Two shapes of the same thing. A helper that knew only one would answer
+  // "no" for the other, which here means silently wiping out a streak.
+  assert.equal(H.logCounts({ sets_completed: 6, sets_prescribed: 12 }), true);
+  assert.equal(H.logCounts({ setsCompleted: 6, setsPrescribed: 12 }), true);
+  assert.equal(H.logCounts({ setsCompleted: 5, setsPrescribed: 12 }), false);
+});
+
+test("a part session costs the week its perfect-week bonus", () => {
+  const logs = [log("2026-06-15", 12, 12), log("2026-06-16", 12, 12), log("2026-06-17", 2, 12)];
+  assert.deepEqual(H.perfectWeeks(logs, 3), [],
+    "three sessions counted as a perfect week when one of them was two sets");
+  const proper = [log("2026-06-15", 12, 12), log("2026-06-16", 12, 12), log("2026-06-17", 6, 12)];
+  assert.deepEqual(H.perfectWeeks(proper, 3), [WEEK],
+    "exactly half the sets failed to count, so the bar is really more than half");
+});
+
+test("the short session still shows up in the week's points", () => {
+  // It loses the bonus, not the session. Dropping it from the tally would
+  // make a week with a short day look like a week with a missed day.
+  const logs = [log("2026-06-15", 12, 12), log("2026-06-16", 2, 12)];
+  const totals = H.pointsTotals(logs, 3, TODAY);
+  assert.equal(totals.week.sessions, 2);
+  assert.ok(totals.week.points > MAX, "the part session scored nothing at all");
+  assert.equal(totals.week.bonuses, 0);
 });
 
 for (const [name, fn] of tests) {

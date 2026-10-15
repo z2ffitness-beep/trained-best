@@ -306,6 +306,58 @@ test("the per-set hand-set flag reaches the log in the first place", () => {
     "the per-set log entry carries no hand-set flag, so workout_sets always says false");
 });
 
+// ---------- what the athlete is told ----------
+
+test("a part session is named as one on the finish screen", () => {
+  // Saved either way. An athlete who managed two sets of a hard session has
+  // not failed at using the app, and a screen that behaves as if nothing
+  // happened is how someone decides not to open it next time.
+  const at = src.indexOf("Logged as a part session");
+  assert.ok(at > 0, "the finish screen says nothing about falling short");
+  const card = src.slice(at - 600, at + 800);
+  assert.ok(/counts === false &&/.test(card),
+    "the card shows for every session, or for none");
+  assert.ok(/It is saved either way, and your coach can see it/.test(card),
+    "it does not say the session was still saved, which is the part that matters");
+  assert.ok(/counts=\{loggedSummary\?\.counts\}/.test(src),
+    "the finish screen is never told whether the session counted");
+});
+
+test("the finish screen says nothing in em dashes", () => {
+  // House rule: no em dashes in anything the athlete reads. A lone "\u2014" used
+  // as a placeholder glyph in an empty slot is not prose and is left alone;
+  // what this looks for is the dash used as punctuation, with a space either
+  // side, which is the thing that reads as written-by-a-machine.
+  const at = src.indexOf("function SessionLoggedScreen");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  const prose = body.split("\n").filter(l => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
+  const offender = prose.find(l => / \u2014 /.test(l));
+  assert.equal(offender, undefined, `em dash in athlete-facing text: ${offender}`);
+});
+
+test("the lifting unit can also be set in My Info", () => {
+  // The spec asks for it in both places: the table header is for mid-set, My
+  // Info is for someone setting the app up.
+  const at = src.indexOf('<div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Weights</div>');
+  assert.ok(at > 0, "My Info has no weight-unit setting");
+  const block = src.slice(at, at + 1400);
+  assert.ok(/onChange=\{v => saveLiftUnit\(setState, state\.me\.id, v\)\}/.test(block),
+    "the My Info switch does not go through the one writer");
+  assert.ok(/stored in pounds and converted/.test(block),
+    "nothing tells the athlete that switching will not change a logged weight");
+});
+
+test("appearance is stored in its own column, with the old copy kept", () => {
+  // intake.theme is still written because it is what the pre-mount loader
+  // reads; a light-mode user waiting for the profile would get a black flash
+  // on every launch.
+  assert.ok(/saveThemePref\(who, mode\)/.test(src), "theme_pref is never written");
+  assert.ok(/saveProfileSetting\(setState, who, "theme", mode\)/.test(src),
+    "intake.theme stopped being written, so the launch theme will flash");
+  assert.ok(/const storedTheme = profile\.theme_pref \|\| profile\.intake\?\.theme/.test(src),
+    "the column is not read back, or does not fall back to the older copy");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }

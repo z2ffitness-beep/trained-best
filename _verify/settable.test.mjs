@@ -286,7 +286,14 @@ test("switching units converts what is already typed", () => {
     "the typed weights are not converted when the unit changes");
   assert.ok(/converted == null \? v : String\(converted\)/.test(body),
     "a half-typed number is blanked out instead of being left alone");
-  assert.ok(/unit_pref: to/.test(body), "the choice is never stored, so it resets on reload");
+  assert.ok(/saveLiftUnit\(setState, state\.me\.id, to\)/.test(body),
+    "the choice is never stored, so it resets on reload");
+  // One writer, so the switch in the table header and the one in My Info
+  // cannot drift apart.
+  assert.ok(/unit_pref: to/.test(src.slice(src.indexOf("async function saveLiftUnit"), src.indexOf("async function saveLiftUnit") + 700)),
+    "saveLiftUnit does not write the column");
+  assert.ok((src.match(/unit_pref: to/g) || []).length === 1,
+    "the lifting unit is written to the profile in more than one place");
   assert.ok(/if \(to === weightUnit\) return;/.test(body),
     "pressing the unit already selected still writes to the database");
 });

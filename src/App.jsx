@@ -1520,7 +1520,13 @@ function workoutSetRows({ logId, userId, exercises, bests = {} }) {
 // earned.
 function logCounts(logRow) {
   if (typeof logRow?.counts === "boolean") return logRow.counts;
-  return sessionCounts(logRow?.sets_completed, logRow?.sets_prescribed);
+  // A database row and the camelCase copy the app holds in state are two
+  // shapes of the same thing, and a helper that knew only one of them would
+  // quietly answer "no" for the other - which, where this is used, means
+  // silently wiping out a streak.
+  const done = logRow?.sets_completed ?? logRow?.setsCompleted;
+  const asked = logRow?.sets_prescribed ?? logRow?.setsPrescribed;
+  return sessionCounts(done, asked);
 }
 
 function exerciseHistory(exerciseName, logs) {
@@ -3473,11 +3479,28 @@ function parseRestSeconds(rest, fallback = 90) {
 
 // Consecutive days trained, counting back from `dateStr` inclusive. Derived
 // from the log history rather than incremented, so it can't drift.
-function computeStreak(logs, dateStr) {
-  const dates = new Set((logs || []).map(l => l.date));
-  dates.add(dateStr);
+// Consecutive days trained. Part sessions do not extend it.
+//
+// Under half the prescribed sets is still a day the athlete turned up for,
+// and it is still worth points - that is deliberate, because a score of zero
+// for an honest short session teaches people either to stay home or to tick
+// sets they did not do. A STREAK is a different promise. A number that a
+// two-set session keeps alive stops meaning anything, and the only value a
+// streak has is what it means.
+//
+// `todayCounts` is the session being saved right now, which is not in `logs`
+// yet. Passing it as false is how a part session finishes without extending
+// the run.
+function computeStreak(logs, dateStr, todayCounts = true) {
+  const dates = new Set((logs || []).filter(logCounts).map(l => l.date));
+  if (todayCounts) dates.add(dateStr);
   let streak = 0;
   const cursor = new Date(dateStr + "T00:00:00");
+  // A part session today has not extended the run, but it has not broken it
+  // either - yesterday still happened. Counting from today would find nothing
+  // and report zero, taking a whole streak away from someone for a session
+  // they actually turned up to, which is the opposite of the point.
+  if (!todayCounts) cursor.setDate(cursor.getDate() - 1);
   while (dates.has(toLocalISO(cursor))) {
     streak += 1;
     cursor.setDate(cursor.getDate() - 1);
@@ -4417,6 +4440,10 @@ function perfectWeeks(logs, sessionsPerWeek) {
   if (!Number.isFinite(per) || per <= 0) return [];
   const byWeek = new Map();
   for (const l of logs || []) {
+    // "Every planned workout in the week is done AND counted." A week carried
+    // by a two-set Thursday is not a perfect week, and the bonus is the one
+    // part of the score that is meant to be hard to get.
+    if (!logCounts(l)) continue;
     const start = l?.date ? weekStartFor(l.date) : null;
     if (!start) continue;
     byWeek.set(start, (byWeek.get(start) || 0) + 1);
@@ -15792,7 +15819,7 @@ function RestTimer({ seconds, restKey, onDone, alertSound }) {
 // real duration, sets completed out of prescribed, effort — and then takes the
 // athlete back to their program rather than dead-ending on a screen whose only
 // button went somewhere else entirely.
-function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, onDone }) {
+function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, counts, onDone }) {
   // A queued session gets longer on screen. It is the one case where the
   // athlete has something to read: their work is safe, but it is safe HERE,
   // and they should know that before the screen moves on.
@@ -15818,7 +15845,21 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
           <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Saved on this phone</div>
           <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
             No connection right now, so this session is stored here and will send itself the
-            moment you are back online. Nothing is lost — you don’t need to do anything.
+            moment you are back online. Nothing is lost, and you don’t need to do anything.
+          </p>
+        </div>
+      )}
+
+      {/* Saved either way. An athlete who managed two sets of a hard session
+          has not failed at using the app, and a screen that behaves as if
+          nothing happened is how someone decides not to open it next time.
+          What is withheld is the score, and the reason is stated. */}
+      {counts === false && (
+        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Logged as a part session</div>
+          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
+            You ticked {setsCompleted} of {setsPrescribed} sets, which is under half, so this one is recorded as a
+            part session rather than a full one. It is saved either way, and your coach can see it.
           </p>
         </div>
       )}
@@ -15853,7 +15894,7 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
 
       {adherence !== null && adherence < 100 && (
         <p className="text-[12.5px] mt-4 text-center" style={{ color: C.sub }}>
-          {adherence}% of the prescribed sets — your coach sees this too.
+          {adherence}% of the prescribed sets. Your coach sees this too.
         </p>
       )}
 
@@ -17135,15 +17176,11 @@ function Workout({ state, setState, nav, dayId }) {
       }
       return out;
     });
-    setState(s => ({ ...s, me: { ...s.me, unitPref: to } }));
     // Stored so the choice survives the next login. A failed write leaves the
     // screen in the new unit for this session and reverts on reload, which is
     // the mild end of wrong: the numbers on screen are right either way,
     // because they were converted above.
-    if (state.me.id) {
-      try { await supabase.from("profiles").update({ unit_pref: to }).eq("id", state.me.id); }
-      catch { /* cosmetic until the next save */ }
-    }
+    await saveLiftUnit(setState, state.me.id, to);
   };
 
   const toggleSet = (setNum, item = x) => {
@@ -17396,7 +17433,7 @@ function Workout({ state, setState, nav, dayId }) {
         // Streak was displayed everywhere and incremented nowhere. Recomputing it
         // from the log history is self-correcting: a wrong stored value repairs
         // itself on the next session rather than compounding.
-        const nextStreak = computeStreak(state.workoutLogs, dateStr);
+        const nextStreak = computeStreak(state.workoutLogs, dateStr, row.counts);
         if (nextStreak !== state.me.streak) {
           try {
             await supabase.from("profiles").update({ streak: nextStreak }).eq("id", state.me.id);
@@ -17494,6 +17531,7 @@ function Workout({ state, setState, nav, dayId }) {
         setsPrescribed={loggedSummary?.setsPrescribed}
         effort={mood}
         queued={loggedSummary?.queued}
+        counts={loggedSummary?.counts}
         onDone={() => nav.go("athlete-program")}
       />
     );
@@ -19017,6 +19055,31 @@ function LeaveCoachModal({ open, onClose, coachName, onConfirm, leaving, error }
 // Saves one key of the signed-in user's intake blob, locally and on the server.
 // Server-side jsonb_set on that key alone: a read-modify-write of the whole
 // blob can wipe every other answer if the read fails.
+// The athlete's lifting unit, changed in one place so the switch in the set
+// table's header and the one in My Info cannot drift apart. A column rather
+// than another key inside the intake blob, because it is read on nearly every
+// screen and a jsonb lookup per render is a lot of work to avoid one
+// migration.
+async function saveLiftUnit(setState, userId, next) {
+  const to = next === "kg" ? "kg" : "lb";
+  setState(s => ({ ...s, me: { ...s.me, unitPref: to } }));
+  if (!userId) return to;
+  try { await supabase.from("profiles").update({ unit_pref: to }).eq("id", userId); }
+  catch { /* the screen is already in the new unit; it stores on the next change */ }
+  return to;
+}
+
+// Appearance. The column is the record; intake.theme is written too because
+// it is what the pre-mount loader reads, and a light-mode user who had to
+// wait for the profile to arrive would get a black flash on every launch.
+async function saveThemePref(userId, mode) {
+  const to = mode === "light" || mode === "dark" ? mode : "system";
+  if (!userId) return to;
+  try { await supabase.from("profiles").update({ theme_pref: to }).eq("id", userId); }
+  catch { /* intake.theme still carries it */ }
+  return to;
+}
+
 async function saveProfileSetting(setState, userId, key, value) {
   setState(s => ({ ...s, me: { ...s.me, intake: { ...(s.me.intake || {}), [key]: value } } }));
   if (!userId) return null;
@@ -19356,7 +19419,9 @@ function ThemePicker({ state, setState }) {
     // Nothing re-renders on its own — `C` was mutated in place, so the tree has
     // to be told to paint again.
     setState(s => ({ ...s, themeTick: (s.themeTick || 0) + 1 }));
-    saveProfileSetting(setState, state.me.id || state.coachProfile?.id, "theme", mode);
+    const who = state.me.id || state.coachProfile?.id;
+    saveProfileSetting(setState, who, "theme", mode);
+    saveThemePref(who, mode);
   };
 
   const themeOptions = [
@@ -19402,12 +19467,32 @@ function AthletePreferences({ state, setState }) {
   };
 
   const timerOn = state.me.intake?.workoutTimer !== false;
+  // The unit the BAR is read in - not the one their bodyweight is in, which
+  // lives in the profile details card above and is a separate question.
+  const liftUnit = state.me.unitPref === "kg" ? "kg" : "lb";
 
   return (
     <>
       <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
       <ChangePasswordCard />
+
+      {/* Also in the set table's header, which is where it is actually
+          needed with a bar loaded. This copy is for someone setting the app
+          up rather than someone mid-set, so it has room to say the thing
+          that stops people worrying about switching. */}
+      <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Weights</div>
+      <div className="rounded-2xl p-3.5 mb-5 flex items-center gap-3" style={card()}>
+        <div className="flex-1 min-w-0">
+          <div className="text-[15px] font-semibold" style={{ color: C.text }}>Show weights in</div>
+          <div className="text-[11px] mt-0.5 leading-relaxed" style={{ color: C.sub }}>
+            Everything is stored in pounds and converted for the screen, so switching never changes
+            a weight you have already logged.
+          </div>
+        </div>
+        <UnitToggle value={liftUnit} options={["lb", "kg"]}
+          onChange={v => saveLiftUnit(setState, state.me.id, v)} />
+      </div>
 
       {/* The athlete's own switch. Turning it off means no prompt, no badge,
           and every session logged as "not timed" — which is what the coach
@@ -23092,9 +23177,12 @@ function AppInner() {
 
     // Follows the user across devices. localStorage only knows what THIS
     // browser last chose; the profile is the record that travels.
-    if (profile.intake?.theme) {
-      applyTheme(profile.intake.theme);
-      try { localStorage.setItem(THEME_KEY, profile.intake.theme); } catch { /* storage blocked */ }
+    // The column first, then the older copy inside the intake blob, so an
+    // account that predates the column keeps the appearance it already had.
+    const storedTheme = profile.theme_pref || profile.intake?.theme;
+    if (storedTheme) {
+      applyTheme(storedTheme);
+      try { localStorage.setItem(THEME_KEY, storedTheme); } catch { /* storage blocked */ }
       setState(s => ({ ...s, themeTick: (s.themeTick || 0) + 1 }));
     }
 
