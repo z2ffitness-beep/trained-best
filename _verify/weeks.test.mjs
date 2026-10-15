@@ -310,12 +310,15 @@ test("every caller drops the holes at its own site", () => {
   // Each of the three call sites, checked where it actually is - counting
   // .filter(Boolean) across the whole file passes even after one is deleted.
   const sites = [...src.matchAll(/prescribeForWeek\(/g)].map(m => m.index);
-  assert.equal(sites.length, 4, "one declaration plus three call sites");
+  assert.equal(sites.length, 5, "one declaration plus four call sites");
 
   const [, ...calls] = sites;
   calls.forEach((at) => {
     const window = src.slice(at, at + 420);
-    assert.ok(/\.filter\(Boolean\)|if \(!item\) return null;/.test(window),
+    // Three shapes of the same decision: filter the nulls out of a list,
+    // bail out of a map, or skip the iteration. What is not acceptable is
+    // reading `.sets` off a movement this week dropped.
+    assert.ok(/\.filter\(Boolean\)|if \(!item\) return null;|if \(!item \|\|/.test(window),
       "a dropped movement would leave a hole at:\n" + src.slice(at, at + 140));
   });
 

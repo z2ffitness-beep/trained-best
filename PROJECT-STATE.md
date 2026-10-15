@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1176 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1187 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -74,7 +74,7 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | 1b. Rewards screen | **Done.** Medal, points counting up, week dots, level bar, badges, new bests, See summary. Reduced motion skips the movement AND the waiting |
 | 1b. Print sheet | **Done.** One A4 page, black and white, from the home card and the Plan |
 | **Phase 1 overall** | **Complete**, except pull-forward, which Isaiah moved to the Plan rebuild |
-| Plan rebuild | **Nearly done.** `session_moves` table (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet (move, skip, do it today, train anyway, put it back), the missed card on Today, and "pulled-forward goes back". **One thing left: "I did it on Mon, log it"** - see section 8 |
+| Plan rebuild | **Done.** `session_moves` (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet, the missed card on Today, "pulled-forward goes back", and "I did it on Mon, log it" |
 | `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
 | `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
 | 1b. Points, levels, badges | Not started |
@@ -88,6 +88,15 @@ Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
 message-deletion half of that doc did ship; this half did not.
 
 ## 4b. Decisions Isaiah made on 15 Oct
+
+- **"I did it on Mon, log it" is one tap and counts for nothing.** It writes
+  a log on the day it happened with no sets and no weights, `counts: false`.
+  It buys the truth about the calendar - the session stops being missed, the
+  coach stops seeing a gap, nobody is nagged about a workout they did - and
+  nothing else. An athlete who cannot remember what they lifted has not
+  earned the same credit as one who wrote it down, and inventing numbers to
+  make the maths tidy would poison every best and every trend downstream.
+  The Plan labels it "Done, not logged" rather than plain "Done".
 
 - **The 50% rule is split.** The spec says a workout counts toward streak,
   level, points and badges only if half its sets are ticked. The app already
@@ -196,20 +205,7 @@ Three commits on `redesign-branding`, 15 Oct:
 
 ## 8. Next action
 
-**One thing left in the Plan rebuild, and it needs a decision:**
-
-**"I did it on Mon, log it."** The spec's missed card offers it; the card
-currently offers Do it today / Move it / Let it go. What should it record?
-
-- *A bare adherence tick* - a log on that date with no sets behind it. One
-  tap, honest about the date, but it carries no weights, so it counts for
-  nothing under the 50% rule and leaves a hole in strength history.
-- *The workout screen with the date pinned back* - they type in what they
-  actually did and it logs against Monday. More taps, real numbers. Needs
-  the workout screen to accept a date other than today, which it currently
-  assumes everywhere.
-
-Then:
+**Phase 1 and the Plan rebuild are both complete.** What is left:
 
 1. **Phase 2: signup in 5 steps**, three paths. No migration.
 2. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
@@ -221,9 +217,12 @@ Then:
 
 Stripe stays out.
 
-Also worth doing once phase 1's work has been seen running: the **Caught
-Up** badge can become the spec's **Comeback**, now that "missed" is a real
-concept rather than an approximation.
+Two small things worth doing once this has been seen running:
 
-Run `sh _verify/run.sh` before every commit. It was 1176/1176 on 15 Oct.
+- The **Caught Up** badge can become the spec's **Comeback**, now that
+  "missed" is a real concept rather than an approximation of one.
+- Delete the root `chat.js` once the 404 fallback has been seen working in
+  production.
+
+Run `sh _verify/run.sh` before every commit. It was 1187/1187 on 15 Oct.
 Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`

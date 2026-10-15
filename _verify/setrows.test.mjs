@@ -253,9 +253,12 @@ test("the save path still works out prior bests", () => {
 test("the rows are built before anything is sent", () => {
   // A session with no signal is queued. Building the rows after the insert
   // means a queued session reaches the server with no set rows behind it.
-  const buildAt = src.indexOf("const setRows = workoutSetRows({");
-  const insertAt = src.indexOf('await supabase.from("workout_logs").insert(row)');
-  assert.ok(buildAt > 0 && insertAt > 0);
+  // Inside finishWorkout, not anywhere in the file: logSessionAsDone also
+  // inserts a workout_logs row, and it sits earlier.
+  const finish = src.slice(src.indexOf("const finishWorkout = async () => {"));
+  const buildAt = finish.indexOf("const setRows = workoutSetRows({");
+  const insertAt = finish.indexOf('await supabase.from("workout_logs").insert(row)');
+  assert.ok(buildAt > 0 && insertAt > 0, "the save path has moved");
   assert.ok(buildAt < insertAt, "the set rows are built after the log is sent");
 });
 

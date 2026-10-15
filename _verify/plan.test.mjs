@@ -27,7 +27,9 @@ const H = await load(APP, [
   "sessionKey", "sessionIdentity",
   { name: "PLAN_STATUS", kind: "const" },
   "moveFor", "logFor", "planForWeek", "weekProgress", "missedSessions",
-  "pullToUndo",
+  "pullToUndo", "isTickedOffLog", "planLabel",
+  { name: "COUNTS_THRESHOLD", kind: "const" }, "sessionCounts", "logCounts",
+  "isTrackedPhase", "isTrackedExercise", { name: "UNTRACKED_PHASES", kind: "const" },
 ]);
 
 const src = (await import("node:fs")).readFileSync(APP, "utf8");
@@ -621,6 +623,112 @@ test("the missed list is recomputed when anything it reads changes", () => {
   for (const dep of ["state.workoutLogs", "state.sessionMoves", "today"]) {
     assert.ok(deps.includes(dep), `${dep} is not a dependency, so the card goes stale`);
   }
+});
+
+// ---------- "I did it on Monday, log it" ----------
+//
+// One tap, deliberately thin. It records that the session happened, on the
+// day it happened, and nothing else. No sets and no weights, so it does not
+// count toward the streak, the level or the points: an athlete who cannot
+// remember what they lifted has not earned the same credit as one who wrote
+// it down, and inventing numbers to make the maths tidy would poison every
+// best and every trend downstream of it.
+
+const ticked = (date, programDay, prescribed = 12) =>
+  ({ date, programDay, setsCompleted: 0, setsPrescribed: prescribed, counts: false, exercises: [] });
+
+test("a ticked-off session is told apart from a trained one", () => {
+  assert.equal(H.isTickedOffLog(ticked(MON, "Day 1 \u2014 Lower")), true);
+  assert.equal(H.isTickedOffLog(log(MON, "Day 1 \u2014 Lower")), false,
+    "a real session was mistaken for a tick");
+  assert.equal(H.isTickedOffLog(null), false);
+});
+
+test("a session with nothing prescribed is not a tick either", () => {
+  // "0 of 0" is an extra session somebody added, not a missed one caught up.
+  assert.equal(H.isTickedOffLog({ setsCompleted: 0, setsPrescribed: 0, exercises: [] }), false);
+});
+
+test("a session with sets logged but a count of zero is not a tick", () => {
+  // Defensive: if the detail is there, it was trained.
+  assert.equal(H.isTickedOffLog({
+    setsCompleted: 0, setsPrescribed: 12,
+    exercises: [{ name: "Back Squat", sets: [{ set: 1, done: false }] }],
+  }), false);
+});
+
+test("it reads as done on the plan, and says it was not logged", () => {
+  const rows = week({ logs: [ticked(MON, "Day 1 \u2014 Lower")] });
+  const session = row(rows, 0).sessions[0];
+  assert.equal(session.status, "done", "a ticked-off session still reads as missed");
+  assert.equal(H.planLabel(session), "Done, not logged",
+    "it reads as a plain Done, which next to no numbers at all looks like a bug");
+});
+
+test("a trained session still just says Done", () => {
+  const rows = week({ logs: [log(MON, "Day 1 \u2014 Lower")] });
+  assert.equal(H.planLabel(row(rows, 0).sessions[0]), "Done");
+});
+
+test("it stops the session being chased", () => {
+  const list = H.missedSessions({ program, logs: [ticked(MON, "Day 1 \u2014 Lower")], moves: [], today: TODAY });
+  assert.equal(list.some(x => x.date === MON), false,
+    "the athlete said they did it and the card is still asking about it");
+});
+
+test("it counts for nothing", () => {
+  // The whole bargain. It buys the truth about the calendar and nothing else.
+  assert.equal(H.logCounts(ticked(MON, "Day 1 \u2014 Lower")), false);
+  const rows = week({ logs: [ticked(MON, "Day 1 \u2014 Lower")] });
+  assert.equal(H.weekProgress(rows).done, 1, "the week's ring ignores it entirely");
+});
+
+test("the row it writes carries no numbers and says so", () => {
+  const at = src.indexOf("async function logSessionAsDone(");
+  assert.ok(at > 0, "logSessionAsDone is gone");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  // The row that goes to the database, and the local copy beside it, are
+  // checked separately. They say the same thing twice, and a test that
+  // matches either one passes while the other is wrong.
+  const dbRow = body.slice(body.indexOf("const row = {"), body.indexOf("};", body.indexOf("const row = {")));
+  const localRow = body.slice(body.indexOf("const local = {"), body.indexOf("};", body.indexOf("const local = {")));
+  for (const [what, row] of [["the database row", dbRow], ["the local copy", localRow]]) {
+    assert.ok(/sets_?[cC]ompleted: 0/.test(row), `${what} claims sets were completed`);
+    assert.ok(/counts: false/.test(row), `${what} leaves the flag null or true`);
+    assert.ok(/exercises: \[\]/.test(row), `${what} invents exercise detail`);
+    assert.ok(/sets_?[pP]rescribed: prescribed/.test(row),
+      `${what} records 0 of 0, which reads as a session that asked for nothing`);
+    assert.ok(/\bdate\b/.test(row), `${what} does not carry the day it was done`);
+  }
+  assert.ok(!/todayISO\(\)/.test(body), "it logs against today rather than the day it was done");
+});
+
+test("a tick on a bad connection is queued, not lost", () => {
+  // An athlete who has already stopped expecting to be asked about it will
+  // not notice it vanish.
+  const at = src.indexOf("async function logSessionAsDone(");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.equal((body.match(/queuePendingLog\(/g) || []).length, 2,
+    "only one of the two failure paths queues the tick");
+  assert.ok(/isTransientError/.test(body), "a permanent rejection is queued and retried for ever");
+});
+
+test("what was prescribed is counted the same way the save path counts it", () => {
+  // Otherwise a ticked session says 0 of 18 and a trained one 0 of 12, for
+  // the same Monday.
+  const at = src.indexOf("function prescribedSetCount(");
+  assert.ok(at > 0, "prescribedSetCount is gone");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/prescribeForWeek\(raw, plan, week, weekly\)/.test(body),
+    "it reads the programme's baseline rather than the week's prescription");
+  assert.ok(/isTrackedExercise\(item\)/.test(body),
+    "warm-ups are counted, so the target is higher than the one the save path uses");
+});
+
+test("the button names the day it is logging against", () => {
+  // "Log it" alone invites "log what, when".
+  assert.ok(/I did it on \{new Date\(`\$\{item\.date\}T00:00:00`\)\.toLocaleDateString\("en-US", \{ weekday: "short" \}\)\}, log it/.test(src),
+    "the missed card has no way to say the session already happened");
 });
 
 for (const [name, fn] of tests) {

@@ -4874,6 +4874,52 @@ function pullToUndo(moves, programDay, dateIso) {
 // move is a small, reversible thing and the athlete is standing in a gym;
 // a spinner on "move this to Thursday" buys nothing, and a failure leaves
 // the week as it was on the next load rather than losing anything.
+// "I did it on Monday, log it."
+//
+// One tap, and deliberately thin: it records that the session happened, on
+// the day it happened, and nothing else. No sets and no weights, so it does
+// not count toward the streak, the level or the points - which is right. An
+// athlete who cannot remember what they lifted has not earned the same
+// credit as one who wrote it down, and inventing numbers to make the maths
+// tidy would poison every best and every trend downstream of it.
+//
+// What it does buy is the truth about the calendar: the session stops being
+// missed, the coach stops seeing a gap, and nobody is nagged about a workout
+// they actually did.
+async function logSessionAsDone({ setState, userId, day, program, date, week }) {
+  if (!day?.name || !date) return;
+  const prescribed = prescribedSetCount(day, program, week);
+  const id = clientId();
+  const row = {
+    id, user_id: userId, date, program_day: day.name,
+    duration: null, timed_seconds: null, mood: null,
+    sets_completed: 0, sets_prescribed: prescribed,
+    // Under half of anything is under half. Stored rather than left null so
+    // it reads the same way everywhere, today and in a year.
+    counts: false,
+    exercises: [], notes: null,
+  };
+  const local = {
+    id, date, programDay: day.name, duration: null, timedSeconds: null, mood: null,
+    setsCompleted: 0, setsPrescribed: prescribed, counts: false, notes: null, exercises: [],
+  };
+  setState(s => ({ ...s, workoutLogs: [local, ...s.workoutLogs] }));
+  if (!userId) return;
+  try {
+    const { error } = await supabase.from("workout_logs").insert(row);
+    // Queued on a bad connection like any other session. A tick that
+    // vanishes on the next reload is worse than no tick at all: the athlete
+    // has already stopped expecting to be asked about it.
+    if (error && isTransientError(error)) {
+      queuePendingLog({ row, meta: { dayName: day.name, date, setsCompleted: 0, setsPrescribed: prescribed } });
+    }
+  } catch (err) {
+    if (isTransientError(err)) {
+      queuePendingLog({ row, meta: { dayName: day.name, date, setsCompleted: 0, setsPrescribed: prescribed } });
+    }
+  }
+}
+
 async function saveSessionMove(setState, userId, row) {
   const next = {
     programDay: row.programDay,
@@ -4909,6 +4955,37 @@ async function clearSessionMove(setState, userId, programDay, fromDate) {
     await supabase.from("session_moves").delete()
       .eq("user_id", userId).eq("program_day", programDay).eq("from_date", fromDate);
   } catch { /* it reappears on the next load, which is the safe direction */ }
+}
+
+// How many sets a session asks for in a given week.
+//
+// The same arithmetic the save path does, pulled out so that a session which
+// was ticked off rather than trained still records what it WOULD have been
+// measured against. Without it the row says "0 of 0", which reads as a
+// session that asked for nothing.
+function prescribedSetCount(day, program, week) {
+  const plan = buildProgramPlan(program?.weeks);
+  const weekly = programHasWeeklyPlan(program);
+  let total = 0;
+  for (const raw of day?.exercises || []) {
+    const item = prescribeForWeek(raw, plan, week, weekly);
+    if (!item || !isTrackedExercise(item)) continue;
+    total += Number(item.sets) || 0;
+  }
+  return total;
+}
+
+// A session that was ticked off rather than trained: logged on the right
+// day, with nothing in it.
+//
+// Worth telling apart on screen. "Done" next to no numbers at all reads as a
+// bug, and a coach scanning the week needs to know the difference between
+// "they trained and wrote it down" and "they say they trained".
+function isTickedOffLog(log) {
+  if (!log) return false;
+  return Number(log.setsCompleted) === 0
+    && !(log.exercises || []).length
+    && Number(log.setsPrescribed) > 0;
 }
 
 function complianceBaseline(logs) {
@@ -14626,6 +14703,16 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
                       const target = (myProgram?.days || []).find(d => d.name === item.day.name);
                       if (target) nav.go("athlete-workout", target.id);
                     }}>Do it today</Btn>
+                  {/* The wording from the design, with the real weekday in
+                      it. "Log it" on its own invites the question "log what,
+                      when" - naming the day answers both. */}
+                  <Btn size="sm" variant="secondary"
+                    onClick={() => logSessionAsDone({
+                      setState, userId: state.me.id, day: item.day, program: myProgram,
+                      date: item.date, week: programWeekFor(myProgram, item.date) || 1,
+                    })}>
+                    I did it on {new Date(`${item.date}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })}, log it
+                  </Btn>
                   <Btn size="sm" variant="ghost" onClick={() => nav.go("athlete-program")}>Move it</Btn>
                   <Btn size="sm" variant="danger"
                     onClick={() => saveSessionMove(setState, state.me.id, {
@@ -15460,6 +15547,9 @@ function planLabel(session) {
     return to ? `Moved → ${to}` : "Moved";
   }
   if (session.status === "extra") return "Extra";
+  // Done, but with nothing in it. Saying only "Done" next to no numbers at
+  // all reads as a bug, and hides the difference a coach needs to see.
+  if (session.status === "done" && isTickedOffLog(session.log)) return "Done, not logged";
   return PLAN_STATUS[session.status] || "";
 }
 
