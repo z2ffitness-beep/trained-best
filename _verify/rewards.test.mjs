@@ -572,6 +572,107 @@ test("both panels are actually on the profile, with the programme's week", () =>
     "the wall is not given the programme, so Week One and Caught Up can never be earned");
 });
 
+// ---------- the session on paper ----------
+//
+// Not a nicety. A phone in a chalked-up hand, in a gym with no signal, is a
+// phone that does not get used - and an athlete who cannot log a session is
+// an athlete the coach cannot see.
+
+const sheet = (() => {
+  const at = src.indexOf("function PrintSheet(");
+  assert.ok(at > 0, "there is no print sheet");
+  return src.slice(at, src.indexOf("\nfunction SessionLoggedScreen", at));
+})();
+
+test("the sheet carries everything the design asks for", () => {
+  assert.ok(/Start <span/.test(sheet) && /Finish <span/.test(sheet), "no start and finish lines");
+  assert.ok(/CHECKIN_SCALES\.map/.test(sheet), "the check-in is not on the sheet");
+  assert.ok(/CHECKIN_SCALE_MAX/.test(sheet), "the check-in scale length is hard-coded rather than read");
+  assert.ok(/EFFORT_LEVELS\.map/.test(sheet), "there is nowhere to say how hard it was");
+  assert.ok(/Notes/.test(sheet), "there is nowhere to write notes");
+  assert.ok(/Type it in later/.test(sheet), "nothing explains how to get the numbers back into the app");
+});
+
+test("every set gets an empty reps box and an empty weight box", () => {
+  assert.ok(/Array\.from\(\{ length: Math\.max\(0, Number\(x\.sets\) \|\| 0\) \}\)/.test(sheet),
+    "the boxes are not drawn one per prescribed set");
+  assert.ok(/>reps<\/span>/.test(sheet) && /<span>weight<\/span>/.test(sheet),
+    "the boxes are not labelled, so there is no telling which is which");
+  assert.ok(/target \{x\.reps\} reps/.test(sheet), "the target reps are not printed in small print");
+});
+
+test("the photos are black and white, and small", () => {
+  // A colour photo costs ink and tells the athlete nothing a grey one does
+  // not.
+  assert.ok(/filter: "grayscale\(1\)/.test(sheet), "the demonstration photos print in colour");
+  assert.ok(/width: 46, height: 46/.test(sheet), "the photos are not thumbnail sized");
+});
+
+test("the effort options are separate elements, not one padded string", () => {
+  // HTML collapses runs of whitespace. Padded with spaces it prints as
+  // "Hard Moderate Easy" with nothing to circle between them.
+  const at = sheet.indexOf("How hard was it?");
+  assert.ok(at > 0, "the effort question is gone");
+  const row = sheet.slice(at, at + 500);
+  assert.ok(!/\.join\(/.test(row), "the effort labels are joined into one padded string");
+  assert.ok(/display: "inline-flex", gap: 20/.test(row), "the effort labels have no gap between them");
+  assert.ok(/EFFORT_LEVELS\.map\(e => <span key=\{e\.key\}>\{e\.label\}<\/span>\)/.test(row),
+    "the labels are not separate elements");
+});
+
+test("the preview's own buttons never print", () => {
+  // A printed sheet with a Print button drawn on it is the detail that makes
+  // the whole thing look unfinished.
+  assert.ok(/className="tb-print-hide sticky top-0/.test(sheet),
+    "the preview toolbar is not marked as screen-only");
+  const live = readSource(path.join(here, "..", "src", "index.css"));
+  assert.ok(/\.tb-print-hide \{ display: none !important; \}/.test(live),
+    "nothing hides the toolbar when printing");
+});
+
+test("printing hides the app by visibility, not by display", () => {
+  // Hiding by display collapses the layout and takes the sheet's own
+  // ancestors with it, so the sheet lands a third of the way down page two.
+  const live = readSource(path.join(here, "..", "src", "index.css"));
+  const at = live.indexOf("@media print");
+  assert.ok(at > 0, "there is no print stylesheet");
+  const block = live.slice(at, at + 900);
+  assert.ok(/body \* \{ visibility: hidden !important; \}/.test(block),
+    "the rest of the app is hidden some other way");
+  assert.ok(/\.tb-print, \.tb-print \* \{ visibility: visible !important; \}/.test(block),
+    "the sheet itself is never made visible again");
+  assert.ok(/break-inside: avoid/.test(block),
+    "an exercise can be split across two pages");
+});
+
+test("the sheet is offered from both places an athlete would look", () => {
+  assert.ok(/Printer size=\{14\} \/> Print it for the gym/.test(src),
+    "the home screen's workout card does not offer a sheet");
+  assert.ok(/aria-label="Print this session"/.test(src),
+    "the Plan's session header does not offer a sheet");
+  assert.equal((src.match(/<PrintSheet/g) || []).length, 2,
+    "the sheet is wired up in a different number of places than the buttons that open it");
+});
+
+test("the Plan prints this week's prescription, not the baseline", () => {
+  // A deload week printed at full load is a sheet that tells the athlete to
+  // ignore the week they are in.
+  assert.ok(/exercises=\{printableExercises\(weekExercises, state\.exercises\)\}/.test(src),
+    "the Plan's sheet prints the programme's baseline rather than this week");
+});
+
+test("names are resolved once, for both screens", () => {
+  // The home screen holds the day straight off the programme and the Plan
+  // holds this week's prescription. The sheet should not have to know which
+  // it was handed.
+  const at = src.indexOf("function printableExercises(");
+  assert.ok(at > 0, "printableExercises is gone");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/e\.id === x\?\.exerciseId/.test(body), "the exercise name is never looked up");
+  assert.ok(/\|\| x\?\.name \|\| "Exercise"/.test(body),
+    "a movement the library has lost prints as nothing at all");
+});
+
 // ---------- the stylesheet that is actually built ----------
 
 test("the animations live in the stylesheet that is built", () => {

@@ -217,3 +217,34 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
   }
   .rw-bar > i { transition: none !important; }
 }
+
+/* ---------- the printed session sheet ---------- */
+/*
+   Everything on the page is hidden and the sheet is made visible again,
+   rather than the sheet being moved into a print-only container. The app is
+   one deeply nested tree and the sheet is rendered where it belongs in it;
+   walking up that tree to hide each ancestor's siblings is the version of
+   this that breaks the first time a wrapper is added.
+
+   `visibility`, not `display`. Hiding by display collapses the layout and
+   takes the sheet's own ancestors with it, so the sheet lands wherever the
+   collapse leaves it - usually a third of the way down page two.
+*/
+@media print {
+  html, body { background: #fff !important; }
+  body * { visibility: hidden !important; }
+  .tb-print, .tb-print * { visibility: visible !important; }
+  .tb-print {
+    position: absolute !important;
+    left: 0 !important; top: 0 !important; right: 0 !important;
+    width: 100% !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  /* The preview's own furniture - the Print and Close buttons - is on screen
+     only. Printing a sheet with a Print button drawn on it is the detail
+     that makes the whole thing look unfinished. */
+  .tb-print-hide { display: none !important; }
+  .tb-print-break { break-inside: avoid; page-break-inside: avoid; }
+  @page { margin: 12mm; }
+}

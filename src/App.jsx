@@ -8,7 +8,7 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone, Minus
+  Moon, Leaf, Heart, Phone, Minus, Printer
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -14156,6 +14156,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   // something.
   const [pausedTick, setPausedTick] = useState(0);
   const [confirmDrop, setConfirmDrop] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const pausedWorkout = useMemo(
     () => pausedWorkoutToShow(state.me.id, today),
     [state.me.id, today, pausedTick],
@@ -14421,6 +14422,15 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
                     }}>
                     <Play size={16} fill="#fff" /> Start Workout
                   </button>
+                  <button onClick={() => setPrintOpen(true)}
+                    style={{
+                      width: "100%", marginTop: 8, height: 42, borderRadius: 999,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7,
+                      fontWeight: 700, fontSize: 13, color: HERO.text,
+                      background: "transparent", border: `1px solid ${HERO.line}`,
+                    }}>
+                    <Printer size={14} /> Print it for the gym
+                  </button>
                 </div>
                 {leadPhoto && (
                   <div aria-hidden style={{
@@ -14524,6 +14534,15 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
         <div style={wideHome ? { minWidth: 0, display: "flex", flexDirection: "column", gap: 20 } : undefined}>
         <CheckinRings progress={state.progress} onOpen={() => nav.go("athlete-progress")} />
+        {printOpen && todayDay && (
+          <PrintSheet
+            day={todayDay}
+            exercises={printableExercises(todayDay.exercises, state.exercises)}
+            programName={myProgram?.name}
+            week={myProgram ? programWeekFor(myProgram, today) : null}
+            athleteName={state.me.name}
+            onClose={() => setPrintOpen(false)} />
+        )}
 
         <div className="text-[19px] mt-6 mb-3" style={{ fontFamily: DISPLAY, fontWeight: 700, letterSpacing: "-.02em", color: C.text }}>Quick Access</div>
         <div className="grid grid-cols-2 gap-3 mb-6">
@@ -15158,6 +15177,11 @@ function ProgramTimeline({ program }) {
 function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
+  // Up here with the other hooks, not down beside the day it prints. React
+  // counts hooks per render; this screen returns early when there is no
+  // programme yet, and a useState below that point runs on some renders and
+  // not others - the "Rendered fewer hooks than expected" crash.
+  const [printOpen, setPrintOpen] = useState(false);
   // Which block and which week of it are on screen. Opens on wherever the
   // athlete actually is, so the page answers "what am I doing now" before it
   // offers "what does the rest of the program look like".
@@ -15809,6 +15833,14 @@ function AthleteProgram({ state, setState, nav }) {
                 {canEdit && (
                   <button onClick={() => setDeleteTarget(day)} aria-label="Delete session" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
                 )}
+                {/* A phone in a chalked-up hand, in a gym with no signal, is
+                    a phone that does not get used. The sheet keeps the
+                    session recoverable: write it down, type it in after. */}
+                <button onClick={() => setPrintOpen(true)} aria-label="Print this session"
+                  className="inline-flex items-center gap-1.5 rounded-full px-3 py-2.5 font-semibold text-[12.5px]"
+                  style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.sub }}>
+                  <Printer size={14} /> Print
+                </button>
                 <button onClick={() => nav.go("athlete-workout", day.id)} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-[15px]" style={{ background: C.orange, color: "#fff" }}>
                   <Play size={14} fill="#fff" /> Start
                 </button>
@@ -15926,6 +15958,19 @@ function AthleteProgram({ state, setState, nav }) {
         }} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
+
+      {printOpen && day && (
+        <PrintSheet
+          day={day}
+          /* This week's prescription, not the programme's baseline. A deload
+             week printed at full load is a sheet that tells the athlete to
+             ignore the week they are in. */
+          exercises={printableExercises(weekExercises, state.exercises)}
+          programName={myProgram?.name}
+          week={shownWeek}
+          athleteName={state.me.name}
+          onClose={() => setPrintOpen(false)} />
+      )}
       <DeleteSegmentModal
         open={!!segmentTarget}
         onClose={() => setSegmentTarget(null)}
@@ -16263,6 +16308,127 @@ function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, o
       <Btn className="mt-8" variant={finished ? "primary" : "ghost"} onClick={onDone}>
         {finished ? "See summary" : "Skip"}
       </Btn>
+    </div>
+  );
+}
+
+// The session on paper.
+//
+// Not a nicety. A phone in a chalked-up hand, in a gym with no signal, is a
+// phone that does not get used - and an athlete who cannot log a session is
+// an athlete the coach cannot see. A sheet costs nothing and keeps the
+// session recoverable: write it down, type it in afterwards.
+//
+// Printed black on white rather than in the app's colours. A dark theme sent
+// to a printer is either an empty page or a cartridge.
+// The session as a flat list of printable rows. Resolved here rather than
+// inside the sheet, because the two screens that offer one hold their
+// exercises in different shapes - the home screen has the day straight off
+// the programme, the Plan has this week's prescription - and the sheet
+// should not have to know which it was handed.
+function printableExercises(entries, allExercises) {
+  return (entries || []).map((x, i) => ({
+    id: x?.id || `x${i}`,
+    name: (allExercises || []).find(e => e.id === x?.exerciseId)?.name || x?.name || "Exercise",
+    sets: x?.sets,
+    reps: x?.reps,
+    rest: x?.rest,
+  }));
+}
+
+function PrintSheet({ day, exercises, programName, week, athleteName, onClose }) {
+  const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const line = { borderBottom: "1px solid #000", display: "inline-block", minWidth: 120 };
+  const box = { border: "1px solid #666", width: 46, height: 22, display: "inline-block", marginRight: 6, borderRadius: 3 };
+
+  return (
+    <div className="fixed inset-0 overflow-auto" style={{ background: "#fff", zIndex: 90 }}>
+      <div className="tb-print-hide sticky top-0 flex items-center gap-2 px-4 py-3"
+        style={{ background: "#fff", borderBottom: "1px solid #ddd" }}>
+        <Btn size="sm" variant="primary" icon={Printer} onClick={() => window.print()}>Print</Btn>
+        <Btn size="sm" variant="ghost" onClick={onClose}>Close</Btn>
+        <span className="text-[12.5px] ml-auto" style={{ color: "#666" }}>One page, black and white</span>
+      </div>
+
+      <div className="tb-print" style={{ color: "#000", padding: "18px 20px", fontSize: 12, lineHeight: 1.35 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "2px solid #000", paddingBottom: 6 }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{day?.name || "Session"}</div>
+            <div style={{ fontSize: 11, color: "#444" }}>
+              {athleteName ? `${athleteName} · ` : ""}{programName || "Training"}{week ? ` · Week ${week}` : ""}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, textAlign: "right" }}>
+            <div>{dateLabel}</div>
+            <div style={{ marginTop: 4 }}>Start <span style={{ ...line, minWidth: 54 }} /> Finish <span style={{ ...line, minWidth: 54 }} /></div>
+          </div>
+        </div>
+
+        {/* The check-in, to circle. Four scales, the same four the app asks
+            for, so what gets typed in afterwards lines up with what was
+            written down. */}
+        <div className="tb-print-break" style={{ marginTop: 10, border: "1px solid #999", borderRadius: 4, padding: "6px 8px" }}>
+          <div style={{ fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>Before you start, circle one</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 16px", marginTop: 4 }}>
+            {CHECKIN_SCALES.map(scale => (
+              <div key={scale.key} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{ width: 86, fontSize: 11 }}>{scale.label}</span>
+                <span style={{ fontSize: 11, letterSpacing: 3 }}>
+                  {Array.from({ length: CHECKIN_SCALE_MAX }, (_, i) => i + 1).join("  ")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {(exercises || []).map((x, i) => (
+          <div key={x.id || i} className="tb-print-break"
+            style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderBottom: "1px solid #ddd" }}>
+            {/* Grayscale, and small. A colour photo costs ink and tells the
+                athlete nothing a black and white one does not. */}
+            <div style={{ width: 46, height: 46, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden", flexShrink: 0, background: "#f4f4f4" }}>
+              {exerciseImage(x.name) && (
+                <img src={exerciseImage(x.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(1) contrast(1.1)" }} />
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{x.name}</div>
+              <div style={{ fontSize: 10, color: "#555" }}>
+                {x.sets} {x.sets === 1 ? "set" : "sets"} · target {x.reps} reps{x.rest ? ` · rest ${x.rest}` : ""}
+              </div>
+              <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
+                {Array.from({ length: Math.max(0, Number(x.sets) || 0) }).map((_, n) => (
+                  <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, color: "#555" }}>
+                    <span style={{ width: 12 }}>{n + 1}</span>
+                    <span style={box} /><span style={{ marginRight: 8 }}>reps</span>
+                    <span style={box} /><span>weight</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <div className="tb-print-break" style={{ marginTop: 10, display: "flex", gap: 18, alignItems: "baseline" }}>
+          <span style={{ fontWeight: 700, fontSize: 11 }}>How hard was it?</span>
+          {/* Separate spans with a gap, not one string padded with spaces.
+              HTML collapses runs of whitespace, so the padded version prints
+              as "Hard Moderate Easy" with nothing to circle between them. */}
+          <span style={{ display: "inline-flex", gap: 20, fontSize: 11 }}>
+            {EFFORT_LEVELS.map(e => <span key={e.key}>{e.label}</span>)}
+          </span>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 11 }}>
+          Notes
+          <div style={{ borderBottom: "1px solid #999", height: 16, marginTop: 2 }} />
+          <div style={{ borderBottom: "1px solid #999", height: 16 }} />
+        </div>
+
+        <div style={{ marginTop: 12, paddingTop: 6, borderTop: "1px solid #000", fontSize: 10, color: "#444" }}>
+          Type it in later: open the app, start this session, and put each set's reps and weight
+          into the boxes. Tick each set as you enter it so the totals match what you wrote here.
+        </div>
+      </div>
     </div>
   );
 }
