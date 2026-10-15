@@ -1402,6 +1402,127 @@ function stepWeight(current, direction, unit, fallback = null) {
   return Math.max(0, Math.round((typed + direction * step) * 10) / 10);
 }
 
+// Did this session count?
+//
+// Half the prescribed sets, ticked. Below that it still saves - an hour of
+// someone's work is never thrown away for missing a threshold - but it does
+// not feed the streak, the level, the points or the badges, because a run of
+// two-set sessions is not a training streak and a number that says otherwise
+// is worth nothing to the athlete reading it.
+//
+// A session with nothing prescribed is an extra the athlete added
+// themselves. There is no bar to clear, so doing anything at all clears it.
+const COUNTS_THRESHOLD = 0.5;
+
+function sessionCounts(setsCompleted, setsPrescribed) {
+  const done = Number(setsCompleted) || 0;
+  const asked = Number(setsPrescribed) || 0;
+  if (asked <= 0) return done > 0;
+  return done / asked >= COUNTS_THRESHOLD;
+}
+
+// The standing best on a movement before today: the heaviest ticked set in
+// pounds, and the most reps ever done AT that weight. Both numbers, because
+// the same weight for more reps is progress and the app has to be able to
+// say so rather than going quiet on a session that was genuinely better.
+//
+// Pounds throughout. History can hold both units for the same lift once
+// someone changes their setting, and comparing the bare numbers ranks a
+// 110 kg squat below a 225 lb one.
+function priorBest(exerciseName, logs) {
+  if (!exerciseName) return null;
+  const key = String(exerciseName).toLowerCase();
+  let weightLb = null;
+  let reps = null;
+  for (const log of logs || []) {
+    const match = (log?.exercises || []).find(e => String(e?.name || "").toLowerCase() === key);
+    for (const entry of match?.sets || []) {
+      if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+      const lb = convertWeight(entry.weight, entry.unit || "lb", "lb");
+      if (lb == null) continue;
+      if (weightLb == null || lb > weightLb) {
+        weightLb = lb;
+        reps = typeof entry.reps === "number" ? entry.reps : null;
+      } else if (lb === weightLb && typeof entry.reps === "number" && (reps == null || entry.reps > reps)) {
+        reps = entry.reps;
+      }
+    }
+  }
+  return weightLb == null ? null : { weightLb, reps };
+}
+
+// Heavier than the standing best, or the same weight for more reps. The
+// first loaded set of a movement is a best by definition - there is nothing
+// behind it to beat.
+function beatsBest(weightLb, reps, best) {
+  if (weightLb == null) return false;
+  if (!best || best.weightLb == null) return true;
+  if (weightLb > best.weightLb) return true;
+  if (weightLb < best.weightLb) return false;
+  return typeof reps === "number" && typeof best.reps === "number" && reps > best.reps;
+}
+
+// One database row per prescribed set, in pounds.
+//
+// The log's own jsonb keeps the session as it was typed, which is the honest
+// record and the wrong shape for every question worth asking: what has this
+// athlete done on this movement, is it going up, which set was the best one.
+// Answering any of those from jsonb means reading every session they have
+// ever logged and unpacking it. These rows are the same numbers in a form
+// Postgres can index.
+//
+// Warm-ups and cool-downs write nothing. They are recorded as done or not on
+// the log itself, and giving them set rows would put them into strength
+// history as zero-weight lifts.
+function workoutSetRows({ logId, userId, exercises, bests = {} }) {
+  const rows = [];
+  for (const ex of exercises || []) {
+    if (!ex || ex.tracked === false) continue;
+    const best = bests[String(ex.name || "").toLowerCase()] || null;
+    const beaten = [];
+    for (const entry of ex.sets || []) {
+      const weightLb = entry.weight == null
+        ? null
+        : convertWeight(entry.weight, entry.unit || "lb", "lb");
+      const row = {
+        log_id: logId,
+        user_id: userId,
+        exercise_name: ex.name,
+        set_number: entry.set,
+        reps: typeof entry.reps === "number" ? entry.reps : null,
+        weight_lb: weightLb,
+        done: entry.done === true,
+        // Typed into this set on purpose rather than filled down from the
+        // set above. A coach reading the history can tell a deliberate drop
+        // set from a copied number.
+        manually_set: entry.manual === true,
+        is_pr: false,
+      };
+      rows.push(row);
+      // Ticked sets only. A weight typed into a set that was then failed and
+      // left unticked is an ambition, not a personal best.
+      if (wasLifted(entry) && beatsBest(weightLb, row.reps, best)) beaten.push(row);
+    }
+    // One flag per movement per session. Three sets that all clear an old
+    // best are one new best, not three; flagging each would hand the rewards
+    // screen three medals for one achievement.
+    if (beaten.length) {
+      beaten.sort((a, b) => (b.weight_lb - a.weight_lb) || ((b.reps || 0) - (a.reps || 0)));
+      beaten[0].is_pr = true;
+    }
+  }
+  return rows;
+}
+
+// A stored log row's flag, worked out from the row itself when the column is
+// null. Sessions logged before the column existed have no flag, and treating
+// a missing one as "did not count" would quietly wipe out a streak somebody
+// earned.
+function logCounts(logRow) {
+  if (typeof logRow?.counts === "boolean") return logRow.counts;
+  return sessionCounts(logRow?.sets_completed, logRow?.sets_prescribed);
+}
+
 function exerciseHistory(exerciseName, logs) {
   if (!exerciseName) return [];
   const key = String(exerciseName).toLowerCase();
@@ -15948,6 +16069,16 @@ async function flushPendingLogs(userId) {
     }
     if (!landed) break;
 
+    // The per-set rows go with it. Upserted rather than inserted because a
+    // queued session can reach here twice - a duplicate key on the log counts
+    // as landed, and the sets behind it must not then fail the whole flush.
+    if (entry.setRows?.length) {
+      try {
+        await supabase.from("workout_sets")
+          .upsert(entry.setRows, { onConflict: "log_id,exercise_name,set_number" });
+      } catch { /* the log's own jsonb still holds every number */ }
+    }
+
     dropPendingLog(entry.row.id);
     sent++;
     // The coach hears about it now rather than never. Deliberately after the
@@ -16913,6 +17044,10 @@ function Workout({ state, setState, nav, dayId }) {
       const checked = setChecks[item.id] || [];
       const typed = setWeights[item.id] || [];
       const typedReps = setReps[item.id] || [];
+      // Which of these weights the athlete typed themselves, as opposed to
+      // ones the fill copied down. Carried into the log so it survives the
+      // session that produced it.
+      const typedByHand = handSet[item.id] || [];
       // One entry per prescribed set, so set 3 stays set 3 even when set 2 was
       // skipped — the position is what makes "last time" line up next session.
       const sets = Array.from({ length: item.sets || 0 }, (_, i) => {
@@ -16922,7 +17057,11 @@ function Workout({ state, setState, nav, dayId }) {
         // could only ever repeat the number that was on the bar - which is
         // the smaller half of the progress made inside a block.
         const reps = normalizeReps(typedReps[i]);
-        return { set: i + 1, done: checked.includes(i), weight, unit: weight == null ? null : weightUnit, reps };
+        return {
+          set: i + 1, done: checked.includes(i), weight,
+          unit: weight == null ? null : weightUnit, reps,
+          manual: typedByHand[i] === true,
+        };
       });
       // A warm-up or cool-down is recorded as done or not, and nothing more:
       // it is left out of the set counts so adherence measures the real work,
@@ -16979,6 +17118,12 @@ function Workout({ state, setState, nav, dayId }) {
       mood,
       sets_completed: setsCompleted,
       sets_prescribed: setsPrescribed,
+      // Half the prescribed sets or it does not feed the streak, the level,
+      // the points or the badges. Worked out here and stored, rather than
+      // recomputed wherever it is read: the prescription can change under a
+      // past session when a coach edits the program, and a session that
+      // counted in October must not stop counting in November.
+      counts: sessionCounts(setsCompleted, setsPrescribed),
       exercises: exerciseDetail,
       notes: notes.trim() || null,
     };
@@ -16994,6 +17139,17 @@ function Workout({ state, setState, nav, dayId }) {
       setSaveError("You're signed out, so this can't be saved yet. Sign back in and finish the session again \u2014 everything you've entered is still here.");
       return;
     }
+
+    // One row per set, in pounds. Built before anything is sent so a session
+    // that has to be queued carries them into the queue with it.
+    const priorBests = {};
+    for (const entry of exerciseDetail) {
+      const key = String(entry.name || "").toLowerCase();
+      if (!(key in priorBests)) priorBests[key] = priorBest(entry.name, state.workoutLogs);
+    }
+    const setRows = workoutSetRows({
+      logId: rowId, userId: state.me.id, exercises: exerciseDetail, bests: priorBests,
+    });
 
     if (state.me.id) {
       // This insert was previously never awaited. A supabase-js query builder is
@@ -17013,7 +17169,7 @@ function Workout({ state, setState, nav, dayId }) {
         // refusing the save would throw the session away. Keep it on the
         // device and send it when there is a connection; only a rejection
         // that will never succeed is worth stopping for.
-        if (isTransientError(error) && queuePendingLog({ row, meta: notice })) {
+        if (isTransientError(error) && queuePendingLog({ row, meta: notice, setRows })) {
           queued = true;
         } else {
           setSaving(false);
@@ -17023,6 +17179,16 @@ function Workout({ state, setState, nav, dayId }) {
       }
 
       if (!queued) {
+        // The per-set rows, after the log they hang off. A failure here is
+        // not worth stopping a saved session for: the same numbers are in the
+        // log's own jsonb, so nothing is lost that cannot be rebuilt.
+        if (setRows.length) {
+          try {
+            await supabase.from("workout_sets")
+              .upsert(setRows, { onConflict: "log_id,exercise_name,set_number" });
+          } catch { /* the jsonb copy is still the record */ }
+        }
+
         // The coach hears about it the moment it happens. Deliberately after the
         // insert and deliberately not awaited for success: the session is on the
         // record either way, and a failed notification must never turn a logged
@@ -17047,7 +17213,7 @@ function Workout({ state, setState, nav, dayId }) {
       workoutLogs: [
         // The server's id, not a throwaway, so the row the athlete can already
         // see is the same row that arrives when the queue drains.
-        { id: rowId, date: dateStr, programDay: day.name, duration: durationMin, timedSeconds, mood, setsCompleted, setsPrescribed, notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued },
+        { id: rowId, date: dateStr, programDay: day.name, duration: durationMin, timedSeconds, mood, setsCompleted, setsPrescribed, counts: row.counts, notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued },
         ...s.workoutLogs,
       ],
     }));
@@ -17057,7 +17223,7 @@ function Workout({ state, setState, nav, dayId }) {
     // would offer to restore a session that has already been logged.
     writeSessionTimer(null);
     clearSessionDraft(day.id, state.me.id);
-    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, queued });
+    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued });
     setSaving(false);
     setFinished(true);
   };
@@ -22810,7 +22976,7 @@ function AppInner() {
             groupId: a.group_id || null,
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
-            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [] })),
+            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })),
             checkins: checkinsByAthlete[a.id] || {},
             // mapCheckin, not a hand-written subset: the fields a check-in
             // carries are listed in exactly one place, so adding one does not
@@ -22901,7 +23067,7 @@ function AppInner() {
           next = { ...next, programs: [...next.programs, program], exercises: [...next.exercises, ...newExercises], me: { ...next.me, program: program.id } };
         }
         if (logRows?.length) {
-          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [] })) };
+          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -23052,7 +23218,7 @@ function AppInner() {
           workoutLogs: list.map(l => ({
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
-            setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [],
+            setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
           })),
         };
       }),
