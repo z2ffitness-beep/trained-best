@@ -135,14 +135,16 @@ message-deletion half of that doc did ship; this half did not.
 - **`device_commit_files` can write a stale copy** when the same
   `stagedPath` was committed earlier in a session. Use a fresh filename, or
   `force`, and check with md5sum. It silently cost a test file once.
-- **`src/index.css` is the stylesheet that is built.** `main.jsx` imports it.
-  There is a BYTE-IDENTICAL `index.css` at the repo root that nothing
-  imports or links; editing it changes nothing at all. The rewards
-  animations went in there first and did nothing. Same shape as the stale
+- **`src/index.css` is the stylesheet that is built.** `main.jsx` imports
+  it. There used to be a byte-identical `index.css` at the repo ROOT that
+  nothing imported, and the rewards animations went in there first and did
+  nothing at all. **Deleted on 15 Oct**, along with the stale
   `src/App_1.jsx`, `App_2.jsx`, `App_22.jsx`, `App_23.jsx`, `index_1.css`
-  and `index_OLD.css` sitting in `src/` - none of them are built, all of
-  them are a trap for a hand upload. Worth deleting, but that is Isaiah's
-  call, not a thing to do quietly.
+  and `index_OLD.css` - none of them were imported by anything, all of them
+  were a trap for a hand upload. `src/` now holds exactly five files:
+  `App.jsx`, `exerciseImages.js`, `index.css`, `main.jsx`,
+  `supabaseClient.js`. If a duplicate ever reappears there, it is a mistake,
+  not a backup - git is the backup.
 - **`_verify/hooks.mjs` earns its keep.** It caught a `useState` below an
   early return in `AthleteProgram` during the print-sheet work - the
   "Rendered fewer hooks than expected" crash, before it ever ran.
