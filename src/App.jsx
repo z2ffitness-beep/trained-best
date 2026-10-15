@@ -1501,7 +1501,16 @@ function workoutSetRows({ logId, userId, exercises, bests = {} }) {
       rows.push(row);
       // Ticked sets only. A weight typed into a set that was then failed and
       // left unticked is an ambition, not a personal best.
-      if (wasLifted(entry) && beatsBest(weightLb, row.reps, best)) beaten.push(row);
+      //
+      // And nothing the typo guard queried. A mistyped 1350 beats every best
+      // there has ever been, and once it is stored as one it sets the bar for
+      // every session afterwards - the athlete is told they are getting
+      // weaker for the rest of the block.
+      const others = (ex.sets || []).filter(o => o !== entry && typeof o.weight === "number")
+        .map(o => convertWeight(o.weight, o.unit || "lb", "lb"));
+      if (wasLifted(entry) && !looksLikeTypo(weightLb, others) && beatsBest(weightLb, row.reps, best)) {
+        beaten.push(row);
+      }
     }
     // One flag per movement per session. Three sets that all clear an old
     // best are one new best, not three; flagging each would hand the rewards
@@ -1527,6 +1536,27 @@ function logCounts(logRow) {
   const done = logRow?.sets_completed ?? logRow?.setsCompleted;
   const asked = logRow?.sets_prescribed ?? logRow?.setsPrescribed;
   return sessionCounts(done, asked);
+}
+
+// A number that is more than double every other set of the same movement in
+// the same session.
+//
+// Typing 1350 where 135 was meant is the commonest entry mistake there is,
+// and it poisons everything downstream of it: the athlete's best, next
+// session's suggested load, the strength trend, and the coach's read of what
+// they can handle. It is not treated as an error - plenty of real sessions
+// have one heavy single among lighter work - it is queried, and it does not
+// get to be a personal best on its own.
+//
+// Compared against the other sets rather than against history on purpose. A
+// genuine ten-pound jump is nothing like double, and someone coming back from
+// a layoff would otherwise be told every set they do is a typo.
+const TYPO_MULTIPLE = 2;
+
+function looksLikeTypo(weight, otherWeights) {
+  const others = (otherWeights || []).filter(w => typeof w === "number" && Number.isFinite(w) && w > 0);
+  if (typeof weight !== "number" || !Number.isFinite(weight) || !others.length) return false;
+  return weight > Math.max(...others) * TYPO_MULTIPLE;
 }
 
 function exerciseHistory(exerciseName, logs) {
@@ -15014,6 +15044,14 @@ function AthleteProgram({ state, setState, nav }) {
   }
 
   const day = myProgram.days[activeDayIdx];
+  // A session the athlete stopped part-way through. Read here as well as on
+  // the home screen, because the card there can be dismissed for the day and
+  // this is the screen that lists sessions - a half-finished workout that
+  // appears nowhere on it is a workout nobody finds again.
+  const pausedWorkout = readPausedWorkout(state.me.id);
+  const pausedHere = day && pausedWorkout && sessionIdentity(myProgram, day) === pausedWorkout.dayKey
+    ? pausedWorkout
+    : null;
   // Order is set once at generation/build time (phase sequence) and persists here —
   // NOT re-sorted on every render — so a manual reorder below actually sticks.
   const sortedExercises = day ? day.exercises : [];
@@ -15563,6 +15601,12 @@ function AthleteProgram({ state, setState, nav }) {
                 <div className="text-[15px] mt-0.5" style={{ color: C.orange }}>
                   {weekExercises.length} exercises · ~{dayMinutes} min
                 </div>
+                {pausedHere && (
+                  <div className="text-[12.5px] mt-1 font-semibold" style={{ color: C.blue }}>
+                    Paused {pausedWhenLabel(pausedHere.date) || ""} at exercise {(Number(pausedHere.exIdx) || 0) + 1}.
+                    Your sets are saved.
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {canEdit && (
@@ -17957,6 +18001,15 @@ function Workout({ state, setState, nav, dayId }) {
                       : <Circle size={22} style={{ color: C.faint }} />}
                   </button>
                 </div>
+                {/* Asked, not blocked. One heavy single among lighter work is
+                    a real thing an athlete does; 1350 where 135 was meant is
+                    more common, and it is the one that wrecks their history. */}
+                {looksLikeTypo(normalizeWeight(typed), (setWeights[x.id] || [])
+                  .filter((_, other) => other !== i).map(normalizeWeight)) && (
+                  <div className="text-[11px] mt-1 font-semibold" style={{ color: C.amber, paddingLeft: 26 }}>
+                    More than double your other sets. Typo?
+                  </div>
+                )}
                 {formatSetResult(previous) && (
                   <div className="text-[11px] tabular-nums mt-1" style={{ color: C.faint, paddingLeft: 26 }}>
                     last {formatSetResult(previous)}

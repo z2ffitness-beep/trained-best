@@ -24,7 +24,9 @@ const H = await load(APP, [
   { name: "LB_PER_KG", kind: "const" },
   "convertWeight", "wasLifted",
   { name: "COUNTS_THRESHOLD", kind: "const" },
-  "sessionCounts", "logCounts", "priorBest", "beatsBest", "workoutSetRows",
+  "sessionCounts", "logCounts", "priorBest", "beatsBest",
+  { name: "TYPO_MULTIPLE", kind: "const" },
+  "looksLikeTypo", "workoutSetRows",
 ]);
 
 const src = readSource(APP);
@@ -304,6 +306,89 @@ test("the per-set hand-set flag reaches the log in the first place", () => {
     "the save path never looks at which weights were typed by hand");
   assert.ok(/manual: typedByHand\[i\] === true,/.test(src),
     "the per-set log entry carries no hand-set flag, so workout_sets always says false");
+});
+
+// ---------- the typo guard ----------
+//
+// Typing 1350 where 135 was meant is the commonest entry mistake there is.
+// It is queried rather than blocked, because one heavy single among lighter
+// work is a real session - but it does not get to be a personal best, since
+// once a mistyped 1350 is stored as one it sets the bar for the rest of the
+// block and the athlete is told they are getting weaker every week after.
+
+test("more than double every other set is queried", () => {
+  assert.equal(H.TYPO_MULTIPLE, 2);
+  assert.equal(H.looksLikeTypo(1350, [135, 135, 140]), true);
+  assert.equal(H.looksLikeTypo(275, [135, 135]), true);
+  assert.equal(H.looksLikeTypo(270, [135, 135]), false, "exactly double is not more than double");
+});
+
+test("a real heavy single is left alone", () => {
+  // Working up: 135, 185, 225, 245. Nothing here is double anything.
+  assert.equal(H.looksLikeTypo(245, [135, 185, 225]), false);
+  // And a straight ramp from a warm-up set is not a typo either.
+  assert.equal(H.looksLikeTypo(225, [135, 185]), false);
+  // The comparison is against the HEAVIEST other set, not the lightest.
+  // Against the lightest, every top set that follows a warm-up double is
+  // queried, which is most heavy days.
+  assert.equal(H.looksLikeTypo(300, [135, 185, 225]), false,
+    "the top set is being compared against the warm-up");
+});
+
+test("the first set of an exercise is never a typo", () => {
+  // There is nothing to compare it against, and flagging it would query
+  // every opening set of every session.
+  assert.equal(H.looksLikeTypo(1350, []), false);
+  assert.equal(H.looksLikeTypo(1350, [null, undefined, 0]), false);
+});
+
+test("nothing typed is not a typo", () => {
+  assert.equal(H.looksLikeTypo(null, [135]), false);
+  assert.equal(H.looksLikeTypo(NaN, [135]), false);
+});
+
+test("a flagged set cannot become a personal best", () => {
+  const rows = rowsFor(
+    [ex("Back Squat", [set(1, 135, 5), set(2, 135, 5), set(3, 1350, 5)])],
+    { "back squat": { weightLb: 225, reps: 5 } },
+  );
+  assert.equal(rows.some(r => r.is_pr), false,
+    "a mistyped 1350 was stored as a personal best, which sets the bar for the whole block");
+  // The row is still written. The number the athlete typed is what happened,
+  // and quietly dropping it would lose the set as well as the mistake.
+  assert.equal(rows.length, 3);
+  assert.equal(rows[2].weight_lb, 1350);
+});
+
+test("the real best of a session with a typo in it still counts", () => {
+  const rows = rowsFor(
+    [ex("Back Squat", [set(1, 235, 5), set(2, 240, 5), set(3, 2400, 5)])],
+    { "back squat": { weightLb: 225, reps: 5 } },
+  );
+  const flagged = rows.filter(r => r.is_pr);
+  assert.equal(flagged.length, 1);
+  assert.equal(flagged[0].weight_lb, 240, "the typo took the PR with it");
+});
+
+test("the warning is on screen, in the words the design asks for", () => {
+  assert.ok(/More than double your other sets\. Typo\?/.test(src),
+    "nothing on screen queries a mistyped weight");
+  const at = src.indexOf("More than double your other sets");
+  const around = src.slice(at - 700, at + 200);
+  assert.ok(/looksLikeTypo\(normalizeWeight\(typed\)/.test(around),
+    "the warning is not driven by the same rule the personal best uses");
+  assert.ok(/\.filter\(\(_, other\) => other !== i\)/.test(around),
+    "the set is compared against itself, so nothing is ever flagged");
+});
+
+test("the Plan says when a session is paused", () => {
+  // The home screen's card can be dismissed for the day. Without this there
+  // would be a half-finished workout with nothing on the screen that lists
+  // sessions saying so.
+  assert.ok(/Paused \{pausedWhenLabel\(pausedHere\.date\) \|\| ""\} at exercise/.test(src),
+    "the Plan never says a session is paused");
+  assert.ok(/sessionIdentity\(myProgram, day\) === pausedWorkout\.dayKey/.test(src),
+    "the Plan would mark the wrong day as paused");
 });
 
 // ---------- what the athlete is told ----------
