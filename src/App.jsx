@@ -8,7 +8,7 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone
+  Moon, Leaf, Heart, Phone, Minus
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -1350,6 +1350,56 @@ function bestLoggedWeight(exerciseName, logs, unit = "lb") {
     }
   }
   return best;
+}
+
+// Typing a weight into one set fills it down the rest of the exercise.
+//
+// Nobody does five sets at five different weights, and before this the
+// athlete typed the same number into every box with chalky hands between
+// sets. Filling down is the default because it is almost always right.
+//
+// Two kinds of set are never overwritten. A ticked set is history - it was
+// done at whatever was on the bar at the time, and rewriting it would turn a
+// record into a guess. A hand-set set is a decision: the athlete typed 185
+// into set 4 on purpose, and having set 3 overwrite it the moment they
+// corrected a typo above is the behaviour that makes people stop trusting
+// the fill.
+//
+// Clearing a box clears only that box. Blanking set 1 and watching sets 2
+// through 5 empty out behind it is a data-loss bug wearing a feature's
+// clothes.
+function fillWeightDown({ weights = [], handSet = [], checks = [], index, value, total = 0 }) {
+  const length = Math.max(total, weights.length, index + 1);
+  const out = Array.from({ length }, (_, i) => weights[i]);
+  out[index] = value;
+  if (value === "" || value == null) return out;
+  for (let i = index + 1; i < length; i++) {
+    if ((checks || []).includes(i)) continue;
+    if ((handSet || [])[i]) continue;
+    out[i] = value;
+  }
+  return out;
+}
+
+// One press of the minus or plus button beside a weight box.
+//
+// An empty box has no number to step from, so the first press fills in the
+// placeholder - their best so far, which is the number they are about to
+// adjust away from. Starting at zero instead means holding the plus button
+// down forty times to get to a working weight, which is not a feature
+// anyone would use twice. With no history at all, plus starts one step up
+// and minus has nowhere to go.
+function stepWeight(current, direction, unit, fallback = null) {
+  const step = weightStepFor(unit);
+  const typed = normalizeWeight(current);
+  if (typed == null) {
+    const best = normalizeWeight(fallback);
+    if (best != null) return best;
+    return direction > 0 ? step : 0;
+  }
+  // Never below zero. A negative weight is not a lighter lift, it is a
+  // number that breaks every total downstream of it.
+  return Math.max(0, Math.round((typed + direction * step) * 10) / 10);
 }
 
 function exerciseHistory(exerciseName, logs) {
@@ -16302,6 +16352,12 @@ function Workout({ state, setState, nav, dayId }) {
   // what was asked for, this is what was done, and conflating them is how a
   // log ends up recording a session nobody had.
   const [setReps, setSetReps] = useState({});
+  // Which weight boxes the athlete typed into themselves, as opposed to boxes
+  // filled down from the set above. A hand-set box is never overwritten
+  // again - that is the whole contract of the fill - and it is the same flag
+  // workout_sets.manually_set records, so a coach reading the history can
+  // tell a deliberate drop set from a copied number.
+  const [handSet, setHandSet] = useState({});
   // (checksRef is re-synced from committed state on every render, below.)
   // The date this session belongs to, fixed when the session opens rather than
   // read fresh on every render. An athlete training across midnight into a new
@@ -16381,6 +16437,7 @@ function Workout({ state, setState, nav, dayId }) {
     setSetChecks(remapExerciseKeys(draft?.setChecks, toCurrent));
     setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
     setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
+    setHandSet(remapExerciseKeys(draft?.handSet, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
     setSwappedMap(remapExerciseKeys(draft?.swappedMap, toCurrent));
@@ -16459,11 +16516,15 @@ function Workout({ state, setState, nav, dayId }) {
       setChecks: remapExerciseKeys(setChecks, toStable),
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
+      // Saved with the rest of the draft, or a reload mid-session turns every
+      // deliberately different set back into a box the next fill will stamp
+      // over.
+      handSet: remapExerciseKeys(handSet, toStable),
       swappedMap: remapExerciseKeys(swappedMap, toStable),
     };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
-  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes, finished]);
+  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, handSet, swappedMap, notes, finished]);
 
   // "Last time" is memoised because it sorts the athlete's entire log history,
   // and without it that ran on every keystroke into a weight field.
@@ -16514,6 +16575,15 @@ function Workout({ state, setState, nav, dayId }) {
   // and the clamped version collapses everything past the program's end into
   // one number. Null when the program has no start date at all.
   const thisWeek = absoluteProgramWeek(myProgram, sessionDay);
+  // The unit the BAR is read in, which is not the unit the athlete gave their
+  // bodyweight in at signup. Those were one setting until now, so anyone who
+  // weighs themselves in kilos and loads plates in pounds - which around here
+  // is most people - had no way to say so.
+  //
+  // Up here with the hooks rather than down with the rest of the
+  // prescription, because the memo below depends on it and a hook cannot sit
+  // after an early return.
+  const weightUnit = state.me.unitPref === "kg" ? "kg" : "lb";
   const lastSets = useMemo(
     () => lastPerformance({
       exerciseName: memoExName,
@@ -16524,6 +16594,16 @@ function Workout({ state, setState, nav, dayId }) {
     }),
     [memoExName, myProgram, state.workoutLogs, day?.name, thisWeek]
   );
+  // Their best ever on this movement, in the unit on screen. It is the weight
+  // box's placeholder, so an empty box says what they are capable of rather
+  // than showing a dash. Memoised beside lastSets and for the same reason: it
+  // walks the entire log history, and un-memoised it did that on every
+  // keystroke into a weight field.
+  const bestSoFar = useMemo(
+    () => bestLoggedWeight(memoExName, state.workoutLogs, weightUnit),
+    [memoExName, state.workoutLogs, weightUnit],
+  );
+
   // Last microcycle's version of this whole session, so the athlete walks in
   // knowing what they are chasing instead of discovering it one exercise at a
   // time.
@@ -16644,11 +16724,6 @@ function Workout({ state, setState, nav, dayId }) {
   const totalSets = x?.sets || 0;
   const doneSets = setChecks[x?.id]?.length || 0;
   const phaseLabel = PHASES.find(p => p.key === x?.phase)?.label;
-  // The unit the BAR is read in, which is not the unit the athlete gave their
-  // bodyweight in at signup. Those were one setting until now, so anyone who
-  // weighs themselves in kilos and loads plates in pounds - which around here
-  // is most people - had no way to say so.
-  const weightUnit = state.me.unitPref === "kg" ? "kg" : "lb";
   const alertSound = state.me.intake?.restAlert || DEFAULT_ALERT;
 
   // Switching sessions from inside the workout.
@@ -16692,6 +16767,61 @@ function Workout({ state, setState, nav, dayId }) {
   };
   // `item` so a grouped block can tick any of its movements; it defaults to
   // the block's first, which is the only one a straight set has.
+  // Typing or stepping a weight. One path, so the fill-down rule cannot be
+  // true of the keyboard and false of the buttons.
+  const writeWeight = (item, i, value, byHand = true) => {
+    if (!item) return;
+    if (byHand) {
+      setHandSet(h => {
+        const forExercise = [...(h[item.id] || [])];
+        forExercise[i] = true;
+        return { ...h, [item.id]: forExercise };
+      });
+    }
+    setSetWeights(w => ({
+      ...w,
+      [item.id]: fillWeightDown({
+        weights: w[item.id] || [],
+        // The fill reads the hand-set flags as they were BEFORE this edit, on
+        // purpose: the box being typed into is excluded from its own rule, and
+        // marking it first would make no difference to the sets below it.
+        handSet: handSet[item.id] || [],
+        checks: checksRef.current[item.id] || [],
+        index: i, value, total: Number(item.sets) || 0,
+      }),
+    }));
+  };
+
+  // Changing the unit changes what is on the SCREEN, not what is on the bar,
+  // so anything already typed is converted rather than relabelled. Leaving the
+  // numbers alone would turn a typed 135 into 135 kg - a three-hundred-pound
+  // bench press, logged and sent to the coach.
+  const changeLiftUnit = async (next) => {
+    const to = next === "kg" ? "kg" : "lb";
+    if (to === weightUnit) return;
+    setSetWeights(all => {
+      const out = {};
+      for (const [exId, list] of Object.entries(all || {})) {
+        out[exId] = (list || []).map(v => {
+          const converted = displayWeight(normalizeWeight(v), weightUnit, to);
+          // A half-typed "13." has no number in it yet and is left exactly as
+          // it is, rather than being blanked out from under the cursor.
+          return converted == null ? v : String(converted);
+        });
+      }
+      return out;
+    });
+    setState(s => ({ ...s, me: { ...s.me, unitPref: to } }));
+    // Stored so the choice survives the next login. A failed write leaves the
+    // screen in the new unit for this session and reverts on reload, which is
+    // the mild end of wrong: the numbers on screen are right either way,
+    // because they were converted above.
+    if (state.me.id) {
+      try { await supabase.from("profiles").update({ unit_pref: to }).eq("id", state.me.id); }
+      catch { /* cosmetic until the next save */ }
+    }
+  };
+
   const toggleSet = (setNum, item = x) => {
     if (!item) return;
     const current = checksRef.current[item.id] || [];
@@ -17216,7 +17346,7 @@ function Workout({ state, setState, nav, dayId }) {
                 <span className="font-semibold" style={{ color: accent }}>
                   {heading}{lastSets.week != null ? ` · Week ${lastSets.week}` : ""} ({when}):{" "}
                 </span>
-                <span className="tabular-nums">{formatSetHistory(lastSets.sets)}</span>
+                <span className="tabular-nums">{formatSetHistory(lastSets.sets.map(entry => setInUnit(entry, weightUnit)))}</span>
                 {lastSets.repsTarget != null && (
                   <span style={{ color: C.faint }}>{" "}· target was {lastSets.repsTarget} reps</span>
                 )}
@@ -17224,9 +17354,9 @@ function Workout({ state, setState, nav, dayId }) {
                     what to put on the bar; the total tells you whether the
                     session as a whole was more work than last time, which is
                     the number that actually moves over a block. */}
-                {formatVolume(setsVolume(lastSets.sets, weightUnit)) && (
+                {formatVolume(setsVolume(lastSets.sets.map(entry => setInUnit(entry, weightUnit)), weightUnit)) && (
                   <span className="block mt-1 tabular-nums font-semibold" style={{ color: accent }}>
-                    {formatVolume(setsVolume(lastSets.sets, weightUnit))}
+                    {formatVolume(setsVolume(lastSets.sets.map(entry => setInUnit(entry, weightUnit)), weightUnit))}
                   </span>
                 )}
                 {caveat && (
@@ -17237,13 +17367,63 @@ function Workout({ state, setState, nav, dayId }) {
           );
         })()}
 
-        <div className="space-y-2 mb-5">
+        {/* SET · REPS · WEIGHT · DONE, in that order, as one table.
+            It used to be a stack of cards: a full-width "Press here when you
+            finish Set 3" button with the weight box floated off its right
+            edge and the reps box on a line of its own underneath. Five sets
+            of that is a screen and a half of scrolling to read four numbers,
+            and nothing lined up vertically, so there was no way to glance
+            down the column and see that set 4 was lighter than set 3.
+
+            One row per set, four columns, headings at the top. The unit
+            switch lives in the WEIGHT heading because that is the only place
+            it applies - it is not a global setting an athlete should have to
+            go to their profile to change with a bar loaded. */}
+        <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${C.border}` }}>
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] uppercase tracking-[.08em] font-semibold"
+            style={{ background: C.panelAlt, color: C.faint }}>
+            <span className="shrink-0" style={{ width: 24 }}>Set</span>
+            <span className="shrink-0 text-center" style={{ width: 46 }}>Reps</span>
+            {/* The unit switch is the weight column's own heading, and it
+                has to be small. At 320px the header has about sixty pixels
+                left over once SET, REPS, WEIGHT and DONE have had their
+                share, and the shared UnitToggle is wide enough that "kg" sat
+                directly on top of "DONE". The label truncates rather than
+                pushing anything, so the worst case is an ellipsis and never
+                two words on top of each other. */}
+            <span className="flex-1 flex items-center justify-between gap-1.5 min-w-0">
+              <span className="truncate">Weight</span>
+              <span className="flex shrink-0 gap-0.5"
+                style={{ padding: 2, borderRadius: 9, background: C.bg, border: `1px solid ${C.border}` }}>
+                {["lb", "kg"].map(option => (
+                  <button key={option} onClick={() => changeLiftUnit(option)}
+                    aria-pressed={weightUnit === option}
+                    aria-label={option === "lb" ? "Show weights in pounds" : "Show weights in kilograms"}
+                    style={{
+                      padding: "3px 7px", borderRadius: 7, fontSize: 10, fontWeight: 700,
+                      // The header is uppercase and letter-spaced; the switch
+                      // inherits both and reads as "L B / K G" without this.
+                      letterSpacing: 0, textTransform: "none",
+                      background: weightUnit === option ? `${C.orange}29` : "transparent",
+                      color: weightUnit === option ? C.blue : C.sub,
+                      boxShadow: weightUnit === option ? `inset 0 0 0 1.5px ${C.orange}` : "none",
+                    }}>
+                    {option}
+                  </button>
+                ))}
+              </span>
+            </span>
+            <span className="shrink-0 text-right" style={{ width: 44 }}>Done</span>
+          </div>
           {Array.from({ length: totalSets }).map((_, i) => {
             const checked = (setChecks[x.id] || []).includes(i);
-            const previous = lastWeightForSet(lastSets, i + 1);
-            // What to put on the bar, from their own logged history. Offered,
-            // never filled in for them: a number the app typed would get
-            // logged as what they lifted whether they lifted it or not.
+            // What this set number came back as last time, converted into the
+            // unit on screen. Printing it in whichever unit it happened to be
+            // typed in is how a 60 becomes a 60 lb.
+            const previous = setInUnit(lastWeightForSet(lastSets, i + 1), weightUnit);
+            // What to put on the bar, worked out from their own logged sets.
+            // Offered, never filled in for them: a number the app typed would
+            // be logged as what they lifted whether they lifted it or not.
             const suggestion = suggestLoad({
               lastSets, setNumber: i + 1, prescribedSets: totalSets, unit: weightUnit,
               layoff: lastSets?.scope === "earlier-block",
@@ -17251,41 +17431,17 @@ function Workout({ state, setState, nav, dayId }) {
             const typed = setWeights[x.id]?.[i];
             const showSuggestion = !checked && suggestion && (typed === "" || typed == null);
             return (
-              <div key={i} className="rounded-lg p-3" style={{ background: checked ? `${C.olive}18` : C.panel, border: `1px solid ${checked ? C.olive : C.border}` }}>
-                <div className="flex items-center gap-3">
-                  {/* The tick and the weight field are SIBLINGS, not nested.
-                      Putting an input inside the button would make typing a
-                      weight also toggle the set — and a button inside a button
-                      isn't valid markup either. */}
-                  <button onClick={() => toggleSet(i)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                    {checked
-                      ? <CheckCircle2 size={20} style={{ color: C.olive }} className="shrink-0" />
-                      : <Circle size={20} style={{ color: C.faint }} className="shrink-0" />}
-                    <span className="text-[15px] font-medium min-w-0" style={{ color: checked ? C.olive : C.text }}>
-                      {checked ? `Set ${i + 1} — done` : `Press here when you finish Set ${i + 1}`}
-                    </span>
-                  </button>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <input
-                      type="number" inputMode="decimal" min="0" step="any"
-                      placeholder={previous?.weight != null ? String(previous.weight) : "—"}
-                      value={setWeights[x.id]?.[i] ?? ""}
-                      onChange={e => setSetWeights(w => {
-                        const forExercise = [...(w[x.id] || [])];
-                        forExercise[i] = e.target.value;
-                        return { ...w, [x.id]: forExercise };
-                      })}
-                      aria-label={`Weight for set ${i + 1}`}
-                      className="tabular-nums text-[15px] text-right rounded py-1.5 px-2"
-                      style={{ width: 72, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[12.5px] tabular-nums" style={{ color: C.sub }}>{weightUnit}</span>
-                  </div>
-                </div>
-                {/* Reps done, beside the target rather than in place of it.
-                    Optional on purpose: a blank field logs as "not recorded"
-                    and never as zero, so an athlete who only tracks weight
-                    loses nothing by ignoring it. */}
-                <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mt-1.5 pl-8 tabular-nums text-[11px]" style={{ color: C.sub }}>
+              <div key={i} className="px-3 py-2"
+                style={{
+                  background: checked ? `${C.olive}14` : "transparent",
+                  borderTop: `1px solid ${C.border}`,
+                }}>
+                <div className="flex items-center gap-2">
+                  <span className="tabular-nums text-[15px] font-semibold shrink-0"
+                    style={{ width: 24, color: checked ? C.olive : C.sub }}>{i + 1}</span>
+                  {/* Reps done, not reps asked for. Blank logs as "not
+                      recorded" and never as zero, so an athlete who only
+                      tracks weight loses nothing by ignoring this column. */}
                   <input
                     type="number" inputMode="numeric" min="1" step="1"
                     placeholder={previous?.reps != null ? String(previous.reps) : ""}
@@ -17296,30 +17452,60 @@ function Workout({ state, setState, nav, dayId }) {
                       return { ...r, [x.id]: forExercise };
                     })}
                     aria-label={`Reps completed for set ${i + 1}`}
-                    className="tabular-nums text-[11px] text-center rounded py-0.5 px-1"
-                    style={{ width: 42, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                  <span>reps done</span>
-                  <span>·</span>
-                  <span>target {x.reps}</span>
-                  <span>·</span>
-                  <span>{DIFFICULTY_SHORT} {x.rpe}/10</span>
-                  {formatSetResult(previous) && (
-                    <><span>·</span><span style={{ color: C.faint }}>last {formatSetResult(previous)}</span></>
-                  )}
+                    className="tabular-nums text-[15px] text-center rounded py-1.5 shrink-0"
+                    style={{ width: 46, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+                  {/* Minus and plus either side of the box, because the
+                      number keypad is a bad tool for "same as last set but
+                      five pounds more" and that is most of what gets typed in
+                      a gym. One press is 5 lb or 2.5 kg - the smallest pair of
+                      plates in each unit, not a converted version of the
+                      other. The placeholder is their best so far. */}
+                  <div className="flex-1 flex items-center gap-1 min-w-0">
+                    <button
+                      onClick={() => writeWeight(x, i, String(stepWeight(typed, -1, weightUnit, bestSoFar)))}
+                      aria-label={`Take weight off set ${i + 1}`}
+                      className="shrink-0 flex items-center justify-center rounded"
+                      style={{ width: 30, height: 32, background: C.bg, border: `1px solid ${C.border}`, color: C.sub }}>
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="number" inputMode="decimal" min="0" step="any"
+                      placeholder={bestSoFar != null ? String(bestSoFar) : "\u2014"}
+                      value={typed ?? ""}
+                      onChange={e => writeWeight(x, i, e.target.value)}
+                      aria-label={`Weight for set ${i + 1} in ${weightUnit}`}
+                      className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1"
+                      style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+                    <button
+                      onClick={() => writeWeight(x, i, String(stepWeight(typed, 1, weightUnit, bestSoFar)))}
+                      aria-label={`Add weight to set ${i + 1}`}
+                      className="shrink-0 flex items-center justify-center rounded"
+                      style={{ width: 30, height: 32, background: C.bg, border: `1px solid ${C.border}`, color: C.sub }}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  {/* The tick is its own control, never a wrapper around the
+                      inputs: typing a weight must not also mark the set done,
+                      and a button inside a button is not valid markup. */}
+                  <button onClick={() => toggleSet(i)}
+                    aria-label={checked ? `Set ${i + 1} is done. Press to undo it.` : `Mark set ${i + 1} done`}
+                    aria-pressed={checked}
+                    className="shrink-0 flex items-center justify-end"
+                    style={{ width: 44, height: 40 }}>
+                    {checked
+                      ? <CheckCircle2 size={22} style={{ color: C.olive }} />
+                      : <Circle size={22} style={{ color: C.faint }} />}
+                  </button>
                 </div>
-
-                {/* What to load, worked out from their own logged sets. One tap
-                    fills the field; it is never filled automatically, because
-                    a number the app typed would be saved as what they lifted
-                    whether they lifted it or not. */}
+                {formatSetResult(previous) && (
+                  <div className="text-[11px] tabular-nums mt-1" style={{ color: C.faint, paddingLeft: 26 }}>
+                    last {formatSetResult(previous)}
+                  </div>
+                )}
                 {showSuggestion && (
                   <button
-                    onClick={() => setSetWeights(w => {
-                      const forExercise = [...(w[x.id] || [])];
-                      forExercise[i] = String(suggestion.weight);
-                      return { ...w, [x.id]: forExercise };
-                    })}
-                    className="mt-2 ml-8 w-[calc(100%-2rem)] rounded-lg px-2.5 py-2 flex items-center gap-2 text-left"
+                    onClick={() => writeWeight(x, i, String(suggestion.weight))}
+                    className="mt-2 w-full rounded-lg px-2.5 py-2 flex items-center gap-2 text-left"
                     style={{
                       background: suggestion.change === "up" ? `${C.olive}12` : `${C.blue}0d`,
                       border: `1px dashed ${suggestion.change === "up" ? C.olive : C.blue}66`,
@@ -17331,7 +17517,7 @@ function Workout({ state, setState, nav, dayId }) {
                       <span className="tabular-nums font-bold" style={{ color: suggestion.change === "up" ? C.olive : C.blue }}>
                         {formatWeight({ weight: suggestion.weight, unit: suggestion.unit })}
                       </span>
-                      {" — "}{suggestion.why}
+                      {" · "}{suggestion.why}
                     </span>
                     <span className="text-[11px] font-semibold shrink-0" style={{ color: suggestion.change === "up" ? C.olive : C.blue }}>Use</span>
                   </button>

@@ -114,13 +114,27 @@ test("nothing to say renders nothing", () => {
 // ---------- it is actually on screen ----------
 
 test("the last-time panel shows the total", () => {
-  assert.ok(/formatVolume\(setsVolume\(lastSets\.sets, weightUnit\)\)/.test(src),
+  assert.ok(/formatVolume\(setsVolume\(/.test(src),
     "the helper exists but the panel never calls it");
 });
 
 test("the total uses the athlete's own unit", () => {
+  // Two separate mistakes, and the panel has to avoid both. Passing no unit
+  // prints pounds to someone working in kilos. Passing the unit but handing
+  // over the raw stored sets is worse: history can hold both units for the
+  // same lift, so a 100 kg set and a 100 lb set get added together as 200 of
+  // whatever the label happens to say.
   assert.ok(!/setsVolume\(lastSets\.sets\)/.test(src),
     "called without weightUnit it would print lb to someone working in kg");
+  assert.ok(!/setsVolume\(lastSets\.sets,/.test(src),
+    "the raw stored sets are summed without converting them to the screen unit first");
+  assert.ok(/setsVolume\(lastSets\.sets\.map\(entry => setInUnit\(entry, weightUnit\)\), weightUnit\)/.test(src),
+    "the total is not computed from sets converted into the unit on screen");
+});
+
+test("the set-by-set line is converted too, not just the total", () => {
+  assert.ok(/formatSetHistory\(lastSets\.sets\.map\(entry => setInUnit\(entry, weightUnit\)\)\)/.test(src),
+    "last time's individual sets still print in whichever unit they were typed in");
 });
 
 // ---------- the two things that were invisible ----------
