@@ -4706,6 +4706,154 @@ function newlyEarnedBadges(logsBefore, logsAfter, opts) {
   return BADGES.filter(b => after.has(b.key) && !before.has(b.key));
 }
 
+// ---------- what became of each day in a week ----------
+//
+// One function, read by the Plan screen and by the home screen's missed
+// card, so the two cannot disagree about whether Tuesday was missed. Pure,
+// and given everything it needs rather than reaching for it, because the
+// interesting cases - a session moved, then moved back, on a week that
+// straddles the programme's start - are cases you want to be able to write
+// down rather than reproduce by hand in a gym.
+//
+// Returns one row per DATE, Monday to Sunday.
+
+const PLAN_STATUS = {
+  rest: "Rest",
+  done: "Done",
+  missed: "Missed",
+  paused: "Paused",
+  skipped: "Skipped",
+  today: "Today",
+  upcoming: "Upcoming",
+  extra: "Extra",
+};
+
+// The move that applies to one session on one date, or null. At most one, by
+// the unique key on the table.
+function moveFor(moves, programDay, dateIso) {
+  return (moves || []).find(m => m?.programDay === programDay && m?.fromDate === dateIso) || null;
+}
+
+function logFor(logs, programDay, dateIso) {
+  return (logs || []).find(l => l?.date === dateIso && l?.programDay === programDay) || null;
+}
+
+function planForWeek({ program, weekStart, logs = [], moves = [], pausedDayKey = null, today }) {
+  if (!weekStart) return [];
+  const days = program?.days || [];
+  // Days before the programme began are never missed. A plan that starts on
+  // the day someone signs up has no history behind it, and marking the
+  // Monday before as missed is the app telling a new athlete they are
+  // already behind.
+  const start = program?.startedOn || program?.started_on || null;
+
+  return WEEKDAY_ORDER.map((weekday, i) => {
+    const date = shiftDays(weekStart, i);
+    const before = !!start && date < start;
+    const sessions = [];
+
+    // Sessions that belong to this date by the programme, minus any that
+    // have been moved off it.
+    for (const day of days) {
+      if (!isDayScheduledOn(day, date)) continue;
+      const move = moveFor(moves, day.name, date);
+      if (move) {
+        sessions.push({
+          day,
+          status: move.kind === "skip" || !move.toDate ? "skipped" : "moved-away",
+          movedTo: move.toDate || null,
+          moveKind: move.kind,
+          log: null,
+        });
+        continue;
+      }
+      sessions.push({ day, status: null, movedTo: null, moveKind: null, log: null });
+    }
+
+    // Sessions moved ONTO this date from somewhere else.
+    for (const move of moves || []) {
+      // A skip has no destination, so it never matches a date and never
+      // arrives anywhere. One condition rather than two saying it.
+      if (move?.toDate !== date) continue;
+      const day = days.find(d => d.name === move.programDay);
+      if (!day) continue;
+      sessions.push({
+        day, status: null, movedTo: null, moveKind: move.kind,
+        movedFrom: move.fromDate, log: null,
+      });
+    }
+
+    // Resolve each one. Done beats everything: a session that was logged
+    // happened, whatever the plan said about it.
+    for (const session of sessions) {
+      const log = logFor(logs, session.day.name, date);
+      if (log) { session.status = "done"; session.log = log; continue; }
+      if (session.status) continue;                 // already skipped or moved away
+      if (pausedDayKey && sessionIdentity(program, session.day) === pausedDayKey) {
+        session.status = "paused"; continue;
+      }
+      if (date === today) { session.status = "today"; continue; }
+      if (date > today) { session.status = "upcoming"; continue; }
+      session.status = before ? "upcoming" : "missed";
+    }
+
+    // Anything logged on this date that no scheduled session accounts for:
+    // a session trained on a day it was not planned for, or an extra one the
+    // athlete added. Shown rather than swallowed - work that happened and
+    // appears nowhere is how an athlete stops trusting the screen.
+    const named = new Set(sessions.map(x => x.day.name));
+    for (const log of logs || []) {
+      if (log?.date !== date || named.has(log.programDay)) continue;
+      const day = days.find(d => d.name === log.programDay) || { name: log.programDay || "Session" };
+      sessions.push({ day, status: "extra", movedTo: null, moveKind: null, log });
+    }
+
+    return {
+      date,
+      weekday,
+      isToday: date === today,
+      isPast: date < today,
+      beforeStart: before,
+      sessions,
+      status: sessions.length ? null : "rest",
+    };
+  });
+}
+
+// This week at a glance: how many sessions were asked for and how many are
+// done. A session that was moved away counts where it landed, not where it
+// started, or a week with one move reads as both short and over-full.
+function weekProgress(rows) {
+  let planned = 0;
+  let done = 0;
+  for (const row of rows || []) {
+    for (const session of row.sessions || []) {
+      if (session.status === "skipped" || session.status === "moved-away") continue;
+      if (session.status === "extra") { done += 1; continue; }
+      planned += 1;
+      if (session.status === "done") done += 1;
+    }
+  }
+  return { planned, done, ratio: planned > 0 ? Math.min(1, done / planned) : 0 };
+}
+
+// Sessions that were due and did not happen, newest first. The home screen
+// asks for the fortnight behind today, because a card offering to catch up
+// on something from five weeks ago is noise rather than help.
+function missedSessions({ program, logs, moves, pausedDayKey, today, weeksBack = 2 }) {
+  const out = [];
+  let weekStart = weekStartFor(shiftDays(today, -7 * weeksBack));
+  for (let w = 0; w <= weeksBack; w++) {
+    for (const row of planForWeek({ program, weekStart, logs, moves, pausedDayKey, today })) {
+      for (const session of row.sessions) {
+        if (session.status === "missed") out.push({ date: row.date, day: session.day });
+      }
+    }
+    weekStart = shiftDays(weekStart, 7);
+  }
+  return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
 function complianceBaseline(logs) {
   const timed = timedSessions(logs);
   if (timed.length < COMPLIANCE_MIN_SAMPLES) return null;
