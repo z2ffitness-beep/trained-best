@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 41 suites, 985 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 42 suites, 1033 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -66,7 +66,13 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | 6. Coach branding | **Done.** `profiles.business_name/brand_color/logo_path`, `coach-logos` bucket, UI on this branch |
 | Message deletion | **Done.** Hide for me, delete for everyone, tombstones, realtime |
 | 1a. Per-set storage | **Migration applied and the UI is built.** Set table, lb/kg, fill-down, minus/plus, best-so-far placeholder, rows written to `workout_sets`, `counts` and `is_pr` filled |
-| 1a. Stop and save | Not started. Paused workouts, "finish your Tuesday workout?", pulled-forward goes back |
+| 1a. Stop and save | **Done.** Red Stop button, three-way sheet, paused workout stored with no expiry, the card on Today, "Paused on [day]" on the Plan |
+| 1a. Typo warning | **Done.** More than double the other sets is queried, and barred from being a personal best |
+| 1a. lb/kg in My Info | **Done.** Same writer as the table header |
+| 1a. Appearance | **Done** (it already existed). Now stored in `profiles.theme_pref`, with `intake.theme` kept as the pre-mount copy |
+| 1b. Points, levels, badges | Not started. The 50% flag and `is_pr` are already stored, so the data is there |
+| 1b. Print sheet | Not started |
+| Plan rebuild | Not started. Week ring, 7-day strip, day list with Done/Missed/Moved/Paused/Skipped, Move, Skip, Do it today, add a workout. **"Pulled-forward goes back" belongs here** - Isaiah chose 15 Oct to do it with the rebuild rather than bolt it onto the current screen |
 | 1b. Points, levels, badges | Not started |
 | 2. Signup in 5 steps | Not started |
 | 3. Coach home | Not started |
@@ -76,6 +82,19 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
 **the coach roster sorted by next session** (`groupAthletesBySession`). The
 message-deletion half of that doc did ship; this half did not.
+
+## 4b. Decisions Isaiah made on 15 Oct
+
+- **The 50% rule is split.** The spec says a workout counts toward streak,
+  level, points and badges only if half its sets are ticked. The app already
+  scored short sessions. Points stay as they were; streak and the
+  perfect-week bonus follow the spec. Reasoning: a score of zero for an
+  honest four-of-twelve session teaches people to stay home or to tick sets
+  they did not do, whereas a streak a two-set session keeps alive means
+  nothing. Do not quietly change either half.
+- **Pull-forward waits for the Plan rebuild.** "Do it today instead" does not
+  exist, so neither does the rule about a pulled-forward workout going back
+  to its own day when stopped. Both land together with the Plan screen.
 
 ## 5. Traps that have already cost time
 
@@ -103,6 +122,17 @@ message-deletion half of that doc did ship; this half did not.
   booking still needs a session type.
 - **`session_change_requests` has only a SELECT policy.** It needs INSERT and
   UPDATE before phase 4 can use it.
+- **The draft, the timer and a paused workout are three different things.**
+  The session draft (`tb_session_draft`) is a crash net and expires after 14
+  hours. The stored timer (`tb_session_timer`) is one stopwatch. A paused
+  workout (`tb_paused_workout`) is a deliberate Stop, has no expiry, and is
+  what the home screen asks about. All three are keyed by
+  `sessionIdentity(program, day)` and NOT by `day.id`, which is a fresh
+  random string on every launch. Two bugs of exactly that shape were fixed on
+  15 Oct; if a restore ever silently does nothing, check the key first.
+- **`device_commit_files` can write a stale copy** when the same
+  `stagedPath` was committed earlier in a session. Use a fresh filename, or
+  `force`, and check with md5sum. It silently cost a test file once.
 
 ## 6. Corrections to earlier documents
 
@@ -139,11 +169,25 @@ Three commits on `redesign-branding`, 15 Oct:
 
 ## 8. Next action
 
-The rest of phase 1a: **stop and save**. Stop asks "Stop for today?" with
-three answers (save my progress / keep going / I'm done for good, count what
-I did). A paused workout shows on Today every day until it is finished or
-dropped, and a workout that was pulled forward and then stopped goes back to
-its own planned day. Then phase 1b: points, levels, 13 badges, Perfect Week,
-the rewards screen and the print sheet.
+**Phase 1b**, which is the rewards half of phase 1 and the last of it:
 
-Run `sh _verify/run.sh` before every commit. It was 985/985 on 15 Oct.
+- Points on screen as a rewards sequence: medal with rays and confetti,
+  points counting up with each bonus named, Perfect Week dots filling,
+  the level bar (one level per 5 counted workouts), badges flipping in,
+  new bests listed, then "See summary". Must respect
+  `prefers-reduced-motion`.
+- 13 badges: first workout, Week 1, Perfect Week, Comeback, Every Set
+  Logged, New Best, plus workout-count milestones.
+- One streak shield a month, covering one short week.
+- "Print it for the gym": a one-page sheet with the check-in to circle,
+  each exercise with a small black and white photo, empty reps and weight
+  boxes, and a footer explaining how to type the numbers back in.
+
+The data 1b needs is already stored: `workout_logs.counts`, and
+`workout_sets.is_pr` with the typo guard applied.
+
+Then the **Plan rebuild** (which carries pull-forward), then phases 2 to 5.
+Stripe stays out.
+
+Run `sh _verify/run.sh` before every commit. It was 1033/1033 on 15 Oct.
+Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
