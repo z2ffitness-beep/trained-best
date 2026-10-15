@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 38 suites, 903 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 41 suites, 985 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -65,7 +65,8 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 |---|---|
 | 6. Coach branding | **Done.** `profiles.business_name/brand_color/logo_path`, `coach-logos` bucket, UI on this branch |
 | Message deletion | **Done.** Hide for me, delete for everyone, tombstones, realtime |
-| 1a. Per-set storage | **Migration applied** (`002_workout_sets`). UI not built yet |
+| 1a. Per-set storage | **Migration applied and the UI is built.** Set table, lb/kg, fill-down, minus/plus, best-so-far placeholder, rows written to `workout_sets`, `counts` and `is_pr` filled |
+| 1a. Stop and save | Not started. Paused workouts, "finish your Tuesday workout?", pulled-forward goes back |
 | 1b. Points, levels, badges | Not started |
 | 2. Signup in 5 steps | Not started |
 | 3. Coach home | Not started |
@@ -111,11 +112,38 @@ migration 002 recovered **29 real sets across 4 logs, all with weights**.
 Had it started empty, bests and last-time's numbers would have treated those
 sessions as if they never happened.
 
-## 7. Next action
+## 7. What phase 1a's UI actually does now
 
-Build the phase 1a UI against the new table: set table columns SET / REPS /
-WEIGHT / DONE, the weight box with minus and plus, fill-down that respects
-hand-set values, the lb/kg switch reading `profiles.unit_pref`, and writing
-sets to `workout_sets` on save. Then 1b.
+Three commits on `redesign-branding`, 15 Oct:
 
-Run `sh _verify/run.sh` before every commit. It was 903/903 on 15 Oct.
+- **`unit_pref` is the LIFTING unit.** `intake.weightUnit` stays the
+  bodyweight one and the profile editor still owns it. They used to be the
+  same setting, which left anyone who weighs in kilos and lifts in pounds
+  with no way to say so.
+- **Pounds are the store of record.** `displayWeight` converts on the way
+  out and rounds kilos to the nearest half, because plates come in 1.25 kg
+  pairs. Every comparison - bests, PRs, totals - happens in pounds, or a
+  110 kg squat ranks below a 225 lb one.
+- **The set table** replaced the stack of cards. SET / REPS / WEIGHT / DONE,
+  the lb/kg switch in the WEIGHT heading, minus and plus at 5 lb or 2.5 kg,
+  the placeholder is their best so far. Laid out against a 320px screen, not
+  guessed at.
+- **Fill-down**: a weight typed into one set copies to every set below it,
+  except ones already ticked (history) and ones typed by hand (a decision).
+  Clearing a box clears only that box. The hand-set flags are saved in the
+  session draft and end up in `workout_sets.manually_set`.
+- **On finish**: one `workout_sets` row per prescribed set in pounds,
+  `workout_logs.counts` from the 50% rule, and `is_pr` on the one set per
+  movement that beat the standing best. Offline sessions carry their set
+  rows into the queue.
+
+## 8. Next action
+
+The rest of phase 1a: **stop and save**. Stop asks "Stop for today?" with
+three answers (save my progress / keep going / I'm done for good, count what
+I did). A paused workout shows on Today every day until it is finished or
+dropped, and a workout that was pulled forward and then stopped goes back to
+its own planned day. Then phase 1b: points, levels, 13 badges, Perfect Week,
+the rewards screen and the print sheet.
+
+Run `sh _verify/run.sh` before every commit. It was 985/985 on 15 Oct.
