@@ -1290,6 +1290,68 @@ function convertWeight(weight, from, to) {
   return Math.round(out * 10) / 10;
 }
 
+// ---------- one unit underneath, whichever one is on screen ----------
+//
+// Pounds are the store of record from here on. The jsonb log keeps the number
+// exactly as typed with its unit beside it, which is honest about history and
+// useless for comparison: a best set in kilos and today's set in pounds cannot
+// be ranked without a conversion, and the code that forgets the conversion is
+// the code that tells an athlete 60 kg is lighter than 135 lb. Everything
+// written to workout_sets is converted on the way in, so a comparison is a
+// comparison rather than a units puzzle.
+//
+// Kilos are shown coarsely on the way back out. Plates come in 1.25 kg pairs,
+// so the smallest honest change on a bar is 2.5 kg; printing 61.2 kg claims a
+// precision no gym has, and an athlete reading it decides the app is broken.
+// Pounds keep one decimal, because micro-plates are real.
+const KG_DISPLAY_STEP = 0.5;
+
+function displayWeight(weight, from, to) {
+  const converted = convertWeight(weight, from || "lb", to || "lb");
+  if (converted == null) return null;
+  if (to !== "kg") return Math.round(converted * 10) / 10;
+  return Math.round(converted / KG_DISPLAY_STEP) * KG_DISPLAY_STEP;
+}
+
+// A stored set as it reads on a screen set to `unit` - the number converted
+// and the unit relabelled together. Returning one without the other is how a
+// 60 that used to be kilos gets printed as 60 lb.
+function setInUnit(entry, unit) {
+  if (!entry) return null;
+  const to = unit === "kg" ? "kg" : "lb";
+  if (entry.weight == null) return { ...entry, unit: to };
+  return { ...entry, weight: displayWeight(entry.weight, entry.unit || "lb", to), unit: to };
+}
+
+// What the minus and plus buttons move by. Five pounds is the smallest pair of
+// plates on a bar in pounds, 2.5 kg the smallest in kilos. Deliberately not
+// the same weight as each other: the step is the smallest real change in the
+// unit the athlete is using, not a converted version of the other one.
+const weightStepFor = unit => (unit === "kg" ? 2.5 : 5);
+
+// The heaviest this athlete has ever ticked off on this movement, in the unit
+// they are currently reading. It is what the weight box shows as a
+// placeholder, so an empty field says what they are capable of instead of a
+// dash.
+//
+// Ticked sets only, through wasLifted. A number typed into a set that was then
+// failed and left unticked is a plan, and handing it back as a best would be
+// the app congratulating someone for a lift they did not make.
+function bestLoggedWeight(exerciseName, logs, unit = "lb") {
+  if (!exerciseName) return null;
+  const key = String(exerciseName).toLowerCase();
+  let best = null;
+  for (const log of logs || []) {
+    const match = (log?.exercises || []).find(e => String(e?.name || "").toLowerCase() === key);
+    for (const entry of match?.sets || []) {
+      if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+      const inUnit = displayWeight(entry.weight, entry.unit || "lb", unit);
+      if (inUnit != null && (best == null || inUnit > best)) best = inUnit;
+    }
+  }
+  return best;
+}
+
 function exerciseHistory(exerciseName, logs) {
   if (!exerciseName) return [];
   const key = String(exerciseName).toLowerCase();
@@ -16582,9 +16644,11 @@ function Workout({ state, setState, nav, dayId }) {
   const totalSets = x?.sets || 0;
   const doneSets = setChecks[x?.id]?.length || 0;
   const phaseLabel = PHASES.find(p => p.key === x?.phase)?.label;
-  // Whatever the athlete chose at signup. Weights are stored in this unit
-  // rather than converted, so nothing drifts on the way back out.
-  const weightUnit = state.me.intake?.weightUnit === "kg" ? "kg" : "lb";
+  // The unit the BAR is read in, which is not the unit the athlete gave their
+  // bodyweight in at signup. Those were one setting until now, so anyone who
+  // weighs themselves in kilos and loads plates in pounds - which around here
+  // is most people - had no way to say so.
+  const weightUnit = state.me.unitPref === "kg" ? "kg" : "lb";
   const alertSound = state.me.intake?.restAlert || DEFAULT_ALERT;
 
   // Switching sessions from inside the workout.
@@ -22003,7 +22067,7 @@ const initialState = () => ({
   // truthy — so `if (state.me.id)` guards passed before anyone was signed in,
   // and on a coach account (where `me` is never populated) that literal "a1"
   // was being sent to Postgres as a uuid and rejected.
-  me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, trainingDays: [] },
+  me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, unitPref: "lb", themePref: "system", trainingDays: [] },
   // Bumped after a photo upload. exerciseImage() reads a module-level map that
   // React cannot see, so without this the picture appears only on the next
   // navigation.
@@ -22622,6 +22686,12 @@ function AppInner() {
           sport: profile.sport, sex: profile.sex, isFighter: profile.is_fighter,
           injuries: profile.injuries || [], goals: profile.goals || [],
           weightKg: profile.weight_kg, heightCm: profile.height_cm, streak: profile.streak || 0,
+          // The unit LIFTED weight is shown in, and the appearance setting.
+          // Columns rather than another key inside the intake blob, because
+          // both are read on nearly every screen and a jsonb lookup per render
+          // is a lot of work to avoid one migration.
+          unitPref: profile.unit_pref === "kg" ? "kg" : "lb",
+          themePref: profile.theme_pref === "light" || profile.theme_pref === "dark" ? profile.theme_pref : "system",
           selfGuided: profile.role === "athlete", hasCoach: profile.role === "athlete_coached",
           intake: profile.intake || {}, trainingDays: profile.intake?.trainingDays || [], program: null,
         }
