@@ -512,6 +512,66 @@ test("the session's own log is built once and reused", () => {
     "state is given a different object than the rewards were computed from");
 });
 
+// ---------- where an athlete reads it afterwards ----------
+
+test("the level panel shows the level, the gap to the next one, and the bar", () => {
+  const at = src.indexOf("function LevelPanel(");
+  assert.ok(at > 0, "there is no level panel on the profile");
+  const panel = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/levelFor\(logs\)/.test(panel), "the panel does not work out the level");
+  assert.ok(/\{level\.toNext\}/.test(panel), "it never says how far the next level is");
+  assert.ok(/rw-bar/.test(panel), "there is no progress bar");
+  assert.ok(/WORKOUTS_PER_LEVEL/.test(panel),
+    "the rule is written as a number in prose rather than read from the constant");
+});
+
+test("the panel names the weeks a shield covered, not just how many", () => {
+  // "One shield used" tells an athlete nothing. The week it covered tells
+  // them why the run did not break, which is the only reason it exists.
+  const at = src.indexOf("function LevelPanel(");
+  const panel = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/shieldsUsed\.map\(week =>/.test(panel), "the shields are counted rather than named");
+  assert.ok(/week of \{formatSessionDate\(week, \{ withWeekday: false \}\)/.test(panel),
+    "a shielded week is printed as a raw date or with a weekday that means nothing");
+});
+
+test("a streak of zero reads as a sentence, not as a bare 0", () => {
+  const at = src.indexOf("function LevelPanel(");
+  const panel = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/weeks === 0 \? "No perfect weeks in a row yet"/.test(panel),
+    "an athlete with no streak is shown a zero with no explanation");
+});
+
+test("the wall shows all thirteen, locked ones included", () => {
+  // A wall that shows only what has been earned says nothing about what
+  // there is to earn, and the hint under a locked badge is the only place
+  // the rules are written where an athlete will read them.
+  const at = src.indexOf("function BadgeWall(");
+  assert.ok(at > 0, "there is no badge wall");
+  const wall = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/BADGES\.map\(badge =>/.test(wall), "the wall renders only the earned ones");
+  assert.ok(/\{badge\.hint\}/.test(wall), "the hints are not shown, so a locked badge explains nothing");
+  assert.ok(/\{earned\.size\} of \{BADGES\.length\}/.test(wall), "the wall does not say how many of how many");
+  assert.ok(/opacity: has \? 1 : 0\.72/.test(wall),
+    "locked badges are hidden or dimmed to the point of being unreadable");
+});
+
+test("the stubbed PR counter is gone rather than switched on over nothing", () => {
+  // It read a hard-coded zero behind a feature flag. The wall replaces it.
+  assert.ok(!/achievements:/.test(src), "the achievements feature flag is still there");
+  assert.ok(!/StatCard icon=\{Award\} label="PRs" value=\{0\}/.test(src),
+    "the hard-coded PR counter is still on the profile");
+});
+
+test("both panels are actually on the profile, with the programme's week", () => {
+  assert.ok(/<LevelPanel logs=\{state\.workoutLogs\} sessionsPerWeek=\{pointsPerWeekTarget\}/.test(src),
+    "the level panel is written but never rendered");
+  assert.ok(/<BadgeWall logs=\{state\.workoutLogs\} sessionsPerWeek=\{pointsPerWeekTarget\}/.test(src),
+    "the badge wall is written but never rendered");
+  assert.ok(/program=\{pointsProgram\}/.test(src),
+    "the wall is not given the programme, so Week One and Caught Up can never be earned");
+});
+
 // ---------- the stylesheet that is actually built ----------
 
 test("the animations live in the stylesheet that is built", () => {

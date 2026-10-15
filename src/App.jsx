@@ -459,7 +459,6 @@ const FEATURES = {
   exerciseLibrary: false,  // the standalone browse-all-exercises screen
   aiAssistant: true,       // the AI chat tab that sits beside the coach thread
   nutrition: false,        // never actually built — a stub screen
-  achievements: false,     // PR counters and badges with no real data behind them
 };
 
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap";
@@ -20107,6 +20106,99 @@ function PointsPanel({ logs, sessionsPerWeek }) {
   );
 }
 
+// Level, perfect-week streak and the shields that kept it alive.
+//
+// Deliberately above the badge wall: the level is the number that moves most
+// often, and a wall of thirteen squares with nothing moving on it is a
+// scoreboard for somebody else's season.
+function LevelPanel({ logs, sessionsPerWeek, todayIso }) {
+  const level = levelFor(logs);
+  const { weeks, shieldsUsed } = perfectWeekStreak(logs, sessionsPerWeek, todayIso);
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Level</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>
+          {level.counted} {level.counted === 1 ? "session" : "sessions"} counted
+        </span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-3xl tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{level.level}</span>
+        <span className="text-[12.5px]" style={{ color: C.sub }}>
+          {level.toNext} more {level.toNext === 1 ? "session" : "sessions"} to level {level.level + 1}
+        </span>
+      </div>
+      <div className="rw-bar mt-2.5" style={{ height: 8, borderRadius: 4, background: C.bg, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <i style={{ width: `${Math.round(level.progress * 100)}%`, background: `linear-gradient(90deg, ${C.orange}, ${C.amber})` }} />
+      </div>
+
+      <div className="flex items-center gap-2 mt-4 pt-3 flex-wrap" style={{ borderTop: `1px solid ${C.border}` }}>
+        <Zap size={14} style={{ color: C.olive }} />
+        <span className="text-[12.5px] font-semibold" style={{ color: C.text }}>
+          {weeks === 0 ? "No perfect weeks in a row yet" : `${weeks} perfect ${weeks === 1 ? "week" : "weeks"} in a row`}
+        </span>
+        {/* Named, not just counted. "One shield used" tells an athlete
+            nothing; the week it covered tells them why the run did not
+            break, which is the only reason the shield exists. */}
+        {shieldsUsed.map(week => (
+          <span key={week} className="inline-flex items-center gap-1 rounded-full px-2 py-0.5"
+            style={{ background: `${C.blue}18`, border: `1px solid ${C.blue}66` }}>
+            <Shield size={11} style={{ color: C.blue }} />
+            <span className="text-[11px] font-semibold" style={{ color: C.blue }}>
+              week of {formatSessionDate(week, { withWeekday: false }) || week}
+            </span>
+          </span>
+        ))}
+      </div>
+      <p className="text-[12.5px] mt-2 leading-relaxed" style={{ color: C.sub }}>
+        A level every {WORKOUTS_PER_LEVEL} sessions that counted. A perfect week is every session your
+        programme schedules, done. One week a month can be covered by a shield so a holiday
+        does not cost you the run.
+      </p>
+    </div>
+  );
+}
+
+// The thirteen. Shown in full, locked ones included, because a wall that
+// only shows what has been earned says nothing about what there is to earn -
+// and the hint under a locked badge is the only place the rules are written
+// down where an athlete will actually read them.
+function BadgeWall({ logs, sessionsPerWeek, program, todayIso }) {
+  const earned = badgesEarned(logs, { sessionsPerWeek, program, todayIso });
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-baseline justify-between mb-3">
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Badges</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>{earned.size} of {BADGES.length}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        {BADGES.map(badge => {
+          const has = earned.has(badge.key);
+          return (
+            <div key={badge.key} className="rounded-xl px-3 py-2.5"
+              style={{
+                background: has ? `${C.olive}14` : C.bg,
+                border: `1px solid ${has ? C.olive : C.border}`,
+                // Locked badges are dimmed rather than hidden or greyed to
+                // nothing: they have to stay readable, because the hint is
+                // the instruction.
+                opacity: has ? 1 : 0.72,
+              }}>
+              <div className="flex items-center gap-1.5">
+                <Award size={13} className="shrink-0" style={{ color: has ? C.olive : C.faint }} />
+                <span className="text-[12.5px] font-semibold min-w-0 truncate" style={{ color: has ? C.olive : C.sub }}>
+                  {badge.name}
+                </span>
+              </div>
+              <div className="text-[11px] mt-1 leading-snug" style={{ color: C.faint }}>{badge.hint}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TrainingTotalsPanel({ logs }) {
   const totals = trainingTotals(logs, todayISO());
   if (!totals.all.sessions) {
@@ -20371,11 +20463,18 @@ function AthleteProfile({ state, setState, nav }) {
             records — so it read as "you have never set a PR" to every athlete
             forever. It comes back with the achievements switch, once something
             real is behind it. */}
-        <div className={`grid gap-2.5 mb-5 ${FEATURES.achievements ? "grid-cols-3" : "grid-cols-2"}`}>
+        {/* The PRs tile that used to sit here behind FEATURES.achievements
+            read a hard-coded zero. It is a real number now - the badge wall
+            below says how many of the thirteen are earned, and the level
+            panel says how the next one is reached - so the flag is gone
+            rather than switched on over a stub. */}
+        <div className="grid gap-2.5 mb-5 grid-cols-2">
           <StatCard icon={Flame} label="Streak" value={m.streak} sub="days" accent={C.amber} />
           <StatCard icon={Dumbbell} label="Logged" value={state.workoutLogs.length} sub="sessions" accent={C.blue} />
-          {FEATURES.achievements && <StatCard icon={Award} label="PRs" value={0} accent={C.olive} />}
         </div>
+        <LevelPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} todayIso={todayISO()} />
+        <BadgeWall logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget}
+          program={pointsProgram} todayIso={todayISO()} />
         <TimeTrainedPanel logs={state.workoutLogs} />
         <TrainingTotalsPanel logs={state.workoutLogs} />
         <PointsPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} />
