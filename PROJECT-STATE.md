@@ -19,7 +19,7 @@ had to be reconstructed from file timestamps.
 | Live site | trained-best.vercel.app |
 | Database | Supabase project `pkujygyibuiyyrryrswr` |
 | Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
-| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1187 assertions |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1194 assertions |
 | Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
 
 **Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
@@ -77,6 +77,7 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | Plan rebuild | **Done.** `session_moves` (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet, the missed card on Today, "pulled-forward goes back", and "I did it on Mon, log it" |
 | `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
 | `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
+| 2. Signup in 5 steps | **Started.** `SIGNUP_KEYS`, `SIGNUP_V2_STEPS` and the contract test are in; `SIGNUP_V2` is **false** and the live flow is untouched. The screens themselves are the next job |
 | 1b. Points, levels, badges | Not started |
 | 2. Signup in 5 steps | Not started |
 | 3. Coach home | Not started |
@@ -203,11 +204,44 @@ Three commits on `redesign-branding`, 15 Oct:
   movement that beat the standing best. Offline sessions carry their set
   rows into the queue.
 
+## 7b. Picking up phase 2
+
+The groundwork is done and it is the part that was easy to get wrong. Read
+`SIGNUP_KEYS` in `src/App.jsx` before writing a line of UI.
+
+**The one rule.** The new screens are a different arrangement of inputs over
+the SAME data model. `writeProfileAndContinue`, `buildMeFromOnboarding` and
+`buildAIPrompt` all read the answers by key and none of them cares which
+screen a key was typed on. Keep every key and nothing downstream changes at
+all. Drop one and it fails silently - `"🥊 Sport / Focus"` is the dangerous
+one, because without it every generated programme becomes General Fitness
+with no error anywhere.
+
+`signup.test.mjs` enforces this: it reads the keys `buildAIPrompt` and the
+profile write actually use and fails if any is missing from `SIGNUP_KEYS`.
+
+**What is left:**
+
+1. Four new step bodies, in `OnboardingStepBody`: `👤 About You`,
+   `🎯 Your Goal`, `📅 Your Week`, and the new one-screen `🩹 Injuries`.
+   Each sets the keys `SIGNUP_KEYS` lists for it.
+2. The coach path's two screens: `🏅 Your Coaching Business` and
+   `📩 Invite Your Athletes`.
+3. The coached path's coach card: once six characters are entered, show the
+   logo, business name, coach name and "by Trained.Best" before the account
+   screen.
+4. Session style stops being asked. Derive the split from
+   `trainingDays.length` where the old `"🧩 Session Style"` answer was read.
+5. The plan-ready screen: what was chosen, then this week's workouts,
+   scheduling from today on only.
+6. Flip `SIGNUP_V2` to true, in its own commit, and delete the v1 lists in
+   the one after - not the same one, so the revert stays a one-liner.
+
 ## 8. Next action
 
 **Phase 1 and the Plan rebuild are both complete.** What is left:
 
-1. **Phase 2: signup in 5 steps**, three paths. No migration.
+1. **Phase 2: signup in 5 steps** - started, see section 7b.
 2. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
    Training.
 3. **Phase 4: schedule.** Month calendar, direct booking, requests,
