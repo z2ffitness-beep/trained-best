@@ -78,11 +78,14 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
 | `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
 | 2. Signup in 5 steps | **Started.** `SIGNUP_KEYS`, `SIGNUP_V2_STEPS` and the contract test are in; `SIGNUP_V2` is **false** and the live flow is untouched. The screens themselves are the next job |
-| 1b. Points, levels, badges | Not started |
-| 2. Signup in 5 steps | Not started |
-| 3. Coach home | Not started |
-| 4. Schedule | Not started |
-| 5. Messages with media | Not started |
+| 3. Coach home | **Not started.** Coach Home and athlete detail (4 tabs), adjust plan, My Own Training |
+| 4. Schedule | **Not started.** Month calendar, direct booking, requests, no-show |
+| 5. Messages with media | **Not started.** Extends `form_checks` |
+| 7. Billing with Stripe | **Excluded** by Isaiah, 15 Oct |
+
+**In one line: the athlete side is built, the coach side is not.** Phases 1
+and 6 are done and the Plan rebuild with them; 2 is started; 3, 4 and 5 are
+untouched.
 
 Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
 **the coach roster sorted by next session** (`groupAthletesBySession`). The
