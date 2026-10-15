@@ -13893,6 +13893,79 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const [checkinSaving, setCheckinSaving] = useState(false);
   const [checkinError, setCheckinError] = useState(null);
 
+  // ---- a workout that was stopped and kept ----
+  //
+  // Read straight from storage rather than held in state, because this
+  // component stays mounted while the athlete goes off to the workout screen
+  // and comes back - so a copy taken on mount would be stale the moment it
+  // mattered. The tick is what re-reads it after this screen itself changes
+  // something.
+  const [pausedTick, setPausedTick] = useState(0);
+  const [confirmDrop, setConfirmDrop] = useState(false);
+  const pausedWorkout = useMemo(
+    () => pausedWorkoutToShow(state.me.id, today),
+    [state.me.id, today, pausedTick],
+  );
+  // Which day of the live program it belongs to. The stored key survives a
+  // reload and the day's own id does not, so this is the translation back.
+  // A program the coach has since replaced will not match, and the card
+  // stays hidden rather than offering a session that no longer exists.
+  const pausedDay = useMemo(() => {
+    if (!pausedWorkout) return null;
+    return (myProgram?.days || []).find(d => sessionIdentity(myProgram, d) === pausedWorkout.dayKey) || null;
+  }, [pausedWorkout, myProgram]);
+
+  // Hand it to the session draft under today's date and let the workout
+  // screen's own restore do the rest. One restore path rather than two: the
+  // screen already knows how to pick a session up, and teaching it a second
+  // way to do the same thing is how the two drift apart.
+  const resumePaused = () => {
+    if (!pausedWorkout || !pausedDay) return;
+    writeSessionDraft({
+      dayId: pausedWorkout.dayKey,
+      date: todayISO(),
+      exIdx: pausedWorkout.exIdx || 0,
+      notes: pausedWorkout.notes || "",
+      setChecks: pausedWorkout.setChecks || {},
+      setWeights: pausedWorkout.setWeights || {},
+      setReps: pausedWorkout.setReps || {},
+      handSet: pausedWorkout.handSet || {},
+      swappedMap: pausedWorkout.swappedMap || {},
+    }, state.me.id);
+    // The clock carries on from where it stopped rather than from zero. The
+    // anchor is backdated by the seconds already on it, because the timer is
+    // wall-clock based - handing it a start time of now would show a session
+    // that had taken no time at all.
+    const seconds = Math.max(0, Math.round(Number(pausedWorkout.seconds) || 0));
+    if (seconds > 0) {
+      writeSessionTimer({
+        dayId: pausedWorkout.dayKey, date: todayISO(), mode: "running",
+        startedAt: Date.now() - seconds * 1000, seconds,
+      });
+    }
+    // It is being finished now, so it is no longer waiting to be. From here
+    // the ordinary draft holds it, exactly as it would for any session the
+    // athlete walked away from without pressing Stop.
+    clearPausedWorkout(state.me.id);
+    setPausedTick(t => t + 1);
+    nav.go("athlete-workout", pausedDay.id);
+  };
+
+  const keepPausedForNow = () => {
+    snoozePausedWorkout(state.me.id, today);
+    setPausedTick(t => t + 1);
+  };
+
+  const dropPaused = () => {
+    // The draft goes with it. Leaving that behind would have the workout
+    // screen offer to restore the same half-session the athlete has just
+    // thrown away.
+    if (pausedWorkout?.dayKey) clearSessionDraft(pausedWorkout.dayKey, state.me.id);
+    clearPausedWorkout(state.me.id);
+    setConfirmDrop(false);
+    setPausedTick(t => t + 1);
+  };
+
   // Persists to session_checkins. This used to write to an in-memory object
   // only, so the athlete confirmed, refreshed, and the "check-in required"
   // banner was back — while the coach, reading their own copy of that object,
@@ -14006,6 +14079,49 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
+
+        {/* Above today's workout, and on every day including rest days,
+            because a session somebody stopped half way through is the most
+            urgent thing on this screen until they decide what to do with it.
+            Silence is how an hour of work gets lost. */}
+        {pausedWorkout && pausedDay && (
+          <div className="rounded-2xl p-4 mb-5" style={{ ...card(), border: `1px solid ${C.blue}` }}>
+            <div className="flex items-start gap-2.5">
+              <Pause size={16} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  Do you want to finish your {sessionLabel(pausedWorkout.dayName)} workout?
+                </div>
+                <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
+                  You stopped at exercise {(Number(pausedWorkout.exIdx) || 0) + 1}
+                  {pausedWhenLabel(pausedWorkout.date, today) ? ` ${pausedWhenLabel(pausedWorkout.date, today)}` : ""}.
+                  {" "}Your sets are saved.
+                </p>
+                {confirmDrop ? (
+                  <>
+                    {/* Two steps, because this is the one button here that
+                        destroys something and a mis-tap on a phone in a gym
+                        bag is a real way to lose a session. */}
+                    <p className="text-[12.5px] mt-3" style={{ color: C.red }}>
+                      Drop it? The sets you logged in that session are deleted.
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <Btn size="sm" variant="confirm" onClick={dropPaused}>Yes, drop it</Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>Keep it</Btn>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <Btn size="sm" variant="primary" onClick={resumePaused}>Yes, finish it</Btn>
+                    <Btn size="sm" variant="ghost" onClick={keepPausedForNow}>No, save it as is</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => setConfirmDrop(true)}>Drop it</Btn>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {todayDay ? (
           (() => {
             // The first movement with a photo, shown as a tilted tile in the
@@ -16088,6 +16204,77 @@ async function flushPendingLogs(userId) {
   return sent;
 }
 
+// ---- 3. a workout stopped part-way through ----
+//
+// The session draft above is a safety net. It exists so that a phone killing
+// a backgrounded tab does not cost an athlete their session, and it expires
+// after fourteen hours because a draft older than that is yesterday's
+// accident rather than today's intention.
+//
+// A PAUSED workout is the opposite thing. The athlete pressed Stop and chose
+// to keep it, so it has to survive the night, the weekend and a phone
+// restart: its own key, no expiry, and the home screen asks about it every
+// day - rest days included - until it is finished or dropped.
+//
+// One per athlete. Two half-finished sessions is a mess nobody asked for,
+// and the card that offers to resume one has room for a single answer.
+const PAUSED_WORKOUT_KEY = "tb_paused_workout";
+
+function readAllPaused() {
+  const v = storageGet(PAUSED_WORKOUT_KEY);
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+function readPausedWorkout(userId) {
+  const paused = readAllPaused()[userId || "anon"];
+  return paused && paused.dayKey ? paused : null;
+}
+
+function writePausedWorkout(paused, userId) {
+  // Without a durable key there is nothing to match it back to a session, so
+  // storing it would only produce a card that cannot be acted on.
+  if (!paused?.dayKey) return;
+  storageSet(PAUSED_WORKOUT_KEY, {
+    ...readAllPaused(),
+    [userId || "anon"]: { ...paused, savedAt: paused.savedAt || Date.now() },
+  });
+}
+
+function clearPausedWorkout(userId) {
+  const all = readAllPaused();
+  delete all[userId || "anon"];
+  storageSet(PAUSED_WORKOUT_KEY, all);
+}
+
+// "Not today." Keeps the workout exactly as it is and stops the card asking
+// again until tomorrow, so an athlete who has already decided is not asked
+// the same question on every visit to the home screen.
+function snoozePausedWorkout(userId, dateStr) {
+  const paused = readPausedWorkout(userId);
+  if (!paused) return;
+  writePausedWorkout({ ...paused, snoozedOn: dateStr }, userId);
+}
+
+function pausedWorkoutToShow(userId, dateStr) {
+  const paused = readPausedWorkout(userId);
+  if (!paused) return null;
+  return paused.snoozedOn === dateStr ? null : paused;
+}
+
+// When it was put down, in words. A weekday on its own for the first week,
+// and a date after that - a card that has been sitting there a fortnight
+// saying "on Tuesday" implies a Tuesday that has since come round again.
+function pausedWhenLabel(dateStr, today = todayISO()) {
+  if (!dateStr) return null;
+  const then = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(then.getTime())) return null;
+  const days = Math.round((new Date(`${today}T00:00:00`) - then) / 86400000);
+  if (days <= 0) return "earlier today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `on ${then.toLocaleDateString("en-US", { weekday: "long" })}`;
+  return `on ${then.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}`;
+}
+
 // How much room the scrolling column above a FIXED bottom bar has to leave.
 //
 // This was a hard-coded 184px, guessed once from one phone. A guess is wrong
@@ -16516,6 +16703,10 @@ function Workout({ state, setState, nav, dayId }) {
   const [swapItem, setSwapItem] = useState(null);
   const [formCheckOpen, setFormCheckOpen] = useState(false);
   const [swappedMap, setSwappedMap] = useState({});
+  // null, or { replaces } - the name of another paused workout this one
+  // would take the place of, worked out when the sheet is opened rather than
+  // read out of storage on every render.
+  const [stopOpen, setStopOpen] = useState(null);
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -16857,6 +17048,15 @@ function Workout({ state, setState, nav, dayId }) {
   const phaseLabel = PHASES.find(p => p.key === x?.phase)?.label;
   const alertSound = state.me.intake?.restAlert || DEFAULT_ALERT;
 
+  // The stopwatch as it stands at this instant, including the second React
+  // has not re-rendered yet. Reading timerSeconds alone loses up to a second
+  // of a session every time it is put down and picked back up.
+  const liveTimerSeconds = () => (
+    timerMode === "running"
+      ? Math.round((Date.now() - (timerStartRef.current || Date.now())) / 1000)
+      : Math.max(0, Math.round(timerSeconds || 0))
+  );
+
   // Switching sessions from inside the workout.
   //
   // Changing day resets everything for this session — ticked sets, typed
@@ -16880,7 +17080,7 @@ function Workout({ state, setState, nav, dayId }) {
     // The stored timer belongs to the session being left. Clearing it here
     // stops it being restored onto the new day by the reset effect below.
     writeSessionTimer(null);
-    clearSessionDraft(day.id, state.me.id);
+    clearSessionDraft(dayKey, state.me.id);
     setDayOverride(id);
     setPendingDay(null);
   };
@@ -16888,13 +17088,6 @@ function Workout({ state, setState, nav, dayId }) {
     if (!id || id === day.id) return;
     if (hasProgress) setPendingDay(id);
     else goToDay(id);
-  };
-  // Wraps at both ends, so four taps of "next" on a four-day program brings
-  // you back where you started rather than dead-ending on the last one.
-  const requestDaySwitch = (step) => {
-    if (allDays.length < 2) return;
-    const next = allDays[(dayIdx + step + allDays.length) % allDays.length];
-    requestDaySwitchTo(next?.id);
   };
   // `item` so a grouped block can tick any of its movements; it defaults to
   // the block's first, which is the only one a straight set has.
@@ -16995,7 +17188,12 @@ function Workout({ state, setState, nav, dayId }) {
   // they're actually ready to begin, which is rarely the moment they open the
   // app. getAudioContext() rides along on this tap because browsers only let
   // audio start from a real gesture, and the rest-timer alert needs it later.
-  const rememberTimer = (patch) => writeSessionTimer({ dayId: day.id, date: todayISO(), ...patch });
+  // dayKey, not day.id. Every read of the stored timer goes through
+  // restoreSessionTimer(dayKey, ...), and day.id is a fresh random string on
+  // every launch - so a stopwatch stopped mid-session was written under a key
+  // nothing ever looked for, and came back as the "shall I time this?" prompt
+  // with the elapsed time gone.
+  const rememberTimer = (patch) => writeSessionTimer({ dayId: dayKey, date: todayISO(), ...patch });
   const armTimer = () => { getAudioContext(); setTimerMode("ready"); rememberTimer({ mode: "ready" }); };
   const declineTimer = () => { setTimerMode("off"); rememberTimer({ mode: "off" }); };
   const startTimer = () => { getAudioContext(); setCountdownN(3); setTimerMode("counting"); };
@@ -17222,10 +17420,68 @@ function Workout({ state, setState, nav, dayId }) {
     // stopwatch that had already been stopped, and leaving the draft behind
     // would offer to restore a session that has already been logged.
     writeSessionTimer(null);
-    clearSessionDraft(day.id, state.me.id);
+    // dayKey, not day.id - the draft is written under the durable key, so
+    // clearing it under this launch's random id cleared nothing. A finished
+    // session sat in the draft for fourteen hours, and reopening the same day
+    // offered to restore a workout that was already in the database.
+    clearSessionDraft(dayKey, state.me.id);
+    // It is logged, so it is no longer waiting to be finished.
+    clearPausedWorkout(state.me.id);
     setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued });
     setSaving(false);
     setFinished(true);
+  };
+
+  // ---- stopping part-way through ----
+  //
+  // Leaving a workout used to mean navigating away and hoping. The session
+  // survived in a draft for fourteen hours, which nothing on screen said, so
+  // an athlete who had to leave the gym after three exercises had no way to
+  // know whether their sets were safe - and after a night's sleep they were
+  // not.
+
+  // Everything this session is, in a shape that survives being put down for a
+  // week. Keyed the durable way, exactly like the draft, because the ids the
+  // UI hangs its sets on are minted fresh on every launch.
+  const pauseSnapshot = () => {
+    const { toStable } = stableExerciseKeys(day, nameOfEntry);
+    return {
+      dayKey, dayName: day.name, date: todayISO(), exIdx, notes,
+      setChecks: remapExerciseKeys(setChecks, toStable),
+      setWeights: remapExerciseKeys(setWeights, toStable),
+      setReps: remapExerciseKeys(setReps, toStable),
+      handSet: remapExerciseKeys(handSet, toStable),
+      swappedMap: remapExerciseKeys(swappedMap, toStable),
+      seconds: timerIsLive ? liveTimerSeconds() : 0,
+    };
+  };
+
+  const openStop = () => {
+    const existing = readPausedWorkout(state.me.id);
+    setStopOpen({
+      replaces: existing && existing.dayKey !== dayKey ? existing.dayName : null,
+    });
+  };
+
+  // Stop and keep it. Nothing is logged: as far as the record is concerned
+  // this session has not happened, and half a workout sitting in the history
+  // with no way to add to it is worse than no row at all.
+  const stopAndSave = () => {
+    writePausedWorkout(pauseSnapshot(), state.me.id);
+    // Both belong to a session that has just been put away. A stopwatch left
+    // behind would still be running tomorrow; a draft left behind would offer
+    // to restore the same session a second way.
+    writeSessionTimer(null);
+    clearSessionDraft(dayKey, state.me.id);
+    setStopOpen(null);
+    nav.go("athlete-home");
+  };
+
+  // Done for good. Logs what was actually ticked; the 50% rule in the save
+  // path decides whether it counts toward the streak and the rest.
+  const stopAndLog = () => {
+    setStopOpen(null);
+    finishWorkout();
   };
 
   if (finished) {
@@ -17247,26 +17503,26 @@ function Workout({ state, setState, nav, dayId }) {
     <div className="pb-36">
       {timerIsLive && <SessionTimerBadge seconds={timerSeconds} running={timerMode === "running"} onStop={stopTimer} />}
       {timerMode === "counting" && countdownN > 0 && <SessionTimerCountdown n={countdownN} />}
-      {/* The "1/23" exercise counter that used to sit here is gone. It was the
-          number nobody needed — the athlete is on whichever exercise is on
-          screen — and next to a bare pair of arrows it read as if the arrows
-          stepped through exercises rather than whole sessions.
-          The arrows are labelled now, so what they do is stated rather than
-          guessed at. */}
+      {/* Stop, and the name of the session. Nothing else.
+          Two things used to live here as well and no longer do. The "1/23"
+          exercise counter went first: the athlete is on whichever exercise is
+          on screen, so the number answered a question nobody had. The
+          labelled Back / Next Day arrows went when Stop arrived — three
+          controls and a 25px title do not fit across a 320px phone, and what
+          was being squeezed out was the title, which is the only thing up
+          here that says which session this is. The day strip directly below
+          does the same job better: it shows every day at once, says which one
+          is scheduled for today, and jumps straight to any of them instead of
+          stepping. */}
       <TopBar title={day.name} right={
-        allDays.length > 1 ? (
-          <div className="flex items-center rounded-full shrink-0 overflow-hidden" style={{ border: `1px solid ${C.border}`, background: C.panel }}>
-            <button onClick={() => requestDaySwitch(-1)} aria-label="Previous training day" className="px-2 py-1.5">
-              <ChevronLeft size={15} style={{ color: C.sub }} />
-            </button>
-            <button onClick={() => requestDaySwitch(1)} aria-label="Next training day"
-              className="flex items-center gap-1 pl-2 pr-2.5 py-1.5"
-              style={{ borderLeft: `1px solid ${C.border}` }}>
-              <span className="text-[12.5px] font-semibold whitespace-nowrap" style={{ color: C.text }}>Next Day</span>
-              <ChevronRight size={14} style={{ color: C.text }} />
-            </button>
-          </div>
-        ) : null
+        /* Red, because stopping is the one thing an athlete does mid-session
+           that the app had no answer for. The old way out was the back
+           gesture, which said nothing about what happened to the sets. */
+        <button onClick={openStop} aria-label="Stop this workout"
+          className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
+          style={{ background: `${C.red}1f`, border: `1px solid ${C.red}`, color: C.red }}>
+          Stop
+        </button>
       } />
       <div className="px-5 pt-5">
 
@@ -17793,6 +18049,21 @@ function Workout({ state, setState, nav, dayId }) {
             </Btn>
           : <Btn className="flex-1" disabled={!dayIsScheduled} onClick={() => setFinishOpen(true)}>Finish Workout</Btn>}
       </div>
+
+      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Stop for today?">
+        <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+          {stopOpen?.replaces
+            ? `Your sets, where you are in the session and the time so far are all kept. You already have a paused ${sessionLabel(stopOpen.replaces)} workout, and saving this one replaces it.`
+            : "Your sets, where you are in the session and the time so far are all kept. Nothing is logged until you finish."}
+        </p>
+        <Btn variant="primary" className="w-full" onClick={stopAndSave}>Stop and save my progress</Btn>
+        <Btn variant="ghost" className="w-full mt-2" onClick={() => setStopOpen(null)}>Keep going</Btn>
+        {/* Separate from the two above, because this one writes a session to
+            the record and the other two do not. */}
+        <Btn variant="secondary" className="w-full mt-2" onClick={stopAndLog} disabled={saving}>
+          {saving ? "Saving\u2026" : "I'm done for good, count what I did"}
+        </Btn>
+      </Modal>
 
       <Modal open={!!pendingDay} onClose={() => setPendingDay(null)} title="Switch session?">
         <p className="text-[15px] mb-5" style={{ color: C.text }}>
