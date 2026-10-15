@@ -15379,6 +15379,225 @@ function ProgramTimeline({ program }) {
   );
 }
 
+// What each status looks like. Colour alone is never the whole signal - the
+// word is always there too, because a row of coloured squares means nothing
+// to someone seeing it for the first time, and nothing at all to someone who
+// cannot tell the green from the amber.
+const PLAN_TONE = {
+  done:          { fg: () => C.olive, bg: () => `${C.olive}1a`, line: () => C.olive },
+  missed:        { fg: () => C.red,   bg: () => `${C.red}14`,   line: () => `${C.red}66` },
+  paused:        { fg: () => C.blue,  bg: () => `${C.blue}14`,  line: () => `${C.blue}66` },
+  skipped:       { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+  "moved-away":  { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+  extra:         { fg: () => C.olive, bg: () => `${C.olive}14`, line: () => `${C.olive}66` },
+  today:         { fg: () => C.orange, bg: () => `${C.orange}1a`, line: () => C.orange },
+  upcoming:      { fg: () => C.sub,   bg: () => C.panel,        line: () => C.border },
+  rest:          { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+};
+
+function planLabel(session) {
+  if (session.status === "moved-away") {
+    // An arrow rather than "Moved to", measured: at 320px the longer form is
+    // a 120px pill, and the session's name - which shares the row - gets
+    // truncated down to "Day 4 ...". The arrow keeps the destination, which
+    // is the useful half, and gives the name back its width.
+    const to = formatSessionDate(session.movedTo, { withWeekday: false });
+    return to ? `Moved → ${to}` : "Moved";
+  }
+  if (session.status === "extra") return "Extra";
+  return PLAN_STATUS[session.status] || "";
+}
+
+// The week, as a ring, a strip and a list.
+//
+// Three readings of the same seven days on purpose. The ring answers "am I on
+// track" without being read; the strip answers "which days" at a glance; the
+// list answers "what exactly, and what do I do about it". An athlete opening
+// this on a Tuesday wants the first, on a Sunday the third.
+function WeekPlanPanel({ rows, progress, onPickDay, today }) {
+  const R = 26;
+  const CIRC = 2 * Math.PI * R;
+  const pct = Math.round(progress.ratio * 100);
+  return (
+    <div className="rounded-2xl p-4 mb-4" style={card()}>
+      <div className="flex items-center gap-4">
+        <div className="relative shrink-0" style={{ width: 68, height: 68 }}>
+          <svg width="68" height="68" viewBox="0 0 68 68" aria-hidden="true">
+            <circle cx="34" cy="34" r={R} fill="none" stroke={C.border} strokeWidth="7" />
+            <circle cx="34" cy="34" r={R} fill="none" stroke={C.olive} strokeWidth="7"
+              strokeLinecap="round" strokeDasharray={CIRC}
+              strokeDashoffset={CIRC * (1 - progress.ratio)}
+              transform="rotate(-90 34 34)" />
+          </svg>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-[15px] tabular-nums font-bold" style={{ color: C.text }}>{pct}%</span>
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>This week</div>
+          <div className="text-[15px] mt-0.5" style={{ color: C.text }}>
+            {progress.planned === 0
+              ? "Nothing scheduled this week"
+              : `${progress.done} of ${progress.planned} sessions done`}
+          </div>
+        </div>
+      </div>
+
+      {/* The strip: seven cells, Monday first, each a weekday letter and a
+          dot. Deliberately NOT labelled with the status word - at 320px a
+          seventh of the card is thirty pixels, and "Upcoming" at nine point
+          does not fit in thirty pixels. Measured, not guessed.
+
+          So the strip carries position and the list below carries meaning.
+          Between them nothing is left to colour alone, which matters: a row
+          of coloured squares says nothing to someone seeing it for the first
+          time and nothing at all to someone who cannot tell the green from
+          the amber. Every cell also names its status to a screen reader. */}
+      <div className="grid grid-cols-7 gap-1.5 mt-4">
+        {rows.map(row => {
+          const session = row.sessions[0] || null;
+          const status = session?.status || "rest";
+          const tone = PLAN_TONE[status] || PLAN_TONE.rest;
+          return (
+            <button key={row.date} onClick={() => onPickDay(row)}
+              aria-label={`${row.weekday}: ${session ? planLabel(session) : "Rest day"}`}
+              className="rounded-xl py-2 flex flex-col items-center gap-1.5"
+              style={{
+                background: tone.bg(),
+                border: `1px solid ${row.isToday ? C.orange : tone.line()}`,
+              }}>
+              <span className="text-[11px] font-bold leading-none" style={{ color: row.isToday ? C.orange : C.sub }}>
+                {WEEKDAY_SHORT[row.weekday]}
+              </span>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: session ? tone.fg() : "transparent",
+                border: session ? "none" : `1px solid ${C.steel}`,
+              }} />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The list: one row per day with something on it, in words. This is
+          the part an athlete reads on a Sunday when they are working out what
+          happened, and the part they tap to change something. */}
+      <div className="mt-3">
+        {rows.filter(r => r.sessions.length).map(row => {
+          const session = row.sessions[0];
+          const tone = PLAN_TONE[session.status] || PLAN_TONE.rest;
+          return (
+            <button key={row.date} onClick={() => onPickDay(row)}
+              className="w-full flex items-center gap-2.5 py-2 text-left"
+              style={{ borderTop: `1px solid ${C.border}` }}>
+              <span className="text-[11px] font-bold shrink-0" style={{ width: 30, color: row.isToday ? C.orange : C.faint }}>
+                {row.weekday.slice(0, 3)}
+              </span>
+              <span className="text-[12.5px] font-semibold flex-1 min-w-0 truncate" style={{ color: C.text }}>
+                {session.day.name}
+              </span>
+              <span className="text-[11px] font-semibold shrink-0 rounded-full px-2 py-0.5"
+                style={{ color: tone.fg(), background: tone.bg(), border: `1px solid ${tone.line()}` }}>
+                {planLabel(session)}
+              </span>
+            </button>
+          );
+        })}
+        {!rows.some(r => r.sessions.length) && (
+          <div className="text-[12.5px] py-2" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
+            No sessions scheduled this week. Tap a day to train anyway.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Tapping a day. Move it, skip it, do it today, or - on an empty day - add
+// something.
+//
+// Deliberately a sheet rather than a long press or a drag. A drag is the
+// obvious design for moving a session and it is the wrong one here: this is
+// used one-handed, in a gym, on a phone that is often on a bench, and a
+// mis-drag silently rewrites the week.
+function DayActionSheet({ open, row, program, today, onClose, onMove, onSkip, onUnskip, onPullForward, onAddDay, onStart }) {
+  const [moving, setMoving] = useState(false);
+  useEffect(() => { if (!open) setMoving(false); }, [open]);
+  const session = row?.sessions?.[0] || null;
+  const weekStart = row ? weekStartFor(row.date) : null;
+
+  return (
+    <Modal open={open} onClose={onClose} title={row ? formatSessionDate(row.date) || row.weekday : ""}>
+      {!session && (
+        <>
+          <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+            Nothing scheduled. You can train anyway and it gets logged on this day.
+          </p>
+          <Btn variant="primary" className="w-full" onClick={onAddDay}>Train anyway</Btn>
+          <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Close</Btn>
+        </>
+      )}
+
+      {session && !moving && (
+        <>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>{session.day.name}</div>
+          <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+            {planLabel(session)}
+            {session.movedFrom ? ` · moved from ${formatSessionDate(session.movedFrom, { withWeekday: false })}` : ""}
+          </p>
+
+          {session.status === "skipped" ? (
+            <Btn variant="primary" className="w-full" onClick={onUnskip}>Put it back</Btn>
+          ) : session.status === "done" ? (
+            <p className="text-[12.5px]" style={{ color: C.olive }}>Already done. Nothing to change.</p>
+          ) : (
+            <>
+              {row.date !== today && (
+                <Btn variant="primary" className="w-full" onClick={onPullForward}>Do it today instead</Btn>
+              )}
+              {row.date === today && (
+                <Btn variant="primary" className="w-full" onClick={onStart}>Start it</Btn>
+              )}
+              <Btn variant="secondary" className="w-full mt-2" onClick={() => setMoving(true)}>Move it to another day</Btn>
+              <Btn variant="danger" className="w-full mt-2" onClick={onSkip}>Skip it this week</Btn>
+            </>
+          )}
+          <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Close</Btn>
+        </>
+      )}
+
+      {session && moving && (
+        <>
+          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+            Which day? This moves {session.day.name} for this week only.
+          </p>
+          <div className="grid grid-cols-7 gap-1.5">
+            {WEEKDAY_ORDER.map((weekday, i) => {
+              const date = shiftDays(weekStart, i);
+              const isHere = date === row.date;
+              return (
+                <button key={weekday} disabled={isHere}
+                  onClick={() => onMove(date)}
+                  aria-label={`Move to ${weekday}`}
+                  className="rounded-xl py-2 text-[12.5px] font-bold"
+                  style={{
+                    background: isHere ? C.panel : C.bg,
+                    border: `1px solid ${isHere ? C.border : C.steel}`,
+                    color: isHere ? C.faint : C.text,
+                    opacity: isHere ? 0.5 : 1,
+                  }}>
+                  {WEEKDAY_SHORT[weekday]}
+                </button>
+              );
+            })}
+          </div>
+          <Btn variant="ghost" className="w-full mt-3" onClick={() => setMoving(false)}>Back</Btn>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
@@ -15387,6 +15606,9 @@ function AthleteProgram({ state, setState, nav }) {
   // programme yet, and a useState below that point runs on some renders and
   // not others - the "Rendered fewer hooks than expected" crash.
   const [printOpen, setPrintOpen] = useState(false);
+  // Which day of the week strip is open in the action sheet. A row, not an
+  // index, so it survives the week being changed underneath it.
+  const [dayAction, setDayAction] = useState(null);
   // Which block and which week of it are on screen. Opens on wherever the
   // athlete actually is, so the page answers "what am I doing now" before it
   // offers "what does the rest of the program look like".
@@ -15478,6 +15700,31 @@ function AthleteProgram({ state, setState, nav }) {
   const pausedHere = day && pausedWorkout && sessionIdentity(myProgram, day) === pausedWorkout.dayKey
     ? pausedWorkout
     : null;
+
+  // The week on screen, not necessarily the week it is. An athlete looking
+  // ahead at week 6 should see week 6's plan, and nothing in it should be
+  // marked missed - which falls out of planForWeek for free, because every
+  // date in it is in the future.
+  const planWeekStart = programWeekStart(myProgram, shownWeek) || weekStartFor(todayISO());
+  const planRows = planForWeek({
+    program: myProgram,
+    weekStart: planWeekStart,
+    logs: state.workoutLogs,
+    moves: state.sessionMoves,
+    pausedDayKey: pausedWorkout?.dayKey || null,
+    today: todayISO(),
+  });
+  const planProgress = weekProgress(planRows);
+
+  // Moving, skipping and pulling forward all write the same kind of row, so
+  // they are one call with a different kind rather than three paths that can
+  // drift apart.
+  const changeDay = (session, fromDate, toDate, kind) => {
+    saveSessionMove(setState, state.me.id, {
+      programDay: session.day.name, fromDate, toDate, kind,
+    });
+    setDayAction(null);
+  };
   // Order is set once at generation/build time (phase sequence) and persists here —
   // NOT re-sorted on every render — so a manual reorder below actually sticks.
   const sortedExercises = day ? day.exercises : [];
@@ -15978,6 +16225,36 @@ function AthleteProgram({ state, setState, nav }) {
             </div>
           );
         })()}
+
+        {/* The week before the sessions in it. An athlete opening this wants
+            to know where they are before they want to know what is in Day 2. */}
+        <WeekPlanPanel rows={planRows} progress={planProgress} today={todayISO()}
+          onPickDay={(row) => setDayAction(row)} />
+
+        <DayActionSheet
+          open={!!dayAction}
+          row={dayAction}
+          program={myProgram}
+          today={todayISO()}
+          onClose={() => setDayAction(null)}
+          onMove={(toDate) => changeDay(dayAction.sessions[0], dayAction.date, toDate, "move")}
+          onSkip={() => changeDay(dayAction.sessions[0], dayAction.date, null, "skip")}
+          onUnskip={() => {
+            clearSessionMove(setState, state.me.id, dayAction.sessions[0].day.name, dayAction.date);
+            setDayAction(null);
+          }}
+          onPullForward={() => changeDay(dayAction.sessions[0], dayAction.date, todayISO(), "pull")}
+          onStart={() => {
+            const target = (myProgram.days || []).find(x => x.name === dayAction.sessions[0].day.name);
+            setDayAction(null);
+            if (target) nav.go("athlete-workout", target.id);
+          }}
+          onAddDay={() => {
+            // Nothing scheduled, so there is nothing to move - the athlete
+            // picks a session on the next screen and it logs against today.
+            setDayAction(null);
+            nav.go("athlete-workout");
+          }} />
 
         {/* ---- sub tabs: the days inside the block ---- */}
         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>

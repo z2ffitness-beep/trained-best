@@ -440,6 +440,127 @@ test("moves are loaded with everything else and renamed on the way in", () => {
   assert.ok(/sessionMoves: \[\],/.test(src), "there is no default before anything has loaded");
 });
 
+// ---------- what the week looks like on screen ----------
+
+const panel = (() => {
+  const at = src.indexOf("function WeekPlanPanel(");
+  assert.ok(at > 0, "the week panel is gone");
+  return src.slice(at, src.indexOf("\n// Tapping a day", at));
+})();
+
+test("nothing is left to colour alone", () => {
+  // A row of coloured squares says nothing to someone seeing it for the
+  // first time, and nothing at all to someone who cannot tell the green from
+  // the amber. The strip carries position, the list carries meaning, and
+  // every strip cell names its status to a screen reader.
+  assert.ok(/aria-label=\{`\$\{row\.weekday\}: \$\{session \? planLabel\(session\) : "Rest day"\}`\}/.test(panel),
+    "the strip cells do not announce what they mean");
+  assert.ok(/\{planLabel\(session\)\}/.test(panel), "the list shows no status word");
+});
+
+test("the strip does not try to fit a word into thirty pixels", () => {
+  // Measured: a seventh of the card at 320px is 30px, and "Upcoming" at 9pt
+  // is 40. The first version put the word there and it overflowed.
+  const strip = panel.slice(panel.indexOf("grid-cols-7"), panel.indexOf("The list:"));
+  // The aria-label still names the status, deliberately - that costs no
+  // pixels. What must not come back is the word drawn into the cell.
+  assert.ok(!/planLabel\(session\)\.split/.test(strip),
+    "the status word is back in the strip, truncated to its first word");
+  assert.ok(!/>\s*\{planLabel\(session\)/.test(strip), "the status word is drawn in the strip cell");
+  assert.ok(/borderRadius: "50%"/.test(strip), "there is no dot to carry the status");
+});
+
+test("the ring is a real fraction of the week, and never more than one", () => {
+  assert.ok(/strokeDashoffset=\{CIRC \* \(1 - progress\.ratio\)\}/.test(panel),
+    "the ring is not driven by the week's progress");
+  assert.ok(/rotate\(-90 34 34\)/.test(panel), "the ring starts somewhere other than the top");
+  assert.ok(/\{pct\}%/.test(panel), "the ring has no number in it for anyone who cannot read an arc");
+});
+
+test("a week with nothing in it says so", () => {
+  assert.ok(/Nothing scheduled this week/.test(panel), "an empty week shows '0 of 0 sessions done'");
+  assert.ok(/No sessions scheduled this week\. Tap a day to train anyway\./.test(panel),
+    "an empty list is silent, so there is no way to know it is tappable");
+});
+
+test("a moved session says where it went, briefly", () => {
+  const at = src.indexOf("function planLabel(");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/Moved \\u2192 \$\{to\}/.test(body) || /Moved \u2192 \$\{to\}/.test(body),
+    "a moved session does not say where it went");
+  assert.ok(/to \? `Moved/.test(body), "a move with no destination prints 'Moved to undefined'");
+});
+
+// ---------- the action sheet ----------
+
+const sheet = (() => {
+  const at = src.indexOf("function DayActionSheet(");
+  assert.ok(at > 0, "the day action sheet is gone");
+  return src.slice(at, src.indexOf("\nfunction AthleteProgram", at));
+})();
+
+test("every action the design asks for is there", () => {
+  for (const label of ["Do it today instead", "Move it to another day", "Skip it this week", "Train anyway"]) {
+    assert.ok(sheet.includes(label), `the sheet is missing "${label}"`);
+  }
+});
+
+test("a skipped session can be put back", () => {
+  // Skipping with no way to unskip is a one-way door on a mis-tap.
+  assert.ok(/Put it back/.test(sheet), "a skipped session cannot be unskipped");
+  assert.ok(/onUnskip/.test(sheet) && /clearSessionMove\(setState, state\.me\.id, dayAction\.sessions\[0\]\.day\.name, dayAction\.date\)/.test(src),
+    "putting it back does not clear the move");
+});
+
+test("a finished session offers nothing to change", () => {
+  assert.ok(/Already done\. Nothing to change\./.test(sheet),
+    "a session that is done still offers to be moved, skipped or pulled forward");
+});
+
+test("today's session offers Start, not 'do it today'", () => {
+  assert.ok(/row\.date !== today &&/.test(sheet), "'Do it today instead' shows on today itself");
+  assert.ok(/row\.date === today &&/.test(sheet), "today's session has no way to start it");
+});
+
+test("moving is a two-step pick, not a drag", () => {
+  // A drag is the obvious design for moving a session and the wrong one
+  // here: one-handed, in a gym, on a phone often lying on a bench, where a
+  // mis-drag silently rewrites the week.
+  assert.ok(/setMoving\(true\)/.test(sheet), "there is no step between tapping Move and the week changing");
+  assert.ok(/WEEKDAY_ORDER\.map\(\(weekday, i\) =>/.test(sheet), "there is no day to pick");
+  assert.ok(/disabled=\{isHere\}/.test(sheet), "a session can be moved onto the day it is already on");
+  assert.ok(/for this week only/.test(sheet), "nothing says the move is one week, not for ever");
+});
+
+test("the sheet resets when it closes", () => {
+  // Reopening it half-way through a move is how someone moves the wrong
+  // session to the wrong day.
+  assert.ok(/useEffect\(\(\) => \{ if \(!open\) setMoving\(false\); \}, \[open\]\)/.test(sheet),
+    "the move picker stays open behind the scenes");
+});
+
+test("all three changes go through one writer", () => {
+  // Move, skip and pull write the same kind of row. Three paths is how they
+  // drift apart.
+  const at = src.indexOf("const changeDay = (session, fromDate, toDate, kind) =>");
+  assert.ok(at > 0, "the one writer is gone");
+  const body = src.slice(at, src.indexOf("\n  };", at));
+  assert.ok(/saveSessionMove\(setState, state\.me\.id/.test(body), "it does not save");
+  for (const kind of ['"move"', '"skip"', '"pull"']) {
+    assert.ok(src.includes(`dayAction.date, ${kind === '"skip"' ? "null, " : ""}`) || src.includes(kind),
+      `nothing ever writes a ${kind} row`);
+  }
+});
+
+test("the panel shows the week being looked at, not always this one", () => {
+  // An athlete looking ahead at week 6 should see week 6, and nothing in it
+  // should be marked missed - which falls out for free, because every date
+  // in it is in the future.
+  assert.ok(/programWeekStart\(myProgram, shownWeek\)/.test(src),
+    "the panel is pinned to the current week whatever the athlete is looking at");
+  assert.ok(/weekStart: planWeekStart/.test(src), "the rows are built from a different week than the panel shows");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
