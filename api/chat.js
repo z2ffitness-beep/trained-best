@@ -44,6 +44,15 @@ const ALLOWED_MODELS = new Set([
   "claude-haiku-4-5",
 ]);
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+// The one to fall back to when the model that was asked for does not exist.
+//
+// A model id that has been retired, or mistyped on the way in, comes back as
+// a 404 from Anthropic - and it does so for EVERY request at once, not for
+// one unlucky athlete. Without this, the day sonnet-5 is retired is the day
+// every program generation in the app stops working and nobody can do
+// anything about it from their phone. One retry on a model we know exists
+// costs a second and turns a total outage into a slightly older program.
+const FALLBACK_MODEL = "claude-sonnet-4-6";
 // A full program is a large JSON document. The old 8192 ceiling silently
 // truncated it mid-structure, which is why the client needed a
 // repair-truncated-JSON step at all — and why that step kept failing.
@@ -248,16 +257,33 @@ export default async function handler(req, res) {
   if (wantsStream) payload.stream = true;
 
   const started = Date.now();
+  const callAnthropic = (model) => fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({ ...payload, model }),
+  });
+
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(payload),
-    });
+    let response = await callAnthropic(payload.model);
+    // Which model actually answered, for the success log below. Reporting the
+    // one that was ASKED for means a silent permanent fallback looks exactly
+    // like everything working, which is the state you most need to see.
+    let servedBy = payload.model;
+
+    // Retried BEFORE anything is relayed to the client, so a streaming
+    // request falls back cleanly instead of sending half an error and then
+    // changing its mind. The failed response's body is dropped on the floor:
+    // a 404 carries a few hundred bytes of JSON nobody needs.
+    if (response.status === 404 && payload.model !== FALLBACK_MODEL) {
+      console.error("Model", payload.model, "was rejected - retrying on", FALLBACK_MODEL);
+      try { await response.arrayBuffer(); } catch { /* nothing to drain */ }
+      response = await callAnthropic(FALLBACK_MODEL);
+      servedBy = FALLBACK_MODEL;
+    }
 
     if (!response.ok) {
       let data = null;
@@ -278,7 +304,7 @@ export default async function handler(req, res) {
     }
 
     const data = await response.json();
-    console.log(`AI ok model=${payload.model} tokens=${payload.max_tokens} ms=${Date.now() - started}`);
+    console.log(`AI ok model=${servedBy}${servedBy === payload.model ? "" : ` (fell back from ${payload.model})`} tokens=${payload.max_tokens} ms=${Date.now() - started}`);
     return res.status(200).json(data);
   } catch (error) {
     // This is the branch that used to be invisible. Logging the elapsed time
