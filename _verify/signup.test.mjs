@@ -134,6 +134,106 @@ test("the sport goes into the generator prompt verbatim", () => {
   assert.ok(/Sport \/ Focus/.test(src), "the prompt reads the sport the athlete picked");
 });
 
+// ---------- the short signup, and the contract that makes it safe ----------
+//
+// Fourteen screens down to six, by asking fewer questions per screen rather
+// than fewer questions. The new screens are a different arrangement of
+// inputs over an IDENTICAL data model: everything downstream reads `data` by
+// key and none of it knows which screen a key was typed on.
+//
+// So the rewrite is safe exactly as long as every key still gets set, and
+// dangerous the moment one quietly stops being asked for. This is the test
+// that makes that true rather than hoped for: it reads the keys buildAIPrompt
+// and the profile write ACTUALLY use, and fails if any of them is missing
+// from SIGNUP_KEYS. A key added to the prompt and forgotten in the new
+// screens fails here instead of silently degrading someone's programme.
+
+const V2 = (() => {
+  const at = src.indexOf("const SIGNUP_KEYS = {");
+  assert.ok(at > 0, "the signup contract is gone");
+  return src.slice(at, src.indexOf("\nconst SIGNUP_V2 = ", at));
+})();
+
+const allContractKeys = () => {
+  const keys = new Set();
+  for (const m of V2.matchAll(/"([^"]+)"/g)) keys.add(m[1]);
+  return keys;
+};
+
+test("every intake key the AI prompt reads is in the contract", () => {
+  // The one that matters. Drop "Sport / Focus" and every generated programme
+  // silently becomes General Fitness - no error, no warning, just worse
+  // training for everyone including the fighters.
+  const at = src.indexOf("function buildAIPrompt(intake)");
+  assert.ok(at > 0, "buildAIPrompt is gone");
+  const prompt = src.slice(at, src.indexOf("\n}\n", at));
+  const read = new Set();
+  for (const m of prompt.matchAll(/intake\.([A-Za-z_$][\w$]*)/g)) read.add(m[1]);
+  for (const m of prompt.matchAll(/intake\["([^"]+)"\]/g)) read.add(m[1]);
+
+  // Derived inside the prompt from keys that ARE collected, or supplied by
+  // the app rather than the athlete.
+  const derived = new Set(["length", "map", "join", "includes", "filter", "slice"]);
+  const keys = allContractKeys();
+  const missing = [...read].filter(k => !derived.has(k) && !keys.has(k));
+  assert.deepEqual(missing, [],
+    `the prompt reads ${missing.join(", ")}, which the new signup never asks for`);
+});
+
+test("every key the profile row reads is in the contract", () => {
+  const at = src.indexOf("const writeProfileAndContinue = async");
+  const body = src.slice(at, at + 2600);
+  const read = new Set();
+  for (const m of body.matchAll(/\bdata\.([A-Za-z_$][\w$]*)/g)) read.add(m[1]);
+  for (const m of body.matchAll(/\bdata\["([^"]+)"\]/g)) read.add(m[1]);
+  const keys = allContractKeys();
+  const ignore = new Set(["user", "photoUrl"]);   // photoUrl is stripped before the write
+  const missing = [...read].filter(k => !ignore.has(k) && !keys.has(k));
+  assert.deepEqual(missing, [],
+    `the profile write reads ${missing.join(", ")}, which the new signup never asks for`);
+});
+
+test("sport did not get dropped on the way to six screens", () => {
+  // It has no screen of its own in the design and it feeds the prompt, so it
+  // sits on the goal screen. Isaiah's call, 15 Oct.
+  assert.ok(/goal: \[[^\]]*"🥊 Sport \/ Focus"/.test(V2),
+    "Sport / Focus is not collected anywhere in the new signup");
+});
+
+test("the three paths are the three in the design", () => {
+  const at = src.indexOf("const SIGNUP_V2_STEPS = {");
+  const steps = src.slice(at, src.indexOf("\n};", at));
+  for (const role of ["athlete", "athlete_coached", "coach"]) {
+    assert.ok(new RegExp(`${role}: \\[`).test(steps), `the ${role} path has no screens`);
+  }
+  assert.ok(/athlete: \["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"\]/.test(steps),
+    "the solo athlete path is not the five screens the design asks for");
+});
+
+test("a coached athlete sees whose app this is before typing a password", () => {
+  const at = src.indexOf("const SIGNUP_V2_STEPS = {");
+  const steps = src.slice(at, src.indexOf("\n};", at));
+  const coached = /athlete_coached: \[([^\]]*)\]/.exec(steps);
+  assert.ok(coached, "the coached path is gone");
+  const order = coached[1];
+  assert.ok(order.indexOf("Coach Invite Code") < order.indexOf("Create Account"),
+    "the account comes before the code, so somebody joins a coach they have not seen yet");
+});
+
+test("the new flow is still switched off", () => {
+  // Signup is the one path where a bug costs a real person's first
+  // impression and there is no way to ask them to try again. This flips in
+  // one commit, once the screens exist and the suite covers them.
+  assert.ok(/const SIGNUP_V2 = false;/.test(src),
+    "the new signup is live before its screens have been built");
+});
+
+test("the old flow is untouched while the new one is built", () => {
+  assert.ok(/const athleteSteps = \[/.test(src), "the existing athlete steps are gone");
+  assert.ok(/const coachSteps = \[/.test(src), "the existing coach steps are gone");
+  assert.ok(/const coachedAthleteSteps = \[/.test(src), "the existing coached steps are gone");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }

@@ -6836,6 +6836,66 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
 // it has brackets in it would be a lie about how much we care.
 
 const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit", "heightUnit"];
+
+// ---------- signup, the short version ----------
+//
+// Fourteen screens down to six. Not by asking less - by stopping asking one
+// question per screen.
+//
+// THE CONTRACT. The new screens are a different arrangement of inputs over
+// an IDENTICAL data model. Everything downstream of signup - the profile
+// row, buildMeFromOnboarding, and above all buildAIPrompt - reads `data` by
+// key, and none of it knows or cares which screen a key was typed on. So the
+// rewrite is safe exactly as long as every key below still gets set, and
+// dangerous the moment one quietly stops being asked for.
+//
+// That is not hypothetical. Drop "🥊 Sport / Focus" and every generated
+// programme silently becomes General Fitness - no error, no warning, just
+// worse training for everyone including the fighters. SIGNUP_KEYS is the
+// list, and signup.test.mjs checks it against what buildAIPrompt and the
+// profile write actually read, so a key added to the prompt and forgotten
+// here fails the suite rather than the athlete.
+const SIGNUP_KEYS = {
+  // Identity and login. Collected on the account screen, which has not
+  // changed.
+  account: ["name", "email", "password"],
+  // One screen now, was four.
+  about: ["sex", "birthday", "heightCm", "weightLb", "weightUnit", "heightUnit"],
+  // One screen, was three: goals, how deep, and how long they have trained.
+  // Sport lives here too. It has no screen of its own in the design and it
+  // feeds the prompt, so it goes on the screen it is closest to rather than
+  // being dropped - Isaiah's call, 15 Oct.
+  goal: ["goals", "goalNotes", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "timeframe", "fightDate"],
+  // One screen, was three. Session style is gone as a question: the split is
+  // worked out from how many days a week they train, which is what it was
+  // being inferred from anyway.
+  week: ["trainingDays", "sessionMinutes", "equipment"],
+  injuries: ["injuries", "injuryNotes"],
+  // Coached athletes only, and asked FIRST - the code decides whose roster
+  // they land on, and showing the coach's card before anything else is what
+  // makes the rest of the signup feel like joining something.
+  coached: ["inviteCode", "inviteCoachId"],
+};
+
+// The screens, in order, per path.
+//
+// Kept beside the old lists rather than replacing them, and chosen by the
+// flag below, so the live signup keeps working while this is built and the
+// switch is one line to put back.
+const SIGNUP_V2_STEPS = {
+  athlete: ["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
+  // The code first, then the account. The design is explicit about this and
+  // it is the right way round: someone joining a coach wants to see whose
+  // app this is before they type a password into it.
+  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🩹 Injuries", "📅 Your Week"],
+  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"],
+};
+
+// Off. The new screens are built and tested behind this, and it is flipped
+// in one commit once the suite covers them. Signup is the one path where a
+// bug costs a real person's first impression and there is no way to ask them
+// to try again.
+const SIGNUP_V2 = false;
   const COACH_ONLY_KEYS = ["🏅 Background", "📩 Invite Athletes"];
 
   const chooseRole = (next) => {
