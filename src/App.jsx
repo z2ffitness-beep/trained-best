@@ -4854,6 +4854,63 @@ function missedSessions({ program, logs, moves, pausedDayKey, today, weeksBack =
   return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
+// A session pulled forward to today, which is therefore reversible.
+//
+// The difference between a pull and a move is what they are decisions
+// ABOUT. "Do it today instead" is a decision about today; stopping part-way
+// through unmakes it, and the session goes back to its own day still
+// paused. "Move" is a decision about the week, and stopping does not
+// unmake it - it stays where it was put.
+function pullToUndo(moves, programDay, dateIso) {
+  return (moves || []).find(
+    m => m?.kind === "pull" && m?.programDay === programDay && m?.toDate === dateIso) || null;
+}
+
+// One decision per session per scheduled date. Upserted on that key, so
+// changing your mind replaces the row rather than stacking a second one
+// behind it and leaving the screen to pick.
+//
+// The screen is updated first and the write is not awaited for success. A
+// move is a small, reversible thing and the athlete is standing in a gym;
+// a spinner on "move this to Thursday" buys nothing, and a failure leaves
+// the week as it was on the next load rather than losing anything.
+async function saveSessionMove(setState, userId, row) {
+  const next = {
+    programDay: row.programDay,
+    fromDate: row.fromDate,
+    toDate: row.toDate || null,
+    kind: row.kind || "move",
+  };
+  setState(s => ({
+    ...s,
+    sessionMoves: [
+      ...(s.sessionMoves || []).filter(
+        m => !(m.programDay === next.programDay && m.fromDate === next.fromDate)),
+      next,
+    ],
+  }));
+  if (!userId) return;
+  try {
+    await supabase.from("session_moves").upsert(
+      { user_id: userId, program_day: next.programDay, from_date: next.fromDate,
+        to_date: next.toDate, kind: next.kind },
+      { onConflict: "user_id,program_day,from_date" });
+  } catch { /* the week reads as it did before on the next load */ }
+}
+
+async function clearSessionMove(setState, userId, programDay, fromDate) {
+  setState(s => ({
+    ...s,
+    sessionMoves: (s.sessionMoves || []).filter(
+      m => !(m.programDay === programDay && m.fromDate === fromDate)),
+  }));
+  if (!userId) return;
+  try {
+    await supabase.from("session_moves").delete()
+      .eq("user_id", userId).eq("program_day", programDay).eq("from_date", fromDate);
+  } catch { /* it reappears on the next load, which is the safe direction */ }
+}
+
 function complianceBaseline(logs) {
   const timed = timedSessions(logs);
   if (timed.length < COMPLIANCE_MIN_SAMPLES) return null;
@@ -18308,6 +18365,15 @@ function Workout({ state, setState, nav, dayId }) {
     // to restore the same session a second way.
     writeSessionTimer(null);
     clearSessionDraft(dayKey, state.me.id);
+    // A session pulled forward to today and then stopped goes back to its
+    // own day, still paused. "Do it today instead" is a decision about
+    // today, and stopping part-way through unmakes it. One moved there with
+    // Move stays put, because that was a decision about the week.
+    //
+    // The paused record is keyed by the session rather than by a date, so it
+    // follows the session home without being touched.
+    const pulled = pullToUndo(state.sessionMoves, day.name, todayISO());
+    if (pulled) clearSessionMove(setState, state.me.id, pulled.programDay, pulled.fromDate);
     setStopOpen(null);
     nav.go("athlete-home");
   };
@@ -23699,6 +23765,10 @@ const initialState = () => ({
   // and on a coach account (where `me` is never populated) that literal "a1"
   // was being sent to Postgres as a uuid and rejected.
   me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, unitPref: "lb", themePref: "system", trainingDays: [] },
+  // One-off changes to where a session sits in the week: moved, skipped, or
+  // pulled forward to today. Empty is the normal state - most weeks happen
+  // as written.
+  sessionMoves: [],
   // Bumped after a photo upload. exerciseImage() reads a module-level map that
   // React cannot see, so without this the picture appears only on the next
   // navigation.
@@ -24332,13 +24402,14 @@ function AppInner() {
       }));
 
       // Restore this athlete's real program, workout history, and progress from the database.
-      const [{ data: programRow }, { data: logRows }, { data: progressRows }, { data: checkinRows }] = await Promise.all([
+      const [{ data: programRow }, { data: logRows }, { data: progressRows }, { data: checkinRows }, { data: moveRows }] = await Promise.all([
         profile.active_program_id
           ? supabase.from("programs").select("*").eq("id", profile.active_program_id).single()
           : Promise.resolve({ data: null }),
         supabase.from("workout_logs").select("*").eq("user_id", profile.id).order("created_at", { ascending: false }),
         supabase.from("progress_entries").select("*").eq("user_id", profile.id).order("created_at", { ascending: true }),
         supabase.from("session_checkins").select("*").eq("user_id", profile.id).order("date", { ascending: false }),
+        supabase.from("session_moves").select("*").eq("user_id", profile.id),
       ]);
 
       setState(s => {
@@ -24348,6 +24419,15 @@ function AppInner() {
           const program = { id: programRow.id, name: programRow.name, weeks: programRow.weeks, assignedCount: 1, sport: programRow.sport, rationale: programRow.rationale || null, startedOn: programRow.started_on || null, days };
           next = { ...next, programs: [...next.programs, program], exercises: [...next.exercises, ...newExercises], me: { ...next.me, program: program.id } };
         }
+        // camelCase on the way in, like every other row this app holds, so
+        // the plan logic never has to know which half of the app it came
+        // from.
+        next = {
+          ...next,
+          sessionMoves: (moveRows || []).map(m => ({
+            programDay: m.program_day, fromDate: m.from_date, toDate: m.to_date, kind: m.kind,
+          })),
+        };
         if (logRows?.length) {
           next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })) };
         }

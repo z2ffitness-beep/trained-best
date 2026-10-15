@@ -27,7 +27,10 @@ const H = await load(APP, [
   "sessionKey", "sessionIdentity",
   { name: "PLAN_STATUS", kind: "const" },
   "moveFor", "logFor", "planForWeek", "weekProgress", "missedSessions",
+  "pullToUndo",
 ]);
+
+const src = (await import("node:fs")).readFileSync(APP, "utf8");
 
 let passed = 0;
 const tests = [];
@@ -376,6 +379,65 @@ test("no week is missing a date", () => {
     assert.equal(new Set(rows.map(r => r.date)).size, 7, `week of ${start} has a repeated date`);
     assert.equal(rows[6].date, H.shiftDays(start, 6));
   }
+});
+
+// ---------- a pulled-forward session goes back ----------
+//
+// The difference between a pull and a move is what they are decisions ABOUT.
+// "Do it today instead" is a decision about today, and stopping part-way
+// through unmakes it. "Move" is a decision about the week, and stopping does
+// not.
+
+test("a session pulled to today and stopped is the one that goes back", () => {
+  const moves = [move("Day 3 \u2014 Full", d(5), TODAY, "pull")];
+  const found = H.pullToUndo(moves, "Day 3 \u2014 Full", TODAY);
+  assert.ok(found, "the pull is not found, so the session never goes home");
+  assert.equal(found.fromDate, d(5));
+});
+
+test("a session MOVED to today and stopped stays where it was moved", () => {
+  const moves = [move("Day 3 \u2014 Full", d(5), TODAY, "move")];
+  assert.equal(H.pullToUndo(moves, "Day 3 \u2014 Full", TODAY), null,
+    "stopping a moved session dragged it back to its old day");
+});
+
+test("another session's pull, or another day's, is not undone", () => {
+  const moves = [move("Day 3 \u2014 Full", d(5), TODAY, "pull")];
+  assert.equal(H.pullToUndo(moves, "Day 1 \u2014 Lower", TODAY), null);
+  assert.equal(H.pullToUndo(moves, "Day 3 \u2014 Full", d(1)), null);
+  assert.equal(H.pullToUndo(null, "Day 3 \u2014 Full", TODAY), null);
+});
+
+test("stopping a workout undoes the pull and nothing else", () => {
+  const at = src.indexOf("const stopAndSave = () => {");
+  assert.ok(at > 0, "stopAndSave is gone");
+  const body = src.slice(at, src.indexOf("\n  };", at));
+  assert.ok(/pullToUndo\(state\.sessionMoves, day\.name, todayISO\(\)\)/.test(body),
+    "stopping never checks whether the session was pulled forward");
+  assert.ok(/clearSessionMove\(setState, state\.me\.id, pulled\.programDay, pulled\.fromDate\)/.test(body),
+    "the pull is found and then not cleared");
+  assert.ok(/writePausedWorkout\(pauseSnapshot\(\), state\.me\.id\)/.test(body),
+    "the session goes home but does not stay paused, so the sets are lost");
+});
+
+// ---------- the moves survive a reload ----------
+
+test("one decision per session per date, replaced rather than stacked", () => {
+  const at = src.indexOf("async function saveSessionMove(");
+  assert.ok(at > 0, "saveSessionMove is gone");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/onConflict: "user_id,program_day,from_date"/.test(body),
+    "a second decision stacks behind the first and the screen has to pick");
+  assert.ok(/\.filter\(\s*\n?\s*m => !\(m\.programDay === next\.programDay && m\.fromDate === next\.fromDate\)\)/.test(body),
+    "the local copy keeps both, so the screen disagrees with the database");
+});
+
+test("moves are loaded with everything else and renamed on the way in", () => {
+  assert.ok(/supabase\.from\("session_moves"\)\.select\("\*"\)\.eq\("user_id", profile\.id\)/.test(src),
+    "the moves are never loaded, so the week resets on every login");
+  assert.ok(/programDay: m\.program_day, fromDate: m\.from_date, toDate: m\.to_date, kind: m\.kind/.test(src),
+    "the rows stay in snake_case, so the plan logic cannot read them");
+  assert.ok(/sessionMoves: \[\],/.test(src), "there is no default before anything has loaded");
 });
 
 for (const [name, fn] of tests) {
