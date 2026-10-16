@@ -10419,6 +10419,13 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const save = async () => {
     if (saving) return;
     setSaving(true); setError(null);
+    // Same rule as an athlete's signup: a split that was chosen wins, and one
+    // that was not is worked out from the training days. This screen still
+    // ASKS the question, so most of the time there is an answer already - but
+    // the step can be passed without tapping anything, and without this a
+    // coach training six days a week would be programmed full body six times
+    // because they never touched a question whose default was full body.
+    const answers = withDerivedSplit(data);
     // Read-modify-write rather than a blind update: `intake` already holds the
     // coach's own settings - accountability, cancellation window, payment
     // methods - and overwriting the column would take all of it with it.
@@ -10426,13 +10433,13 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       .from("profiles").select("intake").eq("id", state.me.id).single();
     if (readErr) { setSaving(false); setError("Couldn't reach your profile. Check your connection and try again."); return; }
 
-    const merged = { ...(row?.intake || {}), training: data };
+    const merged = { ...(row?.intake || {}), training: answers };
     const { error: writeErr } = await supabase
       .from("profiles").update({ intake: merged }).eq("id", state.me.id);
     setSaving(false);
     if (writeErr) { setError("Couldn't save your answers. Check your connection and try again."); return; }
 
-    setState(s => ({ ...s, me: { ...s.me, ...buildMeFromOnboarding({ ...data, name: s.me.name }), id: s.me.id, name: s.me.name, avatar: s.me.avatar, photoUrl: s.me.photoUrl, coachId: null, hasCoach: false, selfGuided: true, intake: data, program: s.me.program, customProgram: null } }));
+    setState(s => ({ ...s, me: { ...s.me, ...buildMeFromOnboarding({ ...answers, name: s.me.name }), id: s.me.id, name: s.me.name, avatar: s.me.avatar, photoUrl: s.me.photoUrl, coachId: null, hasCoach: false, selfGuided: true, intake: answers, program: s.me.program, customProgram: null } }));
     onDone?.();
   };
 

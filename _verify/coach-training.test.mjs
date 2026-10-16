@@ -108,8 +108,15 @@ test("every field the prompt reads is asked for in the coach intake", () => {
 // ---------- the coach's own training stays theirs ----------
 
 test("a coach's training answers are namespaced, not written over their settings", () => {
-  assert.ok(src.includes("training: data"), "the intake must nest under intake.training");
-  assert.ok(/const merged = \{ \.\.\.\(row\?\.intake \|\| \{\}\), training: data \}/.test(src),
+  // The key is what matters, not the variable: these answers go UNDER
+  // intake.training so they cannot collide with the coach's own settings -
+  // accountability, cancellation window, payment methods - which live at the
+  // top level of the same column.
+  assert.ok(/const merged = \{ \.\.\.\(row\?\.intake \|\| \{\}\), training: \w+ \};/.test(src),
+    "the intake must nest under intake.training");
+  // Read-modify-write. A blind update of the column would take the coach's
+  // settings with it.
+  assert.ok(/\.from\("profiles"\)\.select\("intake"\)\.eq\("id", state\.me\.id\)\.single\(\)/.test(src),
     "saving must merge into the existing intake, not replace it");
 });
 
@@ -124,6 +131,97 @@ test("a coach training themselves has no coach above them", () => {
   const block = src.slice(at, at + 1200);
   assert.ok(/coachId: null/.test(block), "a coach must not be linked to themselves as an athlete");
   assert.ok(/selfGuided: true/.test(block), "a coach coaches their own training");
+});
+
+// ---------- the switch between coaching and training ----------
+//
+// "My Own Training" is not a thinner copy of the athlete screens inside the
+// coach app. It is the athlete app, entered by a switch - which is what lets
+// a coach use the thing they are asking their athletes to use.
+//
+// None of this was pinned by a test, and all of it is the kind of wiring
+// that breaks silently: a switch that changes a flag and leaves you on the
+// screen you were on, or a flag that survives a logout so the next person to
+// sign in on that phone lands somewhere that means nothing for them.
+
+test("switching modes also moves you to the right screen", () => {
+  // Flipping the flag and leaving the coach on the coach dashboard is the
+  // obvious bug here, and it looks exactly like the switch not working.
+  const at = src.indexOf("const setTraining = (on) => {");
+  assert.ok(at > 0, "the mode switch is gone");
+  const fn = src.slice(at, src.indexOf("\n  };", at));
+  assert.ok(/setTrainingMode\(on\)/.test(fn), "the switch does not change the mode");
+  assert.ok(/setView\(on \? "athlete-dashboard" : "coach-dashboard"\)/.test(fn),
+    "the switch leaves the coach on whatever screen they were already on");
+  // A stale parameter would carry an athlete id from the coach side into the
+  // training side, where it means something else entirely.
+  assert.ok(/setNavParam\(null\)/.test(fn), "the previous screen's parameter survives the switch");
+});
+
+test("the mode is remembered on the device, and only on the device", () => {
+  const at = src.indexOf("const setTraining = (on) => {");
+  const fn = src.slice(at, src.indexOf("\n  };", at));
+  assert.ok(/localStorage\.setItem\(TRAINING_MODE_KEY/.test(fn),
+    "a coach who closes the app mid-session comes back as a coach");
+  assert.ok(/catch \{ \/\* per-device nicety \*\/ \}/.test(fn),
+    "storage being unavailable throws instead of being shrugged off");
+  // Read back the same way at startup, and a failure there must not stop the
+  // app loading.
+  assert.ok(/try \{ return localStorage\.getItem\(TRAINING_MODE_KEY\) === "1"; \} catch \{ return false; \}/.test(src),
+    "the remembered mode is read without a fallback");
+});
+
+test("logging out leaves the phone in coach mode for nobody in particular", () => {
+  // A shared or handed-over phone: the next person to sign in is usually an
+  // athlete, and training mode means nothing for them.
+  const at = src.indexOf("logout: () => {");
+  const fn = src.slice(at, src.indexOf("\n    },", at));
+  assert.ok(/setTrainingMode\(false\)/.test(fn), "training mode survives a logout");
+  assert.ok(/localStorage\.setItem\(TRAINING_MODE_KEY, "0"\)/.test(fn),
+    "training mode is cleared in memory but not on the device, so it comes back on reload");
+});
+
+test("the switch is reachable from both sides", () => {
+  // A one-way door is the version of this bug that strands a coach in their
+  // own training with no way back to their roster.
+  const dash = src.slice(src.indexOf("function CoachDashboard("), src.indexOf("function withNextSession("));
+  assert.ok(/<ModeSwitch training=\{false\} onChange=\{onSwitchMode\} \/>/.test(dash),
+    "there is no way into your own training from the coach dashboard");
+  const home = src.slice(src.indexOf("function AthleteDashboard("));
+  assert.ok(/<ModeSwitch training=\{true\} onChange=\{onSwitchMode\} \/>/.test(home.slice(0, 20000)),
+    "there is no way back to coaching from your own training");
+  // And on a wide screen, where neither dashboard shows its own copy.
+  assert.ok(/modeSwitch=\{authed === "coach" \? <ModeSwitch training=\{trainingMode\} onChange=\{setTrainingMode\} className="" \/> : null\}/.test(src),
+    "the desktop sidebar has no mode switch");
+});
+
+test("a coach who has not answered the training questions is asked them first", () => {
+  // Otherwise they land on an athlete dashboard built from nothing: no
+  // programme, no days, and no explanation of why.
+  assert.ok(/\(authed === "coach" && trainingMode && !state\.me\?\.intake && view !== "athlete-profile"\)\n\s*\? pages\["coach-training-intake"\]/.test(src),
+    "the training intake no longer gates the athlete screens for a coach");
+});
+
+test("the profile is the one screen the intake gate lets through", () => {
+  // The gate is unconditional apart from this, and without the exception a
+  // coach who taps "Not now" has no way to reach their own settings, log
+  // out, or switch back - the intake is the only screen they can see.
+  const at = src.indexOf('view !== "athlete-profile"');
+  assert.ok(at > 0, "a coach who declines the training questions is trapped on them");
+});
+
+test("a coach's split is derived if they never picked one", () => {
+  // This screen still asks the question, but the step can be passed without
+  // tapping anything and the default is full body. A coach training six days
+  // a week would be programmed six full-body sessions.
+  const page = src.indexOf("function CoachTrainingIntake(");
+  const at = src.indexOf("const save = async () => {", page);
+  assert.ok(page > 0 && at > page, "CoachTrainingIntake no longer has the shape this test reads");
+  const fn = src.slice(at, at + 1800);
+  assert.ok(/const answers = withDerivedSplit\(data\);/.test(fn),
+    "the coach's own training skips the derivation every athlete gets");
+  assert.ok(/training: answers/.test(fn), "the derived split is worked out and then not saved");
+  assert.ok(!/intake: data,/.test(fn), "the in-memory copy still holds the answers without the split");
 });
 
 for (const [name, fn] of tests) {
