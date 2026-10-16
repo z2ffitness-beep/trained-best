@@ -83,10 +83,16 @@ grant execute on function public.coach_card(uuid) to authenticated;
 
 drop policy if exists "Profiles are viewable by authenticated users" on public.profiles;
 
+-- Dropped first so the whole file can be run twice without failing
+-- halfway. `create policy` has no `or replace`, so without these a second
+-- run dies on "policy already exists" - after some of the file has
+-- applied and some has not, which is the worst place to stop.
+drop policy if exists "Own profile is readable" on public.profiles;
 create policy "Own profile is readable"
   on public.profiles for select
   using (auth.uid() = id);
 
+drop policy if exists "Coach can view their athletes" on public.profiles;
 create policy "Coach can view their athletes"
   on public.profiles for select
   using (coach_id = auth.uid());
