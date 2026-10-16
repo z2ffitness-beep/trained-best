@@ -3964,6 +3964,41 @@ async function decideSessionChange({ requestId, approve, slotId, note }, setStat
   return await loadBooking(setState);
 }
 
+// The coach putting an athlete into one of their own times.
+//
+// Most sessions in a real gym are arranged in person or over a text, and
+// without this the coach has to ask the client to go and tap it into an app.
+// Everyone forgets, and the schedule drifts away from the truth until it is
+// worth nothing - which also quietly breaks the session ledger, because a
+// session that was trained and never booked is never counted.
+//
+// Unlike an athlete booking themselves, this is allowed with no credits
+// left: the coach is the person who is owed, and refusing would just send
+// them back to doing it on paper. The booking still spends a session, so the
+// balance goes negative and the Packs screen shows it in red.
+async function bookAthleteIntoSlot(slotId, athleteId, setState) {
+  const { error } = await supabase.rpc("book_athlete_into_slot", {
+    p_slot_id: slotId, p_athlete_id: athleteId,
+  });
+  if (error) {
+    // Refresh regardless: "that session is full" means the screen was stale.
+    await loadBooking(setState);
+    return error.message || "Couldn't book them in.";
+  }
+  return await loadBooking(setState);
+}
+
+// Did they turn up. Reversible, because this is one tap next to somebody's
+// name and the cost of a mistap is a session they paid for plus a line on
+// their record saying they did not show.
+async function markNoShow(bookingId, noShow, setState) {
+  const { error } = await supabase.rpc("mark_no_show", {
+    p_booking_id: bookingId, p_no_show: noShow,
+  });
+  if (error) return error.message || "Couldn't record that.";
+  return await loadBooking(setState);
+}
+
 // The coach moving a session with no request involved.
 async function moveBooking(bookingId, slotId, setState) {
   const { error } = await supabase.rpc("move_booking", { p_booking_id: bookingId, p_slot_id: slotId });
@@ -4229,6 +4264,89 @@ function groupSlotsByDay(slots, { fromMs = Date.now() } = {}) {
       dateIso,
       slots: list.sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt)),
     }));
+}
+
+// Sessions that have happened and have nobody marked present or absent.
+//
+// groupSlotsByDay deliberately shows the future only, which is right for
+// "what is coming up" and is also why no-show could never be recorded: a
+// session the coach needed to mark had already dropped off the only screen
+// that listed it. This is the other half of the schedule.
+//
+// A booking stays on this list only while it is still `booked`. Marking it
+// either way - attended or no_show - takes it off, so the list empties as
+// the coach works down it instead of being a permanent wall of history.
+//
+// `withinDays` because a coach coming back from two weeks away should be
+// shown last week, not everything since they signed up.
+function sessionsToMark(booking, { nowMs = Date.now(), withinDays = 14 } = {}) {
+  const floor = nowMs - withinDays * 86400000;
+  const rows = [];
+  for (const slot of booking?.slots || []) {
+    if (slot.cancelledAt) continue;
+    const t = new Date(slot.startsAt).getTime();
+    if (!isFinite(t) || t > nowMs || t < floor) continue;
+    const waiting = (booking.bookings || []).filter(b => b.slotId === slot.id && b.status === "booked");
+    if (waiting.length) rows.push({ slot, bookings: waiting });
+  }
+  // Most recent first: the session that just finished is the one the coach
+  // is thinking about.
+  return rows.sort((a, b) => new Date(b.slot.startsAt) - new Date(a.slot.startsAt));
+}
+
+// A month of the schedule, as six rows of seven days.
+//
+// Always six rows, always seven days, whatever the month - a grid that
+// changes height as you page through it makes everything below it jump, and
+// the days either side are shown greyed rather than left blank so the first
+// and last weeks are not ragged.
+//
+// Monday first, like WEEKDAY_ORDER and like every other week in this app.
+function calendarMonth({ slots = [], year, month, todayIso = todayISO() }) {
+  const byDate = new Map();
+  for (const slot of slots) {
+    if (slot.cancelledAt) continue;
+    const d = new Date(slot.startsAt);
+    // Deliberate, not defensive habit. Without it toLocalISO returns the
+    // string "NaN-NaN-NaN" and the slot is filed under a key no cell ever
+    // looks up - so it disappears anyway, by accident, and would start
+    // appearing the day that function is changed to do something else with
+    // an invalid date. Dropped on purpose here instead.
+    if (isNaN(d)) continue;
+    const iso = toLocalISO(d);
+    if (!byDate.has(iso)) byDate.set(iso, []);
+    byDate.get(iso).push(slot);
+  }
+  for (const list of byDate.values()) {
+    list.sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+  }
+
+  const first = new Date(year, month, 1);
+  // getDay() is Sunday-first; this app's weeks start on Monday.
+  const lead = (first.getDay() + 6) % 7;
+  const start = new Date(year, month, 1 - lead);
+
+  const weeks = [];
+  for (let w = 0; w < 6; w++) {
+    const row = [];
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + d);
+      const iso = toLocalISO(day);
+      row.push({
+        dateIso: iso,
+        day: day.getDate(),
+        // Month alone, with no year check: six rows starting at most six
+        // days before the 1st span only month-1, month and month+1, and no
+        // two of those share a month number. A year comparison here would
+        // be a branch no input can reach.
+        inMonth: day.getMonth() === month,
+        isToday: iso === todayIso,
+        slots: byDate.get(iso) || [],
+      });
+    }
+    weeks.push(row);
+  }
+  return weeks;
 }
 
 function formatSlotTime(iso) {
@@ -23161,6 +23279,11 @@ function CoachBooking({ state, setState, nav, myUserId }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [notice, setNotice] = useState(null);
+  // The month being looked at, as an offset from this one, and the day
+  // picked out of it. Offset rather than a date so "today" is always the
+  // month you come back to.
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [pickedDay, setPickedDay] = useState(null);
 
   const booking = state.booking || EMPTY_BOOKING;
   const types = booking.sessionTypes.filter(t => t.active);
@@ -23254,6 +23377,32 @@ function CoachBooking({ state, setState, nav, myUserId }) {
     return null;
   });
 
+  const addAthlete = (slotId, athleteId) => run(async () => {
+    const message = await bookAthleteIntoSlot(slotId, athleteId, setState);
+    if (message) return message;
+    const who = state.athletes.find(a => a.id === athleteId)?.name?.split(" ")[0] || "They";
+    setNotice(`${who} is booked in, and has been told.`);
+    return null;
+  });
+
+  // The notice names what was recorded rather than saying "saved", because
+  // the two answers are a tap apart and the one that costs the athlete a
+  // session should say so.
+  const mark = (bookingId, noShow) => run(async () => {
+    const message = await markNoShow(bookingId, noShow, setState);
+    if (message) return message;
+    setNotice(noShow
+      ? "Marked as a no-show. The session has been used and they have been told."
+      : "Marked as attended.");
+    return null;
+  });
+
+  // Sessions left, for this slot's type. Named per slot rather than per
+  // athlete because a pack can be tied to one session type, so "how many
+  // has Dana got" has no answer until you say what for.
+  const creditsFor = (athleteId, slot) =>
+    creditsRemaining(booking.packs, booking.bookings, booking.slots, athleteId, myUserId, slot?.sessionTypeId || null);
+
   const forgive = (bookingId) => run(async () => {
     const message = await forgiveLateCancellation(bookingId, setState);
     if (message) return message;
@@ -23285,6 +23434,28 @@ function CoachBooking({ state, setState, nav, myUserId }) {
     .filter(r => r.slot)
     .sort((a, b) => new Date(b.slot.startsAt) - new Date(a.slot.startsAt))
     .slice(0, 6);
+
+  // Sessions that have happened with nobody marked either way. Until this
+  // list is answered, those athletes' balances are wrong.
+  const toMark = sessionsToMark(booking);
+
+  // The month on screen, as an offset from this one, so coming back always
+  // lands on today rather than wherever the coach last paged to.
+  const nowMonth = new Date();
+  const shownMonth = new Date(nowMonth.getFullYear(), nowMonth.getMonth() + monthOffset, 1);
+
+  // The list under the grid: the whole of a picked day, past times
+  // included, or everything coming up when no day is picked. A picked day
+  // has to include the past, or tapping a day earlier in the month shows an
+  // empty list for a day that visibly has dots on it.
+  const dayList = pickedDay
+    ? [{
+        dateIso: pickedDay,
+        slots: booking.slots
+          .filter(s => !s.cancelledAt && toLocalISO(new Date(s.startsAt)) === pickedDay)
+          .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt)),
+      }].filter(g => g.slots.length)
+    : days;
 
   const tabs = [
     { key: "schedule", label: "Schedule" },
@@ -23370,17 +23541,59 @@ function CoachBooking({ state, setState, nav, myUserId }) {
                   </>
                 )}
 
+                {/* Who did and did not turn up, before anything else on
+                    this screen except a request that is waiting. A session
+                    that has happened and is still unmarked is the only
+                    thing here with a deadline on it - the athlete's balance
+                    is wrong until it is answered, and the longer it is left
+                    the less the coach remembers.
+
+                    It was impossible to answer at all before: the schedule
+                    showed the future only, so a session needing marking had
+                    already dropped off the one screen that listed it. */}
+                {toMark.length > 0 && (
+                  <>
+                    <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>
+                      Did they turn up
+                    </div>
+                    <div className="space-y-2 mb-5">
+                      {toMark.map(row => (
+                        <AttendanceRow key={row.slot.id} row={row} type={typeById[row.slot.sessionTypeId]}
+                          athletesById={athletesById} busy={busy} onMark={mark} />
+                      ))}
+                    </div>
+                  </>
+                )}
+
                 <NewSlotForm types={types} onAdd={addSlot} busy={busy} />
                 <RepeatingTimesForm types={types} onAdd={addRepeating} busy={busy} />
 
-                <ChalkDivider label="Coming Up" />
-                {days.length === 0 ? (
+                {/* The month above the list. The list answers "what is
+                    next"; only the grid answers "how full is the back half
+                    of the month", which is the question that decides
+                    whether to open more times. */}
+                <ChalkDivider label="The Month" />
+                <ScheduleMonth slots={booking.slots} bookings={booking.bookings}
+                  openings={booking.openings} typeById={typeById}
+                  year={shownMonth.getFullYear()} month={shownMonth.getMonth()}
+                  selected={pickedDay}
+                  onPage={(d) => { setMonthOffset(o => o + d); setPickedDay(null); }}
+                  onPickDay={(iso) => setPickedDay(cur => (cur === iso ? null : iso))} />
+
+                <ChalkDivider label={pickedDay ? formatSessionDate(pickedDay) : "Coming Up"} />
+                {pickedDay && (
+                  <button onClick={() => setPickedDay(null)}
+                    className="text-[12.5px] font-semibold mb-2" style={{ color: C.blue }}>
+                    Show everything coming up
+                  </button>
+                )}
+                {dayList.length === 0 ? (
                   <div className="rounded-xl p-4 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
-                    No times open. Add one above and your clients can book it.
+                    {pickedDay ? "Nothing on that day." : "No times open. Add one above and your clients can book it."}
                   </div>
                 ) : (
                   <div className="stack">
-                    {days.map(({ dateIso, slots }) => (
+                    {dayList.map(({ dateIso, slots }) => (
                       <div key={dateIso}>
                         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.faint }}>
                           {formatSessionDate(dateIso)}
@@ -23396,6 +23609,15 @@ function CoachBooking({ state, setState, nav, myUserId }) {
                                     <X size={15} style={{ color: C.sub }} />
                                   </button>
                                 } />
+                              {/* Filling a time the coach already agreed in
+                                  person. Without it the coach has to ask the
+                                  client to go and tap it in, everyone
+                                  forgets, and the schedule stops matching
+                                  the gym. */}
+                              <AddToSlotRow slot={slot} type={typeById[slot.sessionTypeId]}
+                                athletes={state.athletes} bookings={booking.bookings}
+                                openings={booking.openings} creditsFor={creditsFor}
+                                busy={busy} onAdd={addAthlete} />
                               {/* Moving someone without waiting to be asked.
                                   A client cannot do this; the coach can. */}
                               {heldBookings(booking.bookings, slot.id).map(b => (
@@ -23694,6 +23916,175 @@ function ChangeRequestCard({ row, slots, typeById, bookings, openings, busy, onD
 // Moving one person out of a slot, on the coach's own initiative. Collapsed to
 // a single line until it is wanted, because a schedule screen listing four
 // clients should not be four dropdowns.
+// One session that has happened, with everybody who was booked into it.
+//
+// Two buttons, not one. "Mark no-show" on its own would be a one-way door,
+// and this is a tap next to somebody's name whose cost is a session they
+// paid for plus a line on their record saying they did not show up. Both
+// answers are reversible from the same place.
+function AttendanceRow({ row, type, athletesById, busy, onMark }) {
+  return (
+    <div className="rounded-xl p-3.5" style={card({ borderRadius: 16 })}>
+      <div className="flex items-baseline gap-2 mb-2.5">
+        <span className="text-[15px] font-semibold" style={{ color: C.text }}>{type?.name || "Session"}</span>
+        <span className="text-[11px]" style={{ color: C.faint }}>
+          {formatSessionDate(toLocalISO(new Date(row.slot.startsAt)))}, {formatSlotTime(row.slot.startsAt)}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {row.bookings.map(b => (
+          <div key={b.id} className="flex items-center gap-2.5">
+            <Avatar initials={athletesById[b.athleteId]?.avatar || "??"} size={28}
+              photoUrl={athletesById[b.athleteId]?.photoUrl} />
+            <span className="flex-1 min-w-0 text-[15px] truncate" style={{ color: C.text }}>
+              {athletesById[b.athleteId]?.name || "Someone"}
+            </span>
+            <button onClick={() => onMark(b.id, false)} disabled={busy}
+              className="shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: `${C.olive}18`, border: `1px solid ${C.olive}66`, color: C.olive }}>
+              Turned up
+            </button>
+            <button onClick={() => onMark(b.id, true)} disabled={busy}
+              className="shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+              No-show
+            </button>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] mt-2.5" style={{ color: C.faint }}>
+        A no-show uses the session. You can change either answer here afterwards.
+      </p>
+    </div>
+  );
+}
+
+// The coach filling one of their own times.
+//
+// Shows the athlete's remaining sessions beside their name, and says so out
+// loud when there are none left, because booking somebody in on zero is a
+// decision rather than an accident. The server allows it deliberately; this
+// makes sure the coach knows they are making it.
+function AddToSlotRow({ slot, type, athletes, bookings, openings, creditsFor, busy, onAdd }) {
+  const [open, setOpen] = useState(false);
+  const left = spotsLeft(slot, type, bookings, openings);
+  const already = new Set(heldBookings(bookings, slot.id).map(b => b.athleteId));
+  const free = athletes.filter(a => !already.has(a.id));
+
+  if (left === 0 || free.length === 0) return null;
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} disabled={busy}
+        className="w-full mt-1.5 rounded-lg py-2 text-[12.5px] font-semibold flex items-center justify-center gap-1.5"
+        style={{ background: C.panel, border: `1px dashed ${C.blue}66`, color: C.blue }}>
+        <Plus size={14} /> Put someone in this one
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 rounded-lg p-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>
+          Who is coming
+        </span>
+        <button onClick={() => setOpen(false)} aria-label="Close"><X size={14} style={{ color: C.sub }} /></button>
+      </div>
+      <div className="space-y-1.5" style={{ maxHeight: 240, overflowY: "auto" }}>
+        {free.map(a => {
+          const credits = creditsFor(a.id, slot);
+          const none = credits <= 0;
+          return (
+            <button key={a.id} onClick={() => { setOpen(false); onAdd(slot.id, a.id); }} disabled={busy}
+              className="w-full rounded-lg px-2.5 py-2 flex items-center gap-2.5 text-left"
+              style={{ background: C.panel2, border: `1px solid ${C.border}` }}>
+              <Avatar initials={a.avatar} size={26} photoUrl={a.photoUrl} />
+              <span className="flex-1 min-w-0 text-[14px] truncate" style={{ color: C.text }}>{a.name}</span>
+              <span className="shrink-0 text-[11px] tabular-nums font-semibold"
+                style={{ color: none ? C.red : C.faint }}>
+                {none ? "none left" : `${credits} left`}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: C.faint }}>
+        Booking someone with none left still uses a session, so their balance goes negative. They are told either way.
+      </p>
+    </div>
+  );
+}
+
+// The month, as a grid. The list below it answers "what is next"; this
+// answers "how full is the back half of November", which a list of the next
+// fifteen times cannot.
+function ScheduleMonth({ slots, bookings, openings, typeById, year, month, onPage, onPickDay, selected }) {
+  const weeks = calendarMonth({ slots, year, month });
+  const label = new Date(year, month, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center justify-between mb-2.5">
+        <button onClick={() => onPage(-1)} aria-label="Previous month"
+          className="rounded-lg p-1.5" style={{ border: `1px solid ${C.border}` }}>
+          <ChevronLeft size={16} style={{ color: C.sub }} />
+        </button>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>{label}</div>
+        <button onClick={() => onPage(1)} aria-label="Next month"
+          className="rounded-lg p-1.5" style={{ border: `1px solid ${C.border}` }}>
+          <ChevronRight size={16} style={{ color: C.sub }} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 mb-1">
+        {WEEKDAY_ORDER.map(d => (
+          <div key={d} className="text-center text-[10px] font-semibold uppercase" style={{ color: C.faint }}>
+            {d.slice(0, 1)}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {weeks.flat().map(cell => {
+          const n = cell.slots.length;
+          // Full is worth seeing at a glance: it is the difference between a
+          // day with room and a day that only looks busy.
+          const anyOpen = cell.slots.some(s => spotsLeft(s, typeById[s.sessionTypeId], bookings, openings) > 0);
+          const on = selected === cell.dateIso;
+          return (
+            <button key={cell.dateIso} onClick={() => onPickDay(n ? cell.dateIso : null)}
+              aria-label={`${cell.dateIso}, ${n} ${n === 1 ? "time" : "times"}`}
+              aria-current={cell.isToday ? "date" : undefined}
+              className="rounded-lg flex flex-col items-center justify-center"
+              style={{
+                aspectRatio: "1 / 1",
+                background: on ? `${C.orange}1F` : cell.inMonth ? C.panel : "transparent",
+                border: `1px solid ${on ? C.orange : cell.isToday ? C.blue : cell.inMonth ? C.border : "transparent"}`,
+                opacity: cell.inMonth ? 1 : 0.35,
+              }}>
+              <span className="text-[12px] tabular-nums" style={{ color: cell.isToday ? C.blue : C.text, fontWeight: cell.isToday ? 700 : 400 }}>
+                {cell.day}
+              </span>
+              {/* A dot per time, up to three, then a count. Three dots is
+                  already "a busy day" and a row of eight is unreadable at
+                  this size. */}
+              <span className="flex items-center gap-0.5" style={{ height: 6, marginTop: 2 }}>
+                {n > 0 && n <= 3 && cell.slots.map((s, i) => (
+                  <i key={i} style={{ display: "block", width: 4, height: 4, borderRadius: 999,
+                    background: anyOpen ? C.orange : C.faint }} />
+                ))}
+                {n > 3 && (
+                  <i className="text-[9px] tabular-nums not-italic font-bold"
+                    style={{ color: anyOpen ? C.orange : C.faint }}>{n}</i>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MoveBookingRow({ booking, athlete, slots, typeById, bookings, openings, currentSlotId, busy, onMove }) {
   const [open, setOpen] = useState(false);
 

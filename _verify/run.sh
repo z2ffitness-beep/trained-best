@@ -18,5 +18,11 @@ echo "== hooks below an early return =="
 node _verify/hooks.mjs
 echo "== unwired components and state =="
 node _verify/unwired.mjs
+echo "== migrations, against a real Postgres =="
+# Every other check reads the .sql as text. This one RUNS it. A migration
+# that has never been executed anywhere is one Isaiah meets for the first
+# time on production, with nobody around to fix it. Skips itself, loudly,
+# where there is no Postgres.
+sh _verify/sql/run-sql-tests.sh
 echo
 echo "Build separately:  cd ~/tbdev && cp <project>/src/App.jsx src/ && npx vite build"
