@@ -77,19 +77,43 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | Plan rebuild | **Done.** `session_moves` (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet, the missed card on Today, "pulled-forward goes back", and "I did it on Mon, log it" |
 | `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
 | `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
-| 2. Signup in 5 steps | **Started.** `SIGNUP_KEYS`, `SIGNUP_V2_STEPS` and the contract test are in; `SIGNUP_V2` is **false** and the live flow is untouched. The screens themselves are the next job |
-| 3. Coach home | **Not started.** Coach Home and athlete detail (4 tabs), adjust plan, My Own Training |
-| 4. Schedule | **Not started.** Month calendar, direct booking, requests, no-show |
+| Profiles read hole | **Fixed in code, migration NOT applied.** `004_lock_down_profiles.sql` narrows the blanket SELECT policy and adds the `coach_card` RPC. See section 4c |
+| 2. Signup in 5 steps | **Done and switched ON.** 5 screens, 6 on the coached path. Session style derived from the training days. Plan-ready screen at the end. The v1 lists are still in the file so the way back is one line |
+| 3. Coach home | **Done.** Coach Home leads with "who needs you"; athlete detail is four tabs (Overview / Program / Progress / Notes); adjust plan is the editor on the Program tab; My Own Training is the existing mode switch, now pinned by tests |
+| 4. Schedule | **Not started.** Month calendar, direct booking, requests, no-show. **Needs INSERT and UPDATE policies on `session_change_requests`** |
 | 5. Messages with media | **Not started.** Extends `form_checks` |
 | 7. Billing with Stripe | **Excluded** by Isaiah, 15 Oct |
 
-**In one line: the athlete side is built, the coach side is not.** Phases 1
-and 6 are done and the Plan rebuild with them; 2 is started; 3, 4 and 5 are
-untouched.
+**In one line: phases 1, 2, 3 and 6 are done and on `redesign-branding`.
+Phases 4 and 5 are not started.** One migration (004) is written and
+deliberately unapplied, waiting for the merge to production.
 
 Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
 **the coach roster sorted by next session** (`groupAthletesBySession`). The
 message-deletion half of that doc did ship; this half did not.
+
+## 4c. Waiting on Isaiah
+
+- **Push.** Nothing has been pushed from this machine.
+  `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
+- **Migration 004 is written and NOT applied.** It is the only one so far
+  that changes who can read what on a live table, so it goes in at merge
+  time, with the code that matches it. The client carries a fallback to the
+  old read, so the code and the migration can land in either order without a
+  window where the coach's name vanishes from every athlete's screen.
+  Rehearsed read-only against live on 15 Oct: rows readable by any signed-in
+  athlete 11 -> 1, coach 6, all 5 coached athletes still load their coach's
+  card, 0 load anyone else's.
+- **Two existing athletes train five days with no split recorded.** The new
+  signup derives a split from the training days, but only for new accounts -
+  deriving at read time would have restructured two real people's training
+  on their next generation without anybody deciding to. If Isaiah wants them
+  moved to upper/lower it is one update each, and it is his call, not the
+  app's.
+- **`ANTHROPIC_API_KEY` is still missing from the Vercel PREVIEW
+  environment**, which is why program generation failed on the branch URL.
+- **Check Settings -> Functions** for the Hobby plan's maximum duration
+  against `maxDuration: 300` in `api/chat.js`.
 
 ## 4b. Decisions Isaiah made on 15 Oct
 
@@ -174,6 +198,20 @@ message-deletion half of that doc did ship; this half did not.
   to "D...", the level bar rendering as an empty track because an `<i>` is
   inline, and the Plan's day strip trying to fit "Upcoming" into 30px.
 
+- **Running `_verify/run.sh` twice in one shell command killed the
+  container** on 16 Oct (exit 137, out of memory). Run it once, redirect to
+  a file, and read the file.
+- **A coach's device does not automatically have an athlete's data.** It
+  loads logs, progress, check-ins and (since 16 Oct) session moves by
+  explicit query. Anything new an athlete writes needs adding to that load
+  or every coach-side screen reads it as empty - which is how the roster
+  once showed 0/7 on everyone's accountability tracker.
+- **`splitStyleOf` must not start deriving.** Eleven profiles exist, two of
+  them train five days and none ever answered the session-style question.
+  Deriving at read time would restructure two real athletes' programmes on
+  their next generation. The derivation belongs at the WRITE
+  (`withDerivedSplit`), where an explicit answer always wins.
+
 ## 6. Corrections to earlier documents
 
 `BACKEND-PLAN.md` says "your workout logs do not store weight at all" and
@@ -207,59 +245,83 @@ Three commits on `redesign-branding`, 15 Oct:
   movement that beat the standing best. Offline sessions carry their set
   rows into the queue.
 
-## 7b. Picking up phase 2
+## 7b. What phase 2 and 3 actually changed
 
-The groundwork is done and it is the part that was easy to get wrong. Read
-`SIGNUP_KEYS` in `src/App.jsx` before writing a line of UI.
+**Signup is five screens** (six if you join a coach), down from fourteen.
+The combined screens are the OLD step bodies stacked under section headings,
+not a rewrite of them: `SIGNUP_V2_SECTIONS` describes the composition and
+`OnboardingStepBodyRest` recurses into itself once per section. That is why
+the height dial, the weight slider and the per-area injury cards behave
+exactly as they did.
 
-**The one rule.** The new screens are a different arrangement of inputs over
-the SAME data model. `writeProfileAndContinue`, `buildMeFromOnboarding` and
-`buildAIPrompt` all read the answers by key and none of them cares which
-screen a key was typed on. Keep every key and nothing downstream changes at
-all. Drop one and it fails silently - `"🥊 Sport / Focus"` is the dangerous
-one, because without it every generated programme becomes General Fitness
-with no error anywhere.
+`isStepComplete` came out of the Onboarding component as **`stepComplete`**,
+so the rules can be checked against an object. A combined screen is complete
+when every section SHOWING on it is - so a non-fighter is never held on the
+goal screen by a question they were never asked.
 
-`signup.test.mjs` enforces this: it reads the keys `buildAIPrompt` and the
-profile write actually use and fails if any is missing from `SIGNUP_KEYS`.
+**Session style is no longer a question.** `deriveSplit` works it out from
+`trainingDays.length`: four or fewer is full body, five is upper/lower, six
+or seven is push/pull/legs. Applied by `withDerivedSplit` at the two places
+answers become a profile (`writeProfileAndContinue` and the coach's own
+training intake), never at read time - `splitStyleOf` is unchanged, so no
+existing athlete's programme shape moved.
 
-**What is left:**
+**Signup ends on `PlanReadyScreen`**: what was chosen, then what is left of
+this week. Only the days still to come, because a programme generated on a
+Thursday that opens with "Monday - Lower Body" reads as three sessions
+already missed on day one.
 
-1. Four new step bodies, in `OnboardingStepBody`: `👤 About You`,
-   `🎯 Your Goal`, `📅 Your Week`, and the new one-screen `🩹 Injuries`.
-   Each sets the keys `SIGNUP_KEYS` lists for it.
-2. The coach path's two screens: `🏅 Your Coaching Business` and
-   `📩 Invite Your Athletes`.
-3. The coached path's coach card: once six characters are entered, show the
-   logo, business name, coach name and "by Trained.Best" before the account
-   screen.
-4. Session style stops being asked. Derive the split from
-   `trainingDays.length` where the old `"🧩 Session Style"` answer was read.
-5. The plan-ready screen: what was chosen, then this week's workouts,
-   scheduling from today on only.
-6. Flip `SIGNUP_V2` to true, in its own commit, and delete the v1 lists in
-   the one after - not the same one, so the revert stays a one-liner.
+**Coach Home leads with `coachAttention`**, one pure function over state
+that ranks athletes by what blocks them: no programme, then missed, then
+never started, then quiet for ten days, then today. Today is deliberately
+not counted as a problem.
+
+**The coach's device now loads its athletes' `session_moves`.** Without
+them a session an athlete deliberately moved reads as missed, and the coach
+accuses them of skipping a session they did. No migration: 003 already
+granted coaches SELECT on that table, it was simply never asked for.
+
+**The athlete page is four tabs**: Overview, Program, Progress, Notes.
+Identity and the three tiles stay above the tabs.
+
+Two things the test suite caught that nothing else would have:
+
+1. The coached-athlete path had **no goal screen**. Nobody joining a coach
+   would have been asked their sport, goals, experience or timeframe, and
+   every one of them would have got a General Fitness programme with no
+   error anywhere. `signup-v2.test.mjs` now checks the contract PER PATH;
+   pooling the three paths was what hid it.
+2. `COACH_ONLY_KEYS` listed two of the four coach-only answers, so a coach
+   who changed their mind and signed up as an athlete carried
+   `"⚡ Specialties"` and `"🎯 Coaching Style"` into their athlete intake.
 
 ## 8. Next action
 
-**Phase 1 and the Plan rebuild are both complete.** What is left:
+**Phases 1, 2, 3 and 6 are complete and on `redesign-branding`.** What is
+left:
 
-1. **Phase 2: signup in 5 steps** - started, see section 7b.
-2. **Phase 3: coach home** and athlete detail (4 tabs), adjust plan, My Own
-   Training.
-3. **Phase 4: schedule.** Month calendar, direct booking, requests,
-   no-show. Needs INSERT and UPDATE policies on `session_change_requests`.
-4. **Phase 5: messages with media**, extending `form_checks`. Mind the
-   column-level UPDATE grant on `messages`.
-
-Stripe stays out.
+1. **Phase 4: schedule.** Month calendar, direct booking, requests,
+   no-show. The blocker is policy, not UI: `session_change_requests` has
+   only a SELECT policy and needs INSERT and UPDATE. That is additive and
+   pre-approved, but write it as `005_*.sql` and leave it unapplied like
+   004, so Isaiah applies both at merge time in order.
+2. **Phase 5: messages with media**, extending `form_checks`. Mind the
+   column-level UPDATE grant on `messages` - a new column must be added to
+   the grant or writes fail looking like a bug.
 
 Two small things worth doing once this has been seen running:
 
+- Delete the **v1 signup step lists** (`athleteSteps`, `coachSteps`,
+  `coachedAthleteSteps`) and the `SIGNUP_V2` flag, once a real account has
+  been made on the preview. Not before: while both lists exist, switching
+  back is one line rather than a revert of four commits.
+- Delete the root **`chat.js`** once the 404 fallback has been seen working
+  in production.
 - The **Caught Up** badge can become the spec's **Comeback**, now that
-  "missed" is a real concept rather than an approximation of one.
-- Delete the root `chat.js` once the 404 fallback has been seen working in
-  production.
+  "missed" is a real concept.
 
-Run `sh _verify/run.sh` before every commit. It was 1187/1187 on 15 Oct.
+Run `sh _verify/run.sh` before every commit. It was **1293/1293 across 50
+suites** on 16 Oct. Run it ONCE per command: running it twice in one shell
+pipeline has killed the container for memory.
+
 Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
