@@ -80,13 +80,14 @@ Taken 14 Oct, in `BACKEND-PLAN.md`:
 | Profiles read hole | **Fixed in code, migration NOT applied.** `004_lock_down_profiles.sql` narrows the blanket SELECT policy and adds the `coach_card` RPC. See section 4c |
 | 2. Signup in 5 steps | **Done and switched ON.** 5 screens, 6 on the coached path. Session style derived from the training days. Plan-ready screen at the end. The v1 lists are still in the file so the way back is one line |
 | 3. Coach home | **Done.** Coach Home leads with "who needs you"; athlete detail is four tabs (Overview / Program / Progress / Notes); adjust plan is the editor on the Program tab; My Own Training is the existing mode switch, now pinned by tests |
-| 4. Schedule | **Not started.** Month calendar, direct booking, requests, no-show. **Needs INSERT and UPDATE policies on `session_change_requests`** |
-| 5. Messages with media | **Not started.** Extends `form_checks` |
+| 4. Schedule | **Done.** Month grid, the coach filling a time, no-show. Requests and moves already existed. Migration 005, **not applied** |
+| 5. Messages with media | **Done.** Photos and clips in the thread, one shared composer. Migration 006, **not applied** |
+| Storage policy bug | **Fixed in 006, not applied.** `form_check_files_read` and `progress_photo_read` could never let a coach see an athlete's file. See 4c |
 | 7. Billing with Stripe | **Excluded** by Isaiah, 15 Oct |
 
-**In one line: phases 1, 2, 3 and 6 are done and on `redesign-branding`.
-Phases 4 and 5 are not started.** One migration (004) is written and
-deliberately unapplied, waiting for the merge to production.
+**In one line: every phase in scope is done and on `redesign-branding`.**
+Three migrations (004, 005, 006) are written, run against a real Postgres,
+and deliberately unapplied - they go in at merge time, in that order.
 
 Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
 **the coach roster sorted by next session** (`groupAthletesBySession`). The
@@ -96,6 +97,19 @@ message-deletion half of that doc did ship; this half did not.
 
 - **Push.** Nothing has been pushed from this machine.
   `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
+- **Three migrations are written and NOT applied: 004, 005, 006, in that
+  order.** All three have been applied to a throwaway Postgres built from
+  the live schema and exercised there (`sh _verify/sql/run-sql-tests.sh`,
+  72 checks), so none of them is meeting Postgres for the first time on
+  production. 005 and 006 are additive. 004 is the one that changes access
+  control on a live table.
+- **006 fixes a bug that is live right now.** `form_check_files_read` and
+  `progress_photo_read` compare an athlete's id against the first segment
+  of their DISPLAY NAME instead of the file path, so the "a coach can see
+  their athlete's file" branch can never be true: **a coach cannot open any
+  form check or progress photo at all.** Nothing has been uploaded to
+  either bucket yet, so fixing it costs nothing. If only one thing from
+  this work ships, make it this.
 - **Migration 004 is written and NOT applied.** It is the only one so far
   that changes who can read what on a live table, so it goes in at merge
   time, with the code that matches it. The client carries a fallback to the
@@ -295,21 +309,67 @@ Two things the test suite caught that nothing else would have:
    who changed their mind and signed up as an athlete carried
    `"⚡ Specialties"` and `"🎯 Coaching Style"` into their athlete intake.
 
+## 7c. What phase 4 and 5 changed
+
+**The schedule had three gaps** and the rest of it already worked - opening
+times, repeating times, booking, cancelling, the notice window, change
+requests, the coach's decision, moving a booking, closing a time and
+refunding everyone in it. The three:
+
+- `groupSlotsByDay` shows the FUTURE only, which is right for "what is
+  coming up" and is also why no-show could never be recorded: by the time a
+  coach wanted to mark a session it had dropped off the only screen that
+  listed it. **`sessionsToMark`** is the other half.
+- The coach could not **put anybody in a time**. Most sessions in a real gym
+  are agreed in person, and without this the coach has to ask the client to
+  tap it in. `book_athlete_into_slot` allows it with no credits left, on
+  purpose, and the UI says so before they do it.
+- **`calendarMonth`**: six rows of seven, Monday first, always.
+
+**The documented blocker for phase 4 was wrong.** `session_change_requests`
+does not need INSERT and UPDATE policies. Every write in that subsystem goes
+through a security definer function, which is not subject to RLS at all.
+
+**Media in messages** extends the thread, not `form_checks` - a conversation
+is not a review queue. The first path segment is the THREAD's athlete, not
+the uploader, because both people upload. One `MessageComposer` serves both
+threads.
+
+## 7d. The SQL layer, added 16 Oct
+
+`_verify/sql/` builds a throwaway Postgres from the live schema, applies
+004, 005 and 006 to it, and exercises them. **This is the only check in the
+repo that RUNS a migration**; everything else reads the `.sql` as text,
+which proves a line is present and nothing else.
+
+Three things to know about it:
+
+1. **Run the policy checks as a NON-SUPERUSER.** Postgres lets a superuser
+   straight through row level security whatever `force row level security`
+   says, so running them as the table owner passes every check without
+   consulting a single policy. `00_scaffold.sql` creates `rls_tester` for
+   this, and the exercises `set role` to it.
+2. **A raw statement that raises just prints and scrolls past** with
+   `ON_ERROR_STOP off`. The runner greps for `ERROR:` as well as `FAIL`
+   because a mutation slipped through exactly that way.
+3. **A DELETE the policy filters out of affects no rows and succeeds.**
+   Check whether the row survived, not whether the statement raised.
+
+It skips itself, loudly, where there is no Postgres, so the suite still runs
+on the Mac. Four real problems came out of building it, all in the tests:
+three checks were being refused for the wrong reason, and the harness was
+counting a SQL error as a pass.
+
 ## 8. Next action
 
-**Phases 1, 2, 3 and 6 are complete and on `redesign-branding`.** What is
-left:
+**Every phase in scope is complete and on `redesign-branding`.** Stripe was
+excluded by Isaiah on 15 Oct.
 
-1. **Phase 4: schedule.** Month calendar, direct booking, requests,
-   no-show. The blocker is policy, not UI: `session_change_requests` has
-   only a SELECT policy and needs INSERT and UPDATE. That is additive and
-   pre-approved, but write it as `005_*.sql` and leave it unapplied like
-   004, so Isaiah applies both at merge time in order.
-2. **Phase 5: messages with media**, extending `form_checks`. Mind the
-   column-level UPDATE grant on `messages` - a new column must be added to
-   the grant or writes fail looking like a bug.
+What is left is Isaiah's, not the code's - see section 4c: push, apply 004,
+005 and 006 in order at merge time, add `ANTHROPIC_API_KEY` to the Vercel
+Preview environment, and decide about the two five-day athletes.
 
-Two small things worth doing once this has been seen running:
+Worth doing once this has been seen running:
 
 - Delete the **v1 signup step lists** (`athleteSteps`, `coachSteps`,
   `coachedAthleteSteps`) and the `SIGNUP_V2` flag, once a real account has
@@ -319,9 +379,11 @@ Two small things worth doing once this has been seen running:
   in production.
 - The **Caught Up** badge can become the spec's **Comeback**, now that
   "missed" is a real concept.
+- The never-applied **`groupAthletesBySession`** from the Drive doc. The
+  roster already sorts by next session via `withNextSession`, so check
+  whether this is still wanted at all before building it.
 
-Run `sh _verify/run.sh` before every commit. It was **1293/1293 across 50
-suites** on 16 Oct. Run it ONCE per command: running it twice in one shell
-pipeline has killed the container for memory.
+Run `sh _verify/run.sh` before every commit. It was **1370/1370 across 52
+suites, plus 72 SQL checks**, on 16 Oct. Run it ONCE per command.
 
 Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
