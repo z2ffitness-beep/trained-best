@@ -10067,6 +10067,164 @@ function PhotosNeededPanel({ state }) {
   );
 }
 
+// ---------- who needs the coach today ----------
+//
+// The coach's question when they open the app is not "how many athletes do I
+// have". It is "is anybody stuck, and is anybody about to be". A dashboard of
+// counts cannot answer that, and the answer was previously spread across four
+// screens: a missed session on the athlete page, a message in Messages, a
+// missing programme nowhere at all.
+//
+// One function, so the list can be checked against a state object rather than
+// by signing in as a coach with a roster arranged just so. Pure: it reads
+// state and today, and returns rows.
+//
+// Order is by what blocks whom. An athlete with no programme cannot train at
+// all, so they come before one who missed Tuesday, who comes before one who
+// simply has not finished today's session yet - which is not a problem at
+// 9am and is only on the list so the coach can see the day.
+const ATTENTION_KINDS = [
+  // kind, how urgent (lower is worse), and whether it is a problem or just
+  // the state of the day. `info` rows never show a warning colour.
+  { kind: "no_program", rank: 0, tone: "bad" },
+  { kind: "program_failed", rank: 0, tone: "bad" },
+  { kind: "missed", rank: 1, tone: "bad" },
+  { kind: "never_trained", rank: 2, tone: "warn" },
+  { kind: "quiet", rank: 3, tone: "warn" },
+  { kind: "due_today", rank: 4, tone: "info" },
+  { kind: "trained_today", rank: 5, tone: "good" },
+];
+const ATTENTION_RANK = Object.fromEntries(ATTENTION_KINDS.map(k => [k.kind, k.rank]));
+const ATTENTION_TONE = Object.fromEntries(ATTENTION_KINDS.map(k => [k.kind, k.tone]));
+
+// How long without a session before a coach should notice. Not a missed
+// session - that is a scheduled day they did not train - but silence from
+// somebody whose programme has no days this week, or who has drifted off.
+const QUIET_DAYS = 10;
+
+function coachAttention(state, todayStr = todayISO()) {
+  const rows = [];
+  for (const a of state?.athletes || []) {
+    const program = (state?.programs || []).find(p => p.id === a.program);
+    const logs = a.workoutLogs || [];
+    const moves = a.sessionMoves || [];
+
+    const push = (kind, label, detail) =>
+      rows.push({ athleteId: a.id, name: a.name, avatar: a.avatar, photoUrl: a.photoUrl,
+        kind, label, detail, rank: ATTENTION_RANK[kind], tone: ATTENTION_TONE[kind] });
+
+    // Nothing to train. Said first and on its own, because every other
+    // signal is meaningless without a programme and listing them too would
+    // bury the only one the coach can act on.
+    //
+    // athleteNeedsProgram, not a second reading of the same fields: the
+    // roster already distinguishes "the build failed" from "nobody has got
+    // to them yet", and two definitions of that would eventually disagree
+    // on the same athlete in two places on the same screen.
+    const needs = athleteNeedsProgram(a);
+    if (needs) {
+      push(needs === "failed" ? "program_failed" : "no_program",
+        needs === "failed" ? "Programme failed to build" : "No programme yet",
+        needs === "failed" ? "Build one for them, or ask them to retry" : "They cannot train until they have one");
+      continue;
+    }
+    // Linked to a programme id that is not loaded. Rare, but silently
+    // skipping them would drop a real athlete off the list entirely.
+    if (!program) {
+      push("no_program", "Programme missing", "Their programme could not be loaded");
+      continue;
+    }
+
+    // Missed, with the athlete's own moves taken into account, so a session
+    // deliberately shifted is not reported as skipped.
+    const missed = missedSessions({ program, logs, moves, pausedDayKey: null, today: todayStr, weeksBack: 1 });
+    if (missed.length) {
+      push("missed",
+        missed.length === 1 ? "Missed a session" : `Missed ${missed.length} sessions`,
+        `${missed[0].day?.name || "A session"} on ${formatLogDate(missed[0].date)}`);
+      continue;
+    }
+
+    // Never started. Distinct from "quiet": nobody has drifted, they have
+    // simply not begun, and the thing to do about it is different.
+    if (logs.length === 0) {
+      push("never_trained", "Has not trained yet", "No sessions logged since joining");
+      continue;
+    }
+
+    const last = a.lastActive || logs[0]?.date || null;
+    const silentFor = last ? daysBetweenISO(last, todayStr) : null;
+    if (silentFor !== null && silentFor >= QUIET_DAYS) {
+      push("quiet", `Quiet for ${silentFor} days`, `Last trained ${formatLogDate(last)}`);
+      continue;
+    }
+
+    // Today. Not a problem, and on the list so the coach can see the day at
+    // a glance rather than to be chased.
+    const todayDay = (program.days || []).find(d => isDayScheduledOn(d, todayStr));
+    if (todayDay) {
+      const done = logs.some(l => l?.date === todayStr);
+      push(done ? "trained_today" : "due_today",
+        done ? "Trained today" : "Due today", todayDay.name);
+    }
+  }
+
+  // Stable within a rank: whoever has been waiting is not reordered by a
+  // re-render, which is what makes the list readable at a glance.
+  return rows
+    .map((r, i) => ({ ...r, i }))
+    .sort((x, y) => (x.rank - y.rank) || (x.name || "").localeCompare(y.name || "") || (x.i - y.i))
+    .map(({ i, ...r }) => r);
+}
+
+// How many of those rows are actually a problem. The header says "3 need
+// you", not "11 athletes", and counting the informational rows would make it
+// say 11 on a morning when nothing at all is wrong.
+function attentionNeeded(rows) {
+  return (rows || []).filter(r => r.tone === "bad" || r.tone === "warn").length;
+}
+
+function AttentionPanel({ state, nav }) {
+  const rows = coachAttention(state);
+  const needed = attentionNeeded(rows);
+
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody on your roster yet</div>
+        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Share your invite code above and they will appear here.</p>
+      </div>
+    );
+  }
+
+  const toneColor = { bad: C.red, warn: C.amber, info: C.sub, good: C.olive };
+
+  return (
+    <div>
+      <div className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>
+        {needed === 0
+          ? <span><span className="font-semibold" style={{ color: C.olive }}>Nothing needs you.</span> Here is the day.</span>
+          : <span><span className="font-semibold" style={{ color: C.text }}>{needed}</span> need{needed === 1 ? "s" : ""} you</span>}
+      </div>
+      <div className="space-y-2">
+        {rows.map(r => (
+          <button key={`${r.athleteId}-${r.kind}`} onClick={() => nav.go("coach-athlete-detail", r.athleteId)}
+            className="w-full rounded-xl p-3 flex items-center gap-3 text-left"
+            style={{ ...card(), border: `1px solid ${r.tone === "bad" ? `${C.red}55` : r.tone === "warn" ? `${C.amber}55` : C.border}` }}>
+            <Avatar initials={r.avatar} size={34} photoUrl={r.photoUrl} />
+            <div className="flex-1 min-w-0">
+              <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{r.name}</div>
+              <div className="text-[12.5px] font-semibold" style={{ color: toneColor[r.tone] }}>{r.label}</div>
+              {r.detail && <div className="text-[11px] truncate" style={{ color: C.faint }}>{r.detail}</div>}
+            </div>
+            <ChevronRight size={16} className="shrink-0" style={{ color: C.faint }} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CoachTodayPanel({ state, nav }) {
   const today = todayISO();
 
@@ -10331,6 +10489,16 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
       <TopBar title="Dashboard" onLogout={nav.logout} />
       <div className="px-5 pt-5">
         {onSwitchMode && !wideDash && <ModeSwitch training={false} onChange={onSwitchMode} />}
+
+        {/* Who needs you, first. The counts and the invite code are still
+            here, underneath: a coach opening the app wants to know whether
+            anybody is stuck, and "11 athletes, 9 programs" cannot answer
+            that. The answer used to be spread across four screens - a missed
+            session on the athlete page, a stalled programme nowhere at all. */}
+        <ChalkDivider label="Who needs you" />
+        <AttentionPanel state={state} nav={nav} />
+
+        <ChalkDivider label="Your roster" />
         <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
           <StatCard icon={Users} label="Athletes" value={totalAthletes} />
@@ -10347,6 +10515,10 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
           </button>
         )}
 
+        {/* Still here, and still worth its space: this is the session-by-
+            session view of today, with who has finished and how long they
+            took. The panel above answers "is anyone stuck"; this one answers
+            "how is today going". */}
         <ChalkDivider label="Today" />
         <CoachTodayPanel state={state} nav={nav} />
 
@@ -25007,13 +25179,27 @@ function AppInner() {
       let logsByAthlete = {};
       let progressByAthlete = {};
       let checkinsByAthlete = {};
+      let movesByAthlete = {};
       if (ids.length) {
         // The RLS policies already grant a coach SELECT on their athletes' rows.
-        const [{ data: logRows }, { data: progressRows }, { data: checkinRows }] = await Promise.all([
+        //
+        // session_moves is in here because of what "missed" means. Without an
+        // athlete's moves, a session they deliberately shifted from Tuesday to
+        // Thursday reads as missed on Tuesday and unplanned on Thursday - so
+        // the coach's screen accuses them of skipping a session they actually
+        // did. Migration 003 already gave coaches SELECT on this table; it was
+        // simply never asked for.
+        const [{ data: logRows }, { data: progressRows }, { data: checkinRows }, { data: moveRows }] = await Promise.all([
           supabase.from("workout_logs").select("*").in("user_id", ids).order("date", { ascending: false }),
           supabase.from("progress_entries").select("*").in("user_id", ids).order("created_at", { ascending: true }),
           supabase.from("session_checkins").select("*").in("user_id", ids).order("date", { ascending: false }),
+          supabase.from("session_moves").select("*").in("user_id", ids),
         ]);
+        (moveRows || []).forEach(m => {
+          (movesByAthlete[m.user_id] ||= []).push({
+            programDay: m.program_day, fromDate: m.from_date, toDate: m.to_date, kind: m.kind,
+          });
+        });
         (logRows || []).forEach(l => { (logsByAthlete[l.user_id] ||= []).push(l); });
         (progressRows || []).forEach(p => { (progressByAthlete[p.user_id] ||= []).push(p); });
         (checkinRows || []).forEach(c => {
@@ -25125,6 +25311,10 @@ function AppInner() {
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
             workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })),
             checkins: checkinsByAthlete[a.id] || {},
+            // Same shape as state.sessionMoves, so planForWeek and
+            // missedSessions read an athlete exactly as they read the
+            // signed-in user. One function, one definition of "missed".
+            sessionMoves: movesByAthlete[a.id] || [],
             // mapCheckin, not a hand-written subset: the fields a check-in
             // carries are listed in exactly one place, so adding one does not
             // mean remembering two loaders and a writer.
