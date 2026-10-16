@@ -181,8 +181,13 @@ test("every intake key the AI prompt reads is in the contract", () => {
 });
 
 test("every key the profile row reads is in the contract", () => {
+  // Bounded by what comes next, not by a character count. A fixed window got
+  // longer than the thing it was framing the moment a comment was added above
+  // it, cut `data.weightLb` in half, and reported a missing key called "w".
   const at = src.indexOf("const writeProfileAndContinue = async");
-  const body = src.slice(at, at + 2600);
+  const end = src.indexOf('if (role === "athlete" || role === "athlete_coached") {', at);
+  assert.ok(at > 0 && end > at, "writeProfileAndContinue no longer has the shape this test reads");
+  const body = src.slice(at, end);
   const read = new Set();
   for (const m of body.matchAll(/\bdata\.([A-Za-z_$][\w$]*)/g)) read.add(m[1]);
   for (const m of body.matchAll(/\bdata\["([^"]+)"\]/g)) read.add(m[1]);

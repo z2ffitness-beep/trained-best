@@ -2798,6 +2798,46 @@ const SPLIT_STYLES = [
 ];
 const DEFAULT_SPLIT = "full_body";
 
+// Session style stopped being a question in the short signup. It was always a
+// worse way of asking "how many days a week do you train", because that is the
+// only thing the answer can sensibly depend on: a five-day full-body week is
+// bad programming whoever asks for it, and a three-day push/pull/legs week
+// trains each pattern once a fortnight.
+//
+// So the split is DERIVED from the days, and written down at signup like any
+// other answer. Derived, not inferred at read time, for one reason: eleven
+// profiles already exist, two of them train five days and none of them ever
+// answered this question. Deriving at read time would quietly restructure two
+// real athletes' programmes on their next generation. Writing it at signup
+// changes nobody who is already here, and splitStyleOf keeps doing what it
+// always did - an explicit answer wins, and an absent one is full body.
+function deriveSplit(days) {
+  const n = Array.isArray(days) ? days.length : 0;
+  // Six or seven days is the only week with room to hit each pattern twice,
+  // which is what push/pull/legs needs to not be a once-a-week programme.
+  if (n >= 6) return "push_pull_legs";
+  // Five full-body sessions cannot be recovered from. Upper/lower gives each
+  // half of the body two or three exposures with a day between them.
+  if (n === 5) return "upper_lower";
+  // Four or fewer: full body, every time. Each session has to count because
+  // there are not enough of them to specialise.
+  return DEFAULT_SPLIT;
+}
+
+// Applied once, where the answers are written, so the stored intake,
+// buildMeFromOnboarding and buildAIPrompt all see the same value rather than
+// three places each deriving it slightly differently.
+//
+// An existing answer always wins. The coach's own training intake still asks
+// the question outright, and a signup resumed from a draft written before this
+// change already has one. Nothing with no training days gets a split invented
+// for it either - that is a half-finished signup, not a programming decision.
+function withDerivedSplit(data) {
+  if (!data || data.splitStyle) return data;
+  if (!Array.isArray(data.trainingDays) || data.trainingDays.length === 0) return data;
+  return { ...data, splitStyle: deriveSplit(data.trainingDays) };
+}
+
 // Read the athlete's choice, defaulting to full body. An account that predates
 // the question, or one that answered nothing, gets the default — which is the
 // whole point of the default being this one.
@@ -6875,6 +6915,10 @@ const SIGNUP_KEYS = {
   // they land on, and showing the coach's card before anything else is what
   // makes the rest of the signup feel like joining something.
   coached: ["inviteCode", "inviteCoachId"],
+  // The coach path. Background, specialties and style were three screens and
+  // are now one, and the business name goes in beside them because it is what
+  // an athlete sees on the coach card the moment they type the invite code.
+  coach: ["🏅 Background", "⚡ Specialties", "🎯 Coaching Style", "businessName"],
 };
 
 // The screens, in order, per path.
@@ -6887,8 +6931,55 @@ const SIGNUP_V2_STEPS = {
   // The code first, then the account. The design is explicit about this and
   // it is the right way round: someone joining a coach wants to see whose
   // app this is before they type a password into it.
-  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🩹 Injuries", "📅 Your Week"],
+  // Same questions as the solo path, with the code in front. An earlier draft
+  // of this list left "🎯 Your Goal" out, which asked a coached athlete for
+  // nothing about their goals, their sport, their experience or their
+  // timeframe - and produced a General Fitness programme for a fighter with
+  // no error anywhere. signup-v2.test.mjs now fails on a missing key rather
+  // than letting the list and the contract drift apart.
+  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
   coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"],
+};
+
+// How the combined screens are built.
+//
+// Each one is the OLD step bodies stacked under section headings, not a
+// rewrite of them. That is the whole trick, and it is deliberate: the height
+// dial, the weight slider, the per-area injury cards and the competition-date
+// maths are all behaviour that took a while to get right, and retyping any of
+// it to fit a new layout is how you lose it. Composing them instead means the
+// combined screens set exactly the keys the single screens set - which is the
+// contract above, kept by construction rather than by being careful.
+//
+// `when` hides a section that does not apply, in place, rather than making it
+// a screen that is skipped.
+const SIGNUP_V2_SECTIONS = {
+  "👤 About You": [
+    { step: "🧬 Sex", label: "Sex" },
+    { step: "🎂 Birthday", label: "Birthday" },
+    { step: "📏 Height", label: "Height" },
+    { step: "⚖️ Weight", label: "Weight" },
+  ],
+  "🎯 Your Goal": [
+    { step: "🎯 Goals", label: "What you want" },
+    { step: "🥊 Sport / Focus", label: "Sport or focus" },
+    // Was a screen of its own that was skipped for everyone but fighters.
+    // Inline and conditional says the same thing without the empty step.
+    { step: "🥋 Sport Details", label: "Your fighting", when: d => d["🥊 Sport / Focus"] === "MMA" },
+    { step: "💪 Training Experience", label: "How long you have trained" },
+    { step: "🔍 Goal Depth", label: "What is in the way, and by when" },
+  ],
+  "📅 Your Week": [
+    // Session style is not here, and not anywhere. See deriveSplit.
+    { step: "📅 Training Schedule", label: "Your days" },
+    { step: "🏋️ Equipment", label: "What you can train with" },
+  ],
+  "🏅 Your Coaching Business": [
+    { step: "🏅 Background", label: "How long you have coached" },
+    { step: "⚡ Specialties", label: "What you specialise in" },
+    { step: "🎯 Coaching Style", label: "How you coach" },
+    { step: "💼 Business Name", label: "Your business name" },
+  ],
 };
 
 // Off. The new screens are built and tested behind this, and it is flipped
@@ -6896,6 +6987,63 @@ const SIGNUP_V2_STEPS = {
 // bug costs a real person's first impression and there is no way to ask them
 // to try again.
 const SIGNUP_V2 = false;
+
+// Can this screen be left?
+//
+// Lifted out of the Onboarding component so it can be called with a role, a
+// step name and an object, instead of only by driving the real UI. A combined
+// screen is complete when every section on it is - including, exactly, the
+// sections that are actually showing, so a non-fighter is never held on
+// "🎯 Your Goal" by a question they were never asked.
+function stepComplete(stepName, data, role) {
+  const sections = SIGNUP_V2_SECTIONS[stepName];
+  if (sections) {
+    return sections
+      .filter(s => !s.when || s.when(data))
+      .every(s => stepComplete(s.step, data, role));
+  }
+  if (role === "coach") {
+    switch (stepName) {
+      case "👤 Your Name": return !!(data.name || "").trim();
+      case "🏅 Background": return !!data["🏅 Background"];
+      case "⚡ Specialties": return true;
+      case "🎯 Coaching Style": return true;
+      // Optional by design. A coach with no business name is just a coach,
+      // and the athlete's card falls back to their own name.
+      case "💼 Business Name": return true;
+      case "📩 Invite Athletes": return true; // optional by design
+      case "📩 Invite Your Athletes": return true; // nothing to fill in
+      case "📸 Profile Photo": return true; // optional by design
+      case "🔐 Create Account": return accountStepValid(data);
+      default: return true;
+    }
+  }
+  switch (stepName) {
+    case "👤 Your Name": return !!(data.name || "").trim();
+    case "💪 Training Experience": return !!data.experience;
+    // Requires a code that actually resolves to a real coach, not just six
+    // characters — "AAAAAA" used to pass, and the athlete finished the whole
+    // signup believing they'd joined a roster they were never linked to.
+    case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
+    case "🧬 Sex": return !!data.sex;
+    case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+    case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
+    case "🎯 Goals": return (data.goals || []).length > 0;
+    case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
+    // An area picked with no side is a half-answered question, so Continue
+    // waits. Everything else on this step stays skippable.
+    case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
+    case "🎂 Birthday": return isUsableBirthday(data.birthday);
+    case "📏 Height": return !!data.heightCm;
+    case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
+    case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
+    case "🧩 Session Style": return true; // defaults to full body
+    case "🏋️ Equipment": return (data.equipment || []).length > 0;
+    case "📸 Profile Photo": return true; // optional by design
+    case "🔐 Create Account": return accountStepValid(data);
+    default: return true;
+  }
+}
   const COACH_ONLY_KEYS = ["🏅 Background", "📩 Invite Athletes"];
 
   const chooseRole = (next) => {
@@ -6947,7 +7095,10 @@ const SIGNUP_V2 = false;
   // The code decides whose roster they land on, so it is asked next to the
   // account rather than buried after thirteen training questions.
   const coachedAthleteSteps = ["🔐 Create Account", "🔑 Coach Invite Code", ...athleteSteps.slice(1)];
-  const allSteps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
+  const v1Steps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
+  // The short signup, or the long one. Both lists are kept so the switch back
+  // is this one flag rather than a revert, for as long as that is worth it.
+  const allSteps = SIGNUP_V2 ? SIGNUP_V2_STEPS[role] : v1Steps;
   // The account already exists in resume mode — asking for an email and
   // password again would create a second one.
   const steps = existingUser
@@ -6970,47 +7121,9 @@ const SIGNUP_V2 = false;
     setStep(Math.max(0, Math.min(steps.length - 1, next)));
   };
 
-  // returns true if the current step has the information it needs to proceed
-  const isStepComplete = () => {
-    if (role === "coach") {
-      switch (stepName) {
-        case "👤 Your Name": return !!(data.name || "").trim();
-        case "🏅 Background": return !!data["🏅 Background"];
-        case "⚡ Specialties": return true;
-        case "🎯 Coaching Style": return true;
-        case "📩 Invite Athletes": return true; // optional by design
-        case "📸 Profile Photo": return true; // optional by design
-        case "🔐 Create Account": return accountStepValid(data);
-        default: return true;
-      }
-    }
-    switch (stepName) {
-      case "👤 Your Name": return !!(data.name || "").trim();
-      case "💪 Training Experience": return !!data.experience;
-      // Requires a code that actually resolves to a real coach, not just six
-      // characters — "AAAAAA" used to pass, and the athlete finished the whole
-      // signup believing they'd joined a roster they were never linked to.
-      case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
-      case "🧬 Sex": return !!data.sex;
-      case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
-      case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
-      case "🎯 Goals": return (data.goals || []).length > 0;
-      case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
-      // An area picked with no side is a half-answered question, so Continue
-      // waits. Everything else on this step stays skippable.
-      case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
-      case "🎂 Birthday": return isUsableBirthday(data.birthday);
-      case "📏 Height": return !!data.heightCm;
-      case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
-      case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
-      case "🧩 Session Style": return true; // defaults to full body
-      case "🏋️ Equipment": return (data.equipment || []).length > 0;
-      case "📸 Profile Photo": return true; // optional by design
-      case "🔐 Create Account": return accountStepValid(data);
-      default: return true;
-    }
-  };
-  const canProceed = isStepComplete();
+  // One definition, at the top of the file, so the rules can be checked
+  // against an object instead of only by tapping through fourteen screens.
+  const canProceed = stepComplete(stepName, data, role);
 
   const handleNext = () => {
     // Guard against a double tap or a double Enter on the final step. There was
@@ -7213,7 +7326,14 @@ const SIGNUP_V2 = false;
         )}
       </div>
 
-      <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
+      {/* Stuck to the bottom of the viewport, not to the bottom of the page.
+          The one-question screens were short enough that the footer was
+          always on screen; a combined screen is 1,170px of content at 320px
+          wide, which put Continue 1,362px down a 760px-tall phone. Measured,
+          not guessed. Sticky costs nothing on a short screen - it sits where
+          it always did - and on a long one the way forward never leaves. */}
+      <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0"
+        style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
         <Btn variant="secondary" disabled={submitting} onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
         <Btn className="flex-1" disabled={!canProceed || submitting} onClick={handleNext}>
           {submitting ? "Setting up…" : isLast ? "Finish Setup" : "Continue"}
@@ -7431,6 +7551,31 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     ? <p className="text-[12.5px] -mt-2 mb-4" style={{ color: C.red }}>{errFor(field)}</p>
     : null;
 
+  // A combined screen is the old step bodies stacked under headings, so this
+  // recurses into itself once per section. Handled first, before the coach
+  // branch below, which matches on everything coach-side and would otherwise
+  // swallow "🏅 Your Coaching Business" and render an empty list.
+  const sections = SIGNUP_V2_SECTIONS[stepName];
+  if (sections) {
+    const showing = sections.filter(s => !s.when || s.when(data));
+    return (
+      <div>
+        {showing.map((s, i) => (
+          <div key={s.step}
+            // A rule and a gap between sections, nothing on the first. Four
+            // question blocks run together read as one long form and people
+            // answer the top of it and tap Continue.
+            style={i === 0 ? undefined : { marginTop: 26, paddingTop: 22, borderTop: `1px solid ${C.border}` }}>
+            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>
+              {s.label}
+            </div>
+            <OnboardingStepBodyRest role={role} stepName={s.step} data={data} setData={setData} set={set} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const sharedSteps = ["👤 Your Name", "📸 Profile Photo", "🔐 Create Account"];
   if (role === "coach" && !sharedSteps.includes(stepName)) {
     const opts = {
@@ -7438,7 +7583,28 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       "⚡ Specialties": ["Strength & Power", "MMA / Combat Performance", "Olympic Lifting", "Return-to-Play", "Conditioning", "General Fitness Coaching"],
       "🎯 Coaching Style": ["High intensity / direct", "Technical / cue-heavy", "Collaborative / athlete-led", "Data-driven"],
     };
-    if (stepName === "📩 Invite Athletes") {
+    // What athletes see on the coach card before they have typed a password,
+    // so it is worth asking for while the coach is still filling things in.
+    // Optional: a coach who trains people under their own name leaves it and
+    // the card falls back to that.
+    if (stepName === "💼 Business Name") {
+      return (
+        <div>
+          <input
+            type="text"
+            placeholder="e.g. Trained By The Best"
+            value={data.businessName || ""}
+            onChange={e => set("businessName", e.target.value)}
+            style={{ ...inputStyle, fontSize: 18, padding: "14px" }}
+          />
+          <p className="text-[12.5px] mt-2" style={{ color: C.faint }}>
+            Optional. This is the name your athletes see when they enter your invite code. Leave it
+            blank to use your own name, and you can add a logo and colour later under Settings.
+          </p>
+        </div>
+      );
+    }
+    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Athletes") {
       // This step used to show an email input with no value/onChange and an
       // "Add another" button with no onClick — a coach could type their whole
       // roster, tap the button, watch nothing happen, and continue believing
@@ -25177,8 +25343,13 @@ function AppInner() {
   // Writes the profile row and takes the user into the app. Called straight
   // after signup when a session already exists, and from handleLogin once a
   // confirmed user returns with setup still unfinished.
-  const writeProfileAndContinue = async (authData, role, data) => {
+  const writeProfileAndContinue = async (authData, role, rawData) => {
     try {
+      // The split the programme is built on. Worked out from the training days
+      // rather than asked for - see deriveSplit. Done here, at the single point
+      // where the answers become a profile, so the stored intake and the prompt
+      // cannot disagree about it.
+      const data = withDerivedSplit(rawData);
       // Never persist the raw password (or UI-only noise) outside Supabase's own
       // hashed auth storage — this is what gets saved as "intake" for later reuse.
       // photoUrl is stripped too: it's a multi-megabyte base64 data URL that
@@ -25203,7 +25374,11 @@ function AppInner() {
 
       if (userId) {
         const profileRow = role === "coach"
-          ? { id: userId, role, name, avatar, photo_url: data.photoUrl || null, intake: safeIntake }
+          // business_name is its own column rather than only an intake key,
+          // because coach_card reads it and the athlete's screen shows it.
+          // Blank means "use my own name", which is null here, not "".
+          ? { id: userId, role, name, avatar, photo_url: data.photoUrl || null, intake: safeIntake,
+              business_name: (data.businessName || "").trim() || null }
           : {
               id: userId, role, name, avatar, photo_url: data.photoUrl || null,
               sport: data["🥊 Sport / Focus"] || "General Fitness", sex: data.sex === "Female" ? "female" : "male",
