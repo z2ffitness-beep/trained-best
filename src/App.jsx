@@ -2824,6 +2824,60 @@ function deriveSplit(days) {
   return DEFAULT_SPLIT;
 }
 
+// ---------- the plan-ready screen ----------
+//
+// What signup ends on. Not a spinner that vanishes, and not the dashboard:
+// somebody who has just answered twenty questions should be shown what those
+// answers turned into, before being asked to find it themselves.
+//
+// Two pure functions do the work, so what the screen claims can be checked
+// against an intake and a programme rather than by signing up again.
+
+// What was chosen, in the athlete's own words. Only rows with a real answer:
+// an empty "Injuries —" line reads as a question that failed to save.
+function planReadySummary(intake, splitStyle) {
+  const rows = [];
+  const sport = intake?.["🥊 Sport / Focus"];
+  if (sport) rows.push({ label: "Training for", value: sport });
+  const goals = (intake?.goals || []).filter(Boolean);
+  if (goals.length) rows.push({ label: goals.length > 1 ? "Goals" : "Goal", value: goals.join(", ") });
+  const days = (intake?.trainingDays || []).filter(Boolean);
+  if (days.length) {
+    rows.push({ label: "Days a week", value: `${days.length} — ${days.map(d => d.slice(0, 3)).join(", ")}` });
+    const key = splitStyle || deriveSplit(days);
+    const style = SPLIT_STYLES.find(s => s.key === key);
+    // "How the week splits" wrapped onto two lines in the 104px label column
+    // at 320px, next to a value that was also wrapping. Measured.
+    if (style) rows.push({ label: "Week split", value: style.label });
+  }
+  const minutes = intake?.sessionMinutes;
+  if (minutes) rows.push({ label: "Session length", value: `About ${minutes} minutes` });
+  const kit = (intake?.equipment || []).filter(Boolean);
+  if (kit.length) {
+    // The full list is up to eleven items and would be the longest row on the
+    // screen for no benefit. Three and a count says the same thing.
+    rows.push({ label: "Equipment", value: kit.length <= 3 ? kit.join(", ") : `${kit.slice(0, 3).join(", ")} +${kit.length - 3} more` });
+  }
+  const hurt = (intake?.injuries || []).filter(a => a && a !== "None currently");
+  // Said out loud either way. "Working around: nothing" is worth reading when
+  // you have just spent a screen saying what hurts.
+  rows.push({ label: "Working around", value: hurt.length ? hurt.join(", ") : "Nothing you told us about" });
+  return rows;
+}
+
+// This week's sessions, from today on. Not the whole week: a programme
+// generated on a Thursday that opens with "Monday — Lower Body" reads as
+// three sessions already missed, on day one, before anybody has done
+// anything. What is left of the week is the honest version, and an empty
+// list is a real answer - it means the next session is next week.
+function planReadyWeek(days, todayName) {
+  const from = WEEKDAY_ORDER.indexOf(todayName);
+  if (from < 0) return [];
+  const rest = new Set(WEEKDAY_ORDER.slice(from));
+  return WEEKDAY_ORDER.slice(from).flatMap(wd =>
+    (days || []).filter(d => d && d.weekday === wd && rest.has(d.weekday)));
+}
+
 // Applied once, where the answers are written, so the stored intake,
 // buildMeFromOnboarding and buildAIPrompt all see the same value rather than
 // three places each deriving it slightly differently.
@@ -8249,6 +8303,92 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     }
     default: return null;
   }
+}
+
+// The last screen of signup, and the first time the app has anything to show.
+//
+// It exists because the alternative is what was there before: a spinner, then
+// the dashboard. Somebody who has just answered twenty questions lands on a
+// home screen and has to go looking for what those answers did. This closes
+// the loop - here is what you told us, here is what is left of your week -
+// and then gets out of the way.
+function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart }) {
+  const rows = planReadySummary(intake, splitStyle);
+  const todayName = WEEKDAY_ORDER[(new Date().getDay() + 6) % 7];
+  const thisWeek = planReadyWeek(days, todayName);
+  const total = (days || []).length;
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}>
+      <div className="px-6 pt-10 pb-6 text-center shrink-0">
+        <div className="mx-auto mb-4 grid place-items-center"
+          style={{ width: 64, height: 64, borderRadius: 20, background: `${C.olive}1F`, border: `1px solid ${C.olive}55` }}>
+          <CheckCircle2 size={30} style={{ color: C.olive }} />
+        </div>
+        <h2 className="text-2xl font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>Your plan is ready</h2>
+        <p className="text-[15px] mt-2" style={{ color: C.sub }}>
+          {programName ? `${programName} — ` : ""}{total} session{total === 1 ? "" : "s"} a week
+          {weeks ? `, ${weeks} weeks` : ""}.
+        </p>
+      </div>
+
+      <div className="flex-1 px-6 pb-4 overflow-y-auto">
+        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>
+          Built from your answers
+        </div>
+        <div className="rounded-2xl overflow-hidden" style={card()}>
+          {rows.map((r, i) => (
+            <div key={r.label} className="px-4 py-3 flex items-start gap-3"
+              style={i === 0 ? undefined : { borderTop: `1px solid ${C.border}` }}>
+              <div className="text-[12.5px] shrink-0" style={{ color: C.sub, width: 104 }}>{r.label}</div>
+              <div className="text-[14px] flex-1" style={{ color: C.text }}>{r.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mt-7 mb-1" style={{ color: C.sub }}>
+          The rest of this week
+        </div>
+        <p className="text-[12.5px] mb-3" style={{ color: C.faint }}>
+          {/* Said plainly, because a short first week otherwise looks like
+              sessions have already been missed on day one. */}
+          Your week starts today, not last Monday. Nothing here is late.
+        </p>
+        {thisWeek.length === 0 ? (
+          <div className="rounded-2xl px-4 py-5 text-center" style={card()}>
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nothing left this week</div>
+            <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>
+              Your first session is on {(days || [])[0]?.weekday || "your first training day"}. Rest up.
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {thisWeek.map((d, i) => (
+              <div key={`${d.weekday}-${d.name}-${i}`} className="rounded-xl px-4 py-3.5 flex items-center gap-3" style={card({ borderRadius: 16 })}>
+                <span className="shrink-0 grid place-items-center text-[12px] font-bold"
+                  style={{ width: 42, height: 42, borderRadius: 12, background: `${C.orange}18`, border: `1px solid ${C.orange}40`, color: C.orange }}>
+                  {d.weekday.slice(0, 3).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  {/* Wraps rather than truncating. "Upper Push and Posterior
+                      Chain" lost its last two words to an ellipsis at 320px,
+                      and the session name is the only thing on the row that
+                      says what the session is. */}
+                  <div className="text-[15px] font-semibold" style={{ color: C.text }}>{d.name}</div>
+                  {d.focus && <div className="text-[12.5px] truncate" style={{ color: C.sub }}>{d.focus}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="px-6 pb-8 pt-4 shrink-0"
+        style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
+        <Btn className="w-full" onClick={onStart}>Start training</Btn>
+      </div>
+    </div>
+  );
 }
 
 // ============================================================
@@ -25153,6 +25293,11 @@ function AppInner() {
   }, []);
 
   const [generatingProgram, setGeneratingProgram] = useState(false);
+  // Set only when a programme was actually generated and saved. A failed
+  // generation leaves it null, so the athlete lands on the dashboard with the
+  // retry the Program tab already offers, rather than on a screen announcing
+  // a plan that does not exist.
+  const [planReady, setPlanReady] = useState(null);
   const [recoveringPassword, setRecoveringPassword] = useState(false);
 
   // Unread messages addressed to me, for the nav badge. RLS already limits what
@@ -25446,6 +25591,9 @@ function AppInner() {
           // A note left behind from an earlier failed attempt would otherwise
           // keep showing the athlete an error over a program that now exists.
           await clearProgramFailure(userId);
+          // Inside the try, after the save: nothing announces a plan that was
+          // not written down.
+          setPlanReady({ intake: data, splitStyle: data.splitStyle, days: parsed.days, programName: parsed.programName, weeks });
         } catch (err) {
           // This catch used to be empty. A failed generation dropped the athlete
           // on a dashboard with no program and no error, staring at a "your
@@ -25474,7 +25622,10 @@ function AppInner() {
             // Read back from the row the trigger just populated.
             inviteCode: savedProfile?.invite_code || null,
             accountabilityEnabled: true,
-            businessName: null,
+            // Was hard-coded null, so a coach who had just typed their
+            // business name saw their own name on their card until the next
+            // login re-read the row.
+            businessName: (data.businessName || "").trim() || null,
             brandColor: null,
             logoPath: null,
           },
@@ -25650,6 +25801,17 @@ function AppInner() {
       return <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}><LoginScreen onLogin={handleLogin} onSwitchToSignup={() => setAuthMode("onboarding")} /></div>;
     }
     return <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} onSwitchToLogin={() => setAuthMode("login")} /></div>;
+  }
+
+  // The last screen of signup. Rendered after the view has already been set
+  // to the dashboard, so dismissing it is one setState and the athlete is
+  // where they would have been anyway.
+  if (planReady) {
+    return (
+      <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}>
+        <PlanReadyScreen {...planReady} onStart={() => setPlanReady(null)} />
+      </div>
+    );
   }
 
   // Every tab here is part of the core loop; parked features add their own tab
