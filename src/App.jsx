@@ -24837,11 +24837,38 @@ function AppInner() {
       // getting session check-in prompts long after their coach switched them
       // off, and the coach's name and photo never appeared.
       if (profile.coach_id) {
-        const { data: coachRow } = await supabase
-          .from("profiles")
-          .select("id, name, avatar, photo_url, intake, business_name, brand_color, logo_path")
-          .eq("id", profile.coach_id)
-          .maybeSingle();
+        // The RPC, not a select on profiles.
+        //
+        // Row level security is row level: it cannot hide a column. Reading
+        // the coach's row to get their name and logo also hands over their
+        // intake blob, which holds their email and birthday. coach_card
+        // returns the eight fields this screen uses and nothing else, to
+        // the athletes on that coach's roster and nobody else.
+        //
+        // See supabase/migrations/004_lock_down_profiles.sql. Until that
+        // migration is applied the function does not exist, so this falls
+        // back to the old read and the app keeps working either way - which
+        // is what lets the code ship before the migration does.
+        let coachRow = null;
+        const { data: card, error: cardError } = await supabase
+          .rpc("coach_card", { p_id: profile.coach_id });
+        const cardRow = Array.isArray(card) ? card[0] : card;
+        if (!cardError && cardRow) {
+          coachRow = {
+            ...cardRow,
+            intake: {
+              accountabilityEnabled: cardRow.accountability_enabled,
+              cancellationHours: cardRow.cancellation_hours,
+            },
+          };
+        } else {
+          const { data: legacy } = await supabase
+            .from("profiles")
+            .select("id, name, avatar, photo_url, intake, business_name, brand_color, logo_path")
+            .eq("id", profile.coach_id)
+            .maybeSingle();
+          coachRow = legacy;
+        }
         if (coachRow) {
           setState(s => ({
             ...s,
