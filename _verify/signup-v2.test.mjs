@@ -285,8 +285,24 @@ test("the way forward does not scroll off a combined screen", () => {
   assert.ok(/background: C\.bg/.test(row), "the sticky footer is transparent");
 });
 
-test("the flag is off until the screens have been seen working", () => {
-  assert.equal(SIGNUP_V2, false, "SIGNUP_V2 is on - flip it in a commit of its own");
+test("the short signup is the one that runs, and the way back is one line", () => {
+  assert.equal(SIGNUP_V2, true, "the short signup is built and tested but nobody is seeing it");
+  // The v1 lists are what makes flipping back a one-liner instead of a
+  // revert, so they are not dead code until the flag goes.
+  assert.ok(/const athleteSteps = \[/.test(src), "the long signup's step list is gone");
+  assert.ok(/const coachSteps = \[/.test(src), "the long coach signup's step list is gone");
+  assert.ok(/const allSteps = SIGNUP_V2 \? SIGNUP_V2_STEPS\[role\] : v1Steps;/.test(src),
+    "the flag no longer chooses between the two");
+});
+
+test("a coach who changes their mind does not carry coaching answers across", () => {
+  // The hand-written list missed two of the four, so "⚡ Specialties" and
+  // "🎯 Coaching Style" rode into an athlete's intake where nothing reads
+  // them and nothing clears them.
+  assert.ok(/const COACH_ONLY_KEYS = \[\.\.\.SIGNUP_KEYS\.coach, "📩 Invite Athletes"\];/.test(src),
+    "the coach-only keys are listed by hand again and will drift from the contract");
+  assert.ok(/for \(const k of COACH_ONLY_KEYS\) delete cleaned\[k\];/.test(src),
+    "nothing clears the coach's answers when the role changes");
 });
 
 // ---------- can this screen be left ----------

@@ -7036,11 +7036,12 @@ const SIGNUP_V2_SECTIONS = {
   ],
 };
 
-// Off. The new screens are built and tested behind this, and it is flipped
-// in one commit once the suite covers them. Signup is the one path where a
-// bug costs a real person's first impression and there is no way to ask them
-// to try again.
-const SIGNUP_V2 = false;
+// On. The v1 lists below are still here and still correct, so the way back
+// is this one line rather than a revert. They come out once the short signup
+// has been through a real account on the preview - not before, because
+// signup is the one path where a bug costs a real person's first impression
+// and there is no way to ask them to try again.
+const SIGNUP_V2 = true;
 
 // Can this screen be left?
 //
@@ -7098,7 +7099,13 @@ function stepComplete(stepName, data, role) {
     default: return true;
   }
 }
-  const COACH_ONLY_KEYS = ["🏅 Background", "📩 Invite Athletes"];
+  // Read off the contract rather than written out by hand. The hand-written
+  // list was ["🏅 Background", "📩 Invite Athletes"], which missed
+  // "⚡ Specialties" and "🎯 Coaching Style" - so a coach who changed their
+  // mind and signed up as an athlete carried their coaching answers into
+  // their athlete intake, where buildAIPrompt would never read them and
+  // nothing would ever clear them.
+  const COACH_ONLY_KEYS = [...SIGNUP_KEYS.coach, "📩 Invite Athletes"];
 
   const chooseRole = (next) => {
     setData(d => {

@@ -225,15 +225,13 @@ test("a coached athlete sees whose app this is before typing a password", () => 
     "the account comes before the code, so somebody joins a coach they have not seen yet");
 });
 
-test("the new flow is still switched off", () => {
-  // Signup is the one path where a bug costs a real person's first
-  // impression and there is no way to ask them to try again. This flips in
-  // one commit, once the screens exist and the suite covers them.
-  assert.ok(/const SIGNUP_V2 = false;/.test(src),
-    "the new signup is live before its screens have been built");
-});
+// The flag itself, and the screens behind it, are guarded by
+// signup-v2.test.mjs. This file stayed with the contract: what the profile
+// write and the AI prompt read, and what signup must therefore collect.
 
-test("the old flow is untouched while the new one is built", () => {
+test("the long signup is still there as the way back", () => {
+  // Not dead code until the flag goes. While both lists exist, switching
+  // back is one line rather than a revert of several commits.
   assert.ok(/const athleteSteps = \[/.test(src), "the existing athlete steps are gone");
   assert.ok(/const coachSteps = \[/.test(src), "the existing coach steps are gone");
   assert.ok(/const coachedAthleteSteps = \[/.test(src), "the existing coached steps are gone");
