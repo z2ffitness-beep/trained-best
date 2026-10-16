@@ -68,3 +68,54 @@ grant usage on schema public, auth to rls_tester, anon, authenticated;
 grant select on public.profiles to rls_tester;
 grant select, update on auth.state to rls_tester;
 grant execute on function auth.uid(), auth.role() to rls_tester;
+
+-- Enough of Supabase Storage for 006's policies to be created and run.
+drop schema if exists storage cascade;
+create schema storage;
+create table storage.buckets (
+  id text primary key, name text not null, public boolean not null default false,
+  file_size_limit bigint, allowed_mime_types text[]
+);
+create table storage.objects (
+  id uuid primary key default gen_random_uuid(),
+  bucket_id text not null references storage.buckets(id),
+  name text not null, owner uuid, created_at timestamptz not null default now()
+);
+alter table storage.objects enable row level security;
+alter table storage.objects force row level security;
+-- Supabase's own helper: the path split into segments.
+create or replace function storage.foldername(name text) returns text[]
+language sql immutable as $$ select string_to_array(name, '/') $$;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values
+  ('form-checks','form-checks',false,104857600,array['video/mp4']),
+  ('progress-photos','progress-photos',false,15728640,array['image/jpeg']);
+
+-- The two policies as they read on the live database, bug and all, so the
+-- migration's `drop policy` has something to drop and so the exercise can
+-- show the before as well as the after.
+create policy "form_check_files_read" on storage.objects for select
+  using (bucket_id = 'form-checks' and (
+    (storage.foldername(name))[1] = auth.uid()::text
+    or exists (select 1 from public.profiles p
+               where p.id::text = (storage.foldername(p.name))[1] and p.coach_id = auth.uid())));
+create policy "progress_photo_read" on storage.objects for select
+  using (bucket_id = 'progress-photos' and (
+    (storage.foldername(name))[1] = auth.uid()::text
+    or exists (select 1 from public.profiles p
+               where p.id::text = (storage.foldername(p.name))[1] and p.coach_id = auth.uid())));
+
+-- The messages table, with the column-level grants that are the trap in 006.
+create table public.messages (
+  id uuid primary key default gen_random_uuid(),
+  athlete_id uuid not null, sender_id uuid not null, body text not null,
+  created_at timestamptz not null default now(), read_at timestamptz,
+  deleted_at timestamptz, deleted_by uuid, hidden_for uuid[] not null default '{}'
+);
+grant select, insert (id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for)
+  on public.messages to authenticated, rls_tester;
+grant update (read_at, deleted_at, deleted_by, hidden_for) on public.messages to authenticated, rls_tester;
+
+grant select, insert, delete on storage.objects to rls_tester;
+grant select on storage.buckets to rls_tester;
+grant usage on schema storage to rls_tester, anon, authenticated;

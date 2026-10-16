@@ -101,7 +101,7 @@ echo "   scaffold built from the live schema"
 
 # Applying the migration IS the first test: a syntax error here is one
 # Isaiah would otherwise meet on production.
-for m in "$HERE"/../../supabase/migrations/004_*.sql "$HERE"/../../supabase/migrations/005_*.sql; do
+for m in "$HERE"/../../supabase/migrations/004_*.sql "$HERE"/../../supabase/migrations/005_*.sql "$HERE"/../../supabase/migrations/006_*.sql; do
   cp "$m" "$TMP/"; chmod a+r "$TMP/$(basename "$m")"
   psqlq -v ON_ERROR_STOP=1 -f "$TMP/$(basename "$m")" >/dev/null
   echo "   applied $(basename "$m")"
