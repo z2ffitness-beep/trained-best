@@ -226,6 +226,20 @@ message-deletion half of that doc did ship; this half did not.
   their next generation. The derivation belongs at the WRITE
   (`withDerivedSplit`), where an explicit answer always wins.
 
+- **A test that reads a constant as DATA does not exercise the line that
+  uses it.** `signup-v2.test.mjs` had eight tests over `SIGNUP_V2_STEPS`
+  and every one passed while the app crashed on the first screen anybody
+  sees: `SIGNUP_V2_STEPS[role]` runs ~100 lines above the `if (!role)`
+  early return, so with the picker up it looked up a null key, got
+  undefined, and `steps.length` threw. The v1 expression ended in a plain
+  `: athleteSteps` and so always produced an array. The fix is a `??`
+  fallback; the lesson is that the test now lifts the real expression out
+  of the source and RUNS it for every value `role` can hold, null first.
+- **The signup component computes its step list long before it knows the
+  role.** Anything added between `const allSteps` (~7369) and
+  `if (!role)` (~7485) must tolerate `role === null`, `stepName ===
+  undefined` and an empty `data`.
+
 ## 6. Corrections to earlier documents
 
 `BACKEND-PLAN.md` says "your workout logs do not store weight at all" and

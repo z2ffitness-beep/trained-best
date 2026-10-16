@@ -7354,7 +7354,19 @@ function stepComplete(stepName, data, role) {
   const v1Steps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
   // The short signup, or the long one. Both lists are kept so the switch back
   // is this one flag rather than a revert, for as long as that is worth it.
-  const allSteps = SIGNUP_V2 ? SIGNUP_V2_STEPS[role] : v1Steps;
+  // The `?? SIGNUP_V2_STEPS.athlete` is load bearing, and its absence
+  // crashed the app on the very first screen anybody sees.
+  //
+  // `role` is null while the role picker is up, and this line runs 100+
+  // lines ABOVE the `if (!role)` early return - so the lookup happened with
+  // a null key, came back undefined, and `steps.length` on the next line
+  // threw before the picker could render. The v1 expression it replaced
+  // ended in a plain `: athleteSteps`, so it always produced an array
+  // whatever `role` was, and nothing ever noticed the difference.
+  //
+  // Which list is irrelevant here: the value is thrown away on the render
+  // where role is null. It only has to be an array.
+  const allSteps = (SIGNUP_V2 ? SIGNUP_V2_STEPS[role] : v1Steps) ?? SIGNUP_V2_STEPS.athlete;
   // The account already exists in resume mode — asking for an email and
   // password again would create a second one.
   const steps = existingUser

@@ -285,13 +285,51 @@ test("the way forward does not scroll off a combined screen", () => {
   assert.ok(/background: C\.bg/.test(row), "the sticky footer is transparent");
 });
 
+test("the step list survives the role picker, where role is null", () => {
+  // THE crash. `role` is null while the picker is on screen, and the step
+  // list is worked out ~100 lines ABOVE the `if (!role)` early return - so
+  // a lookup that returns undefined for a null key throws on the next
+  // line, before anybody has chosen anything. The app died on the first
+  // screen it ever shows.
+  //
+  // It survived every other test in this file because they all read
+  // SIGNUP_V2_STEPS as data and never ran the lookup with no role. So this
+  // one lifts the real expression out of the source and runs it.
+  const line = /const allSteps = (\(SIGNUP_V2 \? SIGNUP_V2_STEPS\[role\] : v1Steps\)[^;]*);/.exec(src);
+  assert.ok(line, "the step-list expression is not where this test reads it");
+  const evaluate = new Function("SIGNUP_V2", "SIGNUP_V2_STEPS", "role", "v1Steps",
+    `return ${line[1]};`);
+  const v1 = ["🔐 Create Account", "🧬 Sex"];
+  // Every value `role` actually holds, null first.
+  for (const role of [null, undefined, "athlete", "athlete_coached", "coach"]) {
+    for (const flag of [true, false]) {
+      const got = evaluate(flag, SIGNUP_V2_STEPS, role, v1);
+      assert.ok(Array.isArray(got),
+        `role=${JSON.stringify(role)} with SIGNUP_V2=${flag} gives ${got}, and the next line asks it for .length`);
+      assert.ok(got.length > 0, `role=${JSON.stringify(role)} gives an empty list`);
+    }
+  }
+  // And with a role, it is really that role's list rather than the fallback.
+  for (const role of ["athlete", "athlete_coached", "coach"]) {
+    assert.deepEqual(evaluate(true, SIGNUP_V2_STEPS, role, v1), SIGNUP_V2_STEPS[role],
+      `the ${role} path is being given somebody else's screens`);
+  }
+});
+
+test("the lookup really can come back empty, so the fallback is not decoration", () => {
+  // If this ever stops being true the fallback above is dead code and the
+  // test guarding it is testing nothing.
+  assert.equal(SIGNUP_V2_STEPS[null], undefined);
+  assert.equal(SIGNUP_V2_STEPS[undefined], undefined);
+});
+
 test("the short signup is the one that runs, and the way back is one line", () => {
   assert.equal(SIGNUP_V2, true, "the short signup is built and tested but nobody is seeing it");
   // The v1 lists are what makes flipping back a one-liner instead of a
   // revert, so they are not dead code until the flag goes.
   assert.ok(/const athleteSteps = \[/.test(src), "the long signup's step list is gone");
   assert.ok(/const coachSteps = \[/.test(src), "the long coach signup's step list is gone");
-  assert.ok(/const allSteps = SIGNUP_V2 \? SIGNUP_V2_STEPS\[role\] : v1Steps;/.test(src),
+  assert.ok(/const allSteps = \(SIGNUP_V2 \? SIGNUP_V2_STEPS\[role\] : v1Steps\)/.test(src),
     "the flag no longer chooses between the two");
 });
 
