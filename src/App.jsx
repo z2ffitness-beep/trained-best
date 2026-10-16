@@ -11422,6 +11422,55 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
 }
 
 // Coach view of one athlete: metrics, results, AND per-athlete program editing
+// The four tabs on an athlete's page.
+//
+// Listed in one place so the labels, the keys and the order cannot drift
+// apart, and so a test can assert that every key the page renders is one a
+// tab can actually reach - a panel keyed "progress" behind a tab keyed
+// "history" is invisible with no error anywhere.
+const ATHLETE_TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "program", label: "Program" },
+  { key: "progress", label: "Progress" },
+  { key: "notes", label: "Notes" },
+];
+
+function AthleteDetailTabs({ tab, onChange }) {
+  return (
+    // Scrolls sideways rather than shrinking, and bleeds to the screen edges
+    // so a scrolled tab is not clipped by the page gutter.
+    //
+    // Measured rather than reasoned about. Four equal-width pills do not work:
+    // at 320px that is 66px each and "Overview", "Program" and "Progress" all
+    // lose their last letters to an ellipsis. Scrolling at the original
+    // padding was worse - 433px of tabs in a 320px screen put "Notes"
+    // entirely off the edge with nothing to say it was there, so a coach on an
+    // iPhone SE would never learn the tab existed.
+    //
+    // 11px of side padding brings the row to 384px: the whole of it fits by
+    // 390px, and at 320px a 21px slice of the last pill stays on screen, which
+    // is the cue that there is more.
+    <div className="flex gap-1.5 mb-5 overflow-x-auto -mx-5 px-5" style={{ scrollbarWidth: "none" }}>
+      {ATHLETE_TABS.map(t => {
+        const on = tab === t.key;
+        return (
+          <button key={t.key} onClick={() => onChange(t.key)}
+            aria-current={on ? "page" : undefined}
+            className="shrink-0 rounded-full text-[12.5px] font-semibold whitespace-nowrap"
+            style={{
+              padding: "9px 11px",
+              background: on ? `${C.orange}1F` : C.panel,
+              border: `1px solid ${on ? C.orange : C.border}`,
+              color: on ? C.orange : C.sub,
+            }}>
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
@@ -11449,6 +11498,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [removeTarget, setRemoveTarget] = useState(null);
   const [offRosterOpen, setOffRosterOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // Which tab. Overview first: the coach opening an athlete most often wants
+  // to know how they are doing, not to edit their programme.
+  const [tab, setTab] = useState("overview");
 
   // Sessions and credits are loaded by the booking screens, which this page is
   // not. Without this the removal dialog would report zero unused sessions for
@@ -11778,324 +11830,345 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           <StatCard icon={Flame} label="Streak" value={athlete.streak} accent={C.amber} />
         </div>
 
-        {(athlete.goals || []).length > 0 && (
-          <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
-            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
-            <div className="flex flex-wrap gap-2">
-              {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
-            </div>
-          </div>
-        )}
 
-        {/* Weekly accountability tracker */}
-        {(() => {
-          const today = new Date(); const dow = today.getDay();
-          const weekDays = Array.from({length:7},(_,i)=>{const d=new Date(today);d.setDate(today.getDate()-dow+i);return d;});
-          const loggedDates = new Set(athleteLogs.map(l=>l.date));
-          const dayLabels=["S","M","T","W","T","F","S"];
-          const completed=weekDays.filter(d=>loggedDates.has(toLocalISO(d))).length;
-          return (
-            <div className="rounded-xl p-4 mb-5" style={{background:C.panel,border:`1px solid ${C.border}`}}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[15px] font-semibold" style={{color:C.text}}>This Week's Accountability</div>
-                <div className="text-[12.5px] tabular-nums font-semibold" style={{color:completed>=3?C.olive:C.sub}}>{completed}/7</div>
-              </div>
-              <div className="flex gap-1.5 justify-between">
-                {weekDays.map((d,i)=>{const done=loggedDates.has(toLocalISO(d));return(
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="text-[11px]" style={{color:C.faint}}>{dayLabels[i]}</div>
-                    <div className="w-full aspect-square rounded-lg flex items-center justify-center" style={{background:done?C.olive:C.border}}>
-                      {done&&<CheckCircle2 size={12} style={{color:"#fff"}}/>}
-                    </div>
-                  </div>
-                );})}
+        {/* Four tabs, not one 1,400-line scroll.
+            The page had everything on it in one column: who they are, their
+            week, their billing, the whole programme editor, and at the very
+            bottom the button that ends the coaching. Finding anything meant
+            scrolling past the programme editor, and the editor is the tallest
+            thing in the app.
+
+            Identity and the three tiles stay ABOVE the tabs, because they are
+            who you are looking at rather than one of the things you came to
+            look at. */}
+        <AthleteDetailTabs tab={tab} onChange={setTab} />
+
+        {tab === "overview" && (<>
+          {(athlete.goals || []).length > 0 && (
+            <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
+              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
+              <div className="flex flex-wrap gap-2">
+                {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
               </div>
             </div>
-          );
-        })()}
-
-        {athlete.injuries?.length > 0 && (
-          <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
-            <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
-            <div className="text-[12.5px]" style={{ color: C.red }}>Injury flags: {injuryLines(athlete.intake) !== "None" ? injuryLines(athlete.intake) : athlete.injuries.join(", ")}</div>
-          </div>
-        )}
-
-        {/* Billing status */}
-        {FEATURES.payments && (() => {
-          const payments = state.payments || { rates: [], clientBilling: {}, methods: [] };
-          const billing = payments.clientBilling[athlete.id];
-          const rate = billing ? payments.rates.find(r => r.id === billing.rateId) : null;
-          return (
-            <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${rate ? C.olive + "88" : C.border}` }}>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Billing</div>
-                <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>Manage →</button>
-              </div>
-              {rate ? (
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-[15px] font-semibold" style={{ color: C.text }}>{rate.label}</div>
-                      <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{rate.cycle} · Next due {formatLogDate(billing.nextDue)}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="tabular-nums font-bold text-xl" style={{ color: C.olive }}>${rate.amount}</div>
-                      <div className="text-[11px]" style={{ color: C.faint }}>{billing.paidCount || 0} paid</div>
-                    </div>
-                  </div>
-                  {(payments.methods || []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      {payments.methods.map(m => <span key={m} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: `${C.blue}22`, color: C.blue }}>{m}</span>)}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <span className="text-[15px]" style={{ color: C.faint }}>No billing set up for this client</span>
-                  <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.orange}18`, color: C.orange }}>Set Up</button>
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {state.coachProfile?.complianceAlerts !== false && (
-          <>
-            <ChalkDivider label="Session Length" />
-            <CompliancePanel logs={athleteLogs} />
-          </>
-        )}
-
-        {/* The athlete's own words about each session. Collecting a note the
-            coach never sees would be worse than not asking. */}
-        <ChalkDivider label="Recent Sessions" />
-        {athleteLogs.length === 0 ? (
-          <div className="rounded-lg p-3.5 text-[15px]" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>
-            No sessions logged yet.
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
-          </div>
-        )}
-
-        <ChalkDivider label="How they’ve been" />
-        <CheckinSummaryPanel entries={athleteProgress} athleteName={athlete.name} />
-
-        <ChalkDivider label="Progress History" />
-        <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
-          {athleteProgress.length === 0 ? (
-            <div className="text-center text-[12.5px] py-6" style={{ color: C.faint }}>No progress entries logged yet.</div>
-          ) : (
-          <div className="flex items-end gap-2 h-24">
-            {(() => {
-              // Only entries that carry a weight. A check-in about sleep alone
-              // has no bar to draw, and Math.max over its null is NaN.
-              const weighed = athleteProgress.filter(d => typeof d.weightKg === "number");
-              if (!weighed.length) {
-                return <div className="w-full text-center text-[12.5px]" style={{ color: C.faint }}>No weight logged yet.</div>;
-              }
-              const vals = weighed.map(p => p.weightKg);
-              const max = Math.max(...vals), min = Math.min(...vals);
-              return weighed.map((d, i) => {
-                const h = ((d.weightKg - min + 1) / (max - min + 2)) * 100;
-                return (
-                  <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full rounded-t-md" style={{ height: `${h}%`, background: i === weighed.length - 1 ? C.orange : C.steel }} />
-                    <span className="text-[8px]" style={{ color: C.faint }}>
-                      {formatSessionDate(d.date, { withWeekday: false }) || d.date}
-                    </span>
-                  </div>
-                );
-              });
-            })()}
-          </div>
           )}
-        </div>
 
-        <ChalkDivider label="Assigned Program — Edit" />
-        {program && (
-          <button onClick={() => setImportOpen(true)}
-            className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-            style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
-            <ClipboardList size={15} /> Import a program from a doc
-          </button>
-        )}
-        {!program && (
-          <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
-            <ClipboardList size={26} style={{ color: C.faint }} className="mx-auto mb-3" />
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
-            <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
-              Start one and add their sessions and exercises here.
-            </p>
-            <div className="flex gap-2.5">
-              <Btn variant="secondary" className="flex-1" icon={ClipboardList} onClick={() => setImportOpen(true)}>Import</Btn>
-              <Btn className="flex-1" icon={Plus} disabled={building} onClick={buildProgram}>
-                {building ? "Creating…" : "Build one"}
-              </Btn>
+          {/* Weekly accountability tracker */}
+          {(() => {
+            const today = new Date(); const dow = today.getDay();
+            const weekDays = Array.from({length:7},(_,i)=>{const d=new Date(today);d.setDate(today.getDate()-dow+i);return d;});
+            const loggedDates = new Set(athleteLogs.map(l=>l.date));
+            const dayLabels=["S","M","T","W","T","F","S"];
+            const completed=weekDays.filter(d=>loggedDates.has(toLocalISO(d))).length;
+            return (
+              <div className="rounded-xl p-4 mb-5" style={{background:C.panel,border:`1px solid ${C.border}`}}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[15px] font-semibold" style={{color:C.text}}>This Week's Accountability</div>
+                  <div className="text-[12.5px] tabular-nums font-semibold" style={{color:completed>=3?C.olive:C.sub}}>{completed}/7</div>
+                </div>
+                <div className="flex gap-1.5 justify-between">
+                  {weekDays.map((d,i)=>{const done=loggedDates.has(toLocalISO(d));return(
+                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                      <div className="text-[11px]" style={{color:C.faint}}>{dayLabels[i]}</div>
+                      <div className="w-full aspect-square rounded-lg flex items-center justify-center" style={{background:done?C.olive:C.border}}>
+                        {done&&<CheckCircle2 size={12} style={{color:"#fff"}}/>}
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              </div>
+            );
+          })()}
+
+          {athlete.injuries?.length > 0 && (
+            <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
+              <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
+              <div className="text-[12.5px]" style={{ color: C.red }}>Injury flags: {injuryLines(athlete.intake) !== "None" ? injuryLines(athlete.intake) : athlete.injuries.join(", ")}</div>
             </div>
-          </div>
-        )}
-        {program && program.days.length > 0 && (
-          <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
-            <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-              How they train with you
-            </div>
-            <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
-            <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
-              {programSessionMode(program.days) === null
-                ? "Mixed — set per session below."
-                : "Applies to every session. Change any single one below."}
-            </p>
-          </div>
-        )}
-        {program && (
-          <div className="space-y-4">
-            {program.days.map(day => (
-              <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
+          )}
+
+          {/* Billing status */}
+          {FEATURES.payments && (() => {
+            const payments = state.payments || { rates: [], clientBilling: {}, methods: [] };
+            const billing = payments.clientBilling[athlete.id];
+            const rate = billing ? payments.rates.find(r => r.id === billing.rateId) : null;
+            return (
+              <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${rate ? C.olive + "88" : C.border}` }}>
                 <div className="flex items-center justify-between mb-1">
-                  <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                  <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+                  <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Billing</div>
+                  <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>Manage →</button>
                 </div>
-                <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
-
-                {/* How this session normally runs. Set once here; any single
-                    date can still be changed below without disturbing it. */}
-                <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                    How this session runs
+                {rate ? (
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-[15px] font-semibold" style={{ color: C.text }}>{rate.label}</div>
+                        <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{rate.cycle} · Next due {formatLogDate(billing.nextDue)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="tabular-nums font-bold text-xl" style={{ color: C.olive }}>${rate.amount}</div>
+                        <div className="text-[11px]" style={{ color: C.faint }}>{billing.paidCount || 0} paid</div>
+                      </div>
+                    </div>
+                    {(payments.methods || []).length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2.5">
+                        {payments.methods.map(m => <span key={m} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: `${C.blue}22`, color: C.blue }}>{m}</span>)}
+                      </div>
+                    )}
                   </div>
-                  <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
-                  <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
-                </div>
-
-                {/* Grouped into the same sections the athlete sees, so a
-                    coach deleting "Conditioning" is looking at the same thing
-                    the athlete is, and so a whole section can go in one action
-                    instead of one exercise at a time. */}
-                {/* Which block is being edited. Without this the screen only
-                    ever showed the base template, so every change was global
-                    whether the coach meant it or not. */}
-                {coachPlan.blocks.length > 1 && (
-                  <div className="mt-3">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
-                      <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
-                    </div>
-                    <div className="flex gap-1.5 overflow-x-auto pb-1">
-                      {coachPlan.blocks.map(b => {
-                        const on = b.startWeek === editBlock?.startWeek;
-                        return (
-                          <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
-                            className="shrink-0 rounded-lg px-3 py-2 text-left"
-                            style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
-                            <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
-                            <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
-                          </button>
-                        );
-                      })}
-                      <button onClick={() => setWeeksOpen(true)}
-                        className="shrink-0 rounded-lg px-3 py-2 text-left"
-                        style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
-                        <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
-                        <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
-                      </button>
-                      <button onClick={() => setDeleteProgOpen(true)}
-                        className="shrink-0 rounded-lg px-3 py-2 text-left"
-                        style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
-                        <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
-                        <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
-                      </button>
-                    </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[15px]" style={{ color: C.faint }}>No billing set up for this client</span>
+                    <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.orange}18`, color: C.orange }}>Set Up</button>
                   </div>
                 )}
-                <div className="space-y-3 mt-3">
-                  {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
-                  <div key={b.key} className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
-                      <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
-                      <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                        aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
-                        <Plus size={14} style={{ color: b.accent }} />
-                      </button>
-                      <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
-                        aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
-                        <Trash2 size={13} style={{ color: C.faint }} />
-                      </button>
+              </div>
+            );
+          })()}
+
+          {state.coachProfile?.complianceAlerts !== false && (
+            <>
+              <ChalkDivider label="Session Length" />
+              <CompliancePanel logs={athleteLogs} />
+            </>
+          )}
+
+          {/* At the very bottom, on its own, the way a destructive action should
+              be: reachable when wanted, never beside something routine.
+              Deliberately OUTSIDE the `program &&` block above — a client with no
+              program assigned still needs to be removable. */}
+          <ChalkDivider label="End Coaching" />
+          <button onClick={() => setOffRosterOpen(true)}
+            className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
+            style={{ color: C.red, border: `1px solid ${C.red}44` }}>
+            Take {athlete.name.split(" ")[0]} off my roster
+          </button>
+          <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
+            Ends the coaching. Their account and training history stay with them.
+          </p>
+        </>)}
+
+        {tab === "program" && (<>
+          <ChalkDivider label="Assigned Program — Edit" />
+          {program && (
+            <button onClick={() => setImportOpen(true)}
+              className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
+              style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
+              <ClipboardList size={15} /> Import a program from a doc
+            </button>
+          )}
+          {!program && (
+            <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+              <ClipboardList size={26} style={{ color: C.faint }} className="mx-auto mb-3" />
+              <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+              <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+                Start one and add their sessions and exercises here.
+              </p>
+              <div className="flex gap-2.5">
+                <Btn variant="secondary" className="flex-1" icon={ClipboardList} onClick={() => setImportOpen(true)}>Import</Btn>
+                <Btn className="flex-1" icon={Plus} disabled={building} onClick={buildProgram}>
+                  {building ? "Creating…" : "Build one"}
+                </Btn>
+              </div>
+            </div>
+          )}
+          {program && program.days.length > 0 && (
+            <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
+              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
+                How they train with you
+              </div>
+              <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
+              <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
+                {programSessionMode(program.days) === null
+                  ? "Mixed — set per session below."
+                  : "Applies to every session. Change any single one below."}
+              </p>
+            </div>
+          )}
+          {program && (
+            <div className="space-y-4">
+              {program.days.map(day => (
+                <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
+                    <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+                  </div>
+                  <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
+
+                  {/* How this session normally runs. Set once here; any single
+                      date can still be changed below without disturbing it. */}
+                  <div className="mt-3">
+                    <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
+                      How this session runs
                     </div>
-                  {b.items.map(x => {
-                    const ex = exById(x.exerciseId);
-                    const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
+                    <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
+                    <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
+                  </div>
+
+                  {/* Grouped into the same sections the athlete sees, so a
+                      coach deleting "Conditioning" is looking at the same thing
+                      the athlete is, and so a whole section can go in one action
+                      instead of one exercise at a time. */}
+                  {/* Which block is being edited. Without this the screen only
+                      ever showed the base template, so every change was global
+                      whether the coach meant it or not. */}
+                  {coachPlan.blocks.length > 1 && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
+                        <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
+                      </div>
+                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                        {coachPlan.blocks.map(b => {
+                          const on = b.startWeek === editBlock?.startWeek;
+                          return (
+                            <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
+                              className="shrink-0 rounded-lg px-3 py-2 text-left"
+                              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
+                              <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
+                            </button>
+                          );
+                        })}
+                        <button onClick={() => setWeeksOpen(true)}
+                          className="shrink-0 rounded-lg px-3 py-2 text-left"
+                          style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
+                          <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
+                          <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
+                        </button>
+                        <button onClick={() => setDeleteProgOpen(true)}
+                          className="shrink-0 rounded-lg px-3 py-2 text-left"
+                          style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
+                          <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
+                          <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="space-y-3 mt-3">
+                    {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
+                    <div key={b.key} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
+                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
+                        <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                          aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
+                          <Plus size={14} style={{ color: b.accent }} />
+                        </button>
+                        <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
+                          aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
+                          <Trash2 size={13} style={{ color: C.faint }} />
+                        </button>
+                      </div>
+                    {b.items.map(x => {
+                      const ex = exById(x.exerciseId);
+                      const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
+                      return (
+                        <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
+                            <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
+                            <NoPhotoFlag name={ex?.name} size="xs" />
+                            <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
+                            <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {["sets", "reps", "rpe", "rest"].map(field => (
+                              <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
+                                className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5 mt-1">
+                            {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    </div>
+                    ))}
+                  </div>
+                  {(() => {
+                    const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
+                    const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
+                    if (!missing.length) return null;
                     return (
-                      <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                          <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
-                          <NoPhotoFlag name={ex?.name} size="xs" />
-                          <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
-                          <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
-                        </div>
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {["sets", "reps", "rpe", "rest"].map(field => (
-                            <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
-                              className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
+                      <div className="mt-3">
+                        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
+                        <div className="flex gap-2 flex-wrap">
+                          {missing.map(b => (
+                            <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
+                              style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
+                              <Plus size={13} /> {b.label}
+                            </button>
                           ))}
-                        </div>
-                        <div className="grid grid-cols-4 gap-1.5 mt-1">
-                          {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
                         </div>
                       </div>
                     );
-                  })}
-                  </div>
-                  ))}
+                  })()}
+                  <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
+                    className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
+                    style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
+                    <BookOpen size={15} /> Add From Library
+                  </button>
                 </div>
-                {(() => {
-                  const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
-                  const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
-                  if (!missing.length) return null;
+              ))}
+              <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
+              <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+            </div>
+          )}
+        </>)}
+
+        {tab === "progress" && (<>
+          <ChalkDivider label="How they’ve been" />
+          <CheckinSummaryPanel entries={athleteProgress} athleteName={athlete.name} />
+
+          <ChalkDivider label="Progress History" />
+          <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
+            {athleteProgress.length === 0 ? (
+              <div className="text-center text-[12.5px] py-6" style={{ color: C.faint }}>No progress entries logged yet.</div>
+            ) : (
+            <div className="flex items-end gap-2 h-24">
+              {(() => {
+                // Only entries that carry a weight. A check-in about sleep alone
+                // has no bar to draw, and Math.max over its null is NaN.
+                const weighed = athleteProgress.filter(d => typeof d.weightKg === "number");
+                if (!weighed.length) {
+                  return <div className="w-full text-center text-[12.5px]" style={{ color: C.faint }}>No weight logged yet.</div>;
+                }
+                const vals = weighed.map(p => p.weightKg);
+                const max = Math.max(...vals), min = Math.min(...vals);
+                return weighed.map((d, i) => {
+                  const h = ((d.weightKg - min + 1) / (max - min + 2)) * 100;
                   return (
-                    <div className="mt-3">
-                      <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
-                      <div className="flex gap-2 flex-wrap">
-                        {missing.map(b => (
-                          <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                            className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
-                            style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
-                            <Plus size={13} /> {b.label}
-                          </button>
-                        ))}
-                      </div>
+                    <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full rounded-t-md" style={{ height: `${h}%`, background: i === weighed.length - 1 ? C.orange : C.steel }} />
+                      <span className="text-[8px]" style={{ color: C.faint }}>
+                        {formatSessionDate(d.date, { withWeekday: false }) || d.date}
+                      </span>
                     </div>
                   );
-                })()}
-                <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
-                  className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                  style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                  <BookOpen size={15} /> Add From Library
-                </button>
-              </div>
-            ))}
-            <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
-            <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+                });
+              })()}
+            </div>
+            )}
           </div>
-        )}
+        </>)}
 
-        {/* At the very bottom, on its own, the way a destructive action should
-            be: reachable when wanted, never beside something routine.
-            Deliberately OUTSIDE the `program &&` block above — a client with no
-            program assigned still needs to be removable. */}
-        <ChalkDivider label="End Coaching" />
-        <button onClick={() => setOffRosterOpen(true)}
-          className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
-          style={{ color: C.red, border: `1px solid ${C.red}44` }}>
-          Take {athlete.name.split(" ")[0]} off my roster
-        </button>
-        <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
-          Ends the coaching. Their account and training history stay with them.
-        </p>
+        {tab === "notes" && (<>
+          {/* The athlete's own words about each session. Collecting a note the
+              coach never sees would be worse than not asking. */}
+          <ChalkDivider label="Recent Sessions" />
+          {athleteLogs.length === 0 ? (
+            <div className="rounded-lg p-3.5 text-[15px]" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>
+              No sessions logged yet.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
+            </div>
+          )}
+        </>)}
       </div>
 
       <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
