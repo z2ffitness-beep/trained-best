@@ -16,10 +16,13 @@ echo "== privacy page =="
 node _verify/build-privacy.mjs || echo "   (fill these in before submitting)"
 echo "== the checker that reads line order, checked against itself =="
 node _verify/tdz-selftest.mjs
-echo "== consts read before the line that creates them =="
-# This is the check that would have caught "Cannot access 've' before
-# initialization" on the Program tab: shownWeek was read 47 lines above the
-# line that made it. Source-level, so it runs without a build.
+echo "== names read too early, or pointing at nothing =="
+# The two crashes of 20 Oct, both caught here now, both at source level with
+# no build needed:
+#   "Cannot access 've' before initialization"  - shownWeek was read 47 lines
+#   above the line that made it, on the Program tab.
+#   "Can't find variable: bubbleBg"             - declared inside the Messages
+#   screen, read from a different function, on the Coach tab.
 node _verify/tdz.mjs
 echo "== hooks below an early return =="
 node _verify/hooks.mjs

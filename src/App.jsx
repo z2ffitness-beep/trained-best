@@ -21125,6 +21125,14 @@ function SegmentedTabs({ value, onChange, options }) {
 // The athlete side renders coach messages and AI replies through one shape, so
 // this takes the normalised row. Only coach messages carry `raw`, and only
 // those can be held to open the action sheet.
+// The colour behind one message bubble. Module scope on purpose: this is
+// read by AthleteMessageRow below, and it used to be declared inside the
+// Messages screen, a hundred lines further down and in a different function
+// entirely. Written at column 0 there, it looked module level to everybody
+// who read it, and the Coach tab threw "Can't find variable: bubbleBg" the
+// moment a message rendered. Same mistake as SIGNUP_V2_SECTIONS on 20 Oct.
+const bubbleBg = (kind) => (kind === "me" ? C.orange : kind === "ai" ? `${C.steel}55` : C.panel);
+
 function AthleteMessageRow({ m, coachName, onHold }) {
   const hold = useLongPress(onHold || (() => {}));
   const handlers = onHold ? hold : {};
@@ -21260,8 +21268,6 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         text: m.text,
         time: m.time,
       }));
-
-  const bubbleBg = (kind) => (kind === "me" ? C.orange : kind === "ai" ? `${C.steel}55` : C.panel);
 
   return (
     <div className="flex flex-col app-screen">

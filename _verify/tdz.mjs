@@ -142,6 +142,9 @@ function isReference(node, parent, key) {
     case "ImportDefaultSpecifier":
     case "ImportNamespaceSpecifier":
     case "ExportSpecifier": return false;
+    // `import.meta` and `new.target`: both halves are built-in syntax, not
+    // variables anybody declared.
+    case "MetaProperty": return false;
     case "LabeledStatement":
     case "BreakStatement":
     case "ContinueStatement": return key !== "label";
@@ -251,15 +254,48 @@ function walk(node, parent, key, scope) {
 
 walk(ast, null, null, root);
 
+// Names the browser provides. Anything read but never declared and not on
+// this list is a name that points at nothing, and the app throws the moment
+// the line runs.
+const BROWSER_GLOBALS = new Set([
+  "window", "document", "navigator", "location", "history", "screen",
+  "console", "fetch", "localStorage", "sessionStorage", "indexedDB",
+  "caches", "crypto", "performance", "globalThis", "self", "process",
+  "Math", "JSON", "Object", "Array", "String", "Number", "Boolean", "Date",
+  "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "Promise",
+  "Set", "Map", "WeakMap", "WeakSet", "Symbol", "Proxy", "Reflect", "BigInt",
+  "Intl", "URL", "URLSearchParams", "Blob", "File", "FileReader", "FormData",
+  "Headers", "Request", "Response", "AbortController", "AbortSignal",
+  "Image", "Audio", "Worker", "MutationObserver", "ResizeObserver",
+  "IntersectionObserver", "requestAnimationFrame", "cancelAnimationFrame",
+  "requestIdleCallback", "setTimeout", "clearTimeout", "setInterval",
+  "clearInterval", "queueMicrotask", "structuredClone", "matchMedia",
+  "getComputedStyle", "alert", "confirm", "prompt", "atob", "btoa",
+  "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
+  "parseInt", "parseFloat", "isNaN", "isFinite", "NaN", "Infinity",
+  "undefined", "arguments", "Uint8Array", "Uint16Array", "Uint32Array",
+  "Int8Array", "Int16Array", "Int32Array", "Float32Array", "Float64Array",
+  "ArrayBuffer", "DataView", "TextEncoder", "TextDecoder", "Notification",
+  "MediaRecorder", "MediaSource", "SpeechSynthesisUtterance",
+  "speechSynthesis", "visualViewport", "HTMLElement", "HTMLCanvasElement",
+  "Node", "Element", "Event", "CustomEvent", "KeyboardEvent", "MouseEvent",
+  "TouchEvent", "PointerEvent", "DOMParser", "XMLHttpRequest", "WebSocket",
+  "EventSource", "ClipboardItem", "DOMException", "Function", "eval",
+  "import", "require", "module", "exports", "__dirname", "__filename",
+]);
+
 // ---- resolve ------------------------------------------------------------
 const problems = [];
+const unknown = new Map();   // name -> first line it is read on
 for (const ref of refs) {
   let s = ref.scope;
   let crossedFunction = false;
+  let found = false;
   while (s) {
-    if (s.ready.has(ref.name)) break;               // var/param/import: fine
+    if (s.ready.has(ref.name)) { found = true; break; }   // var/param/import
     const decl = s.lexical.get(ref.name);
     if (decl) {
+      found = true;
       if (ref.start < decl.end && !crossedFunction) {
         problems.push({ name: ref.name, usedLine: ref.line, madeLine: decl.line });
       }
@@ -267,6 +303,22 @@ for (const ref of refs) {
     }
     if (s.isFunction) crossedFunction = true;        // a callback runs later
     s = s.parent;
+  }
+  // THE OTHER CRASH, and the one scope.mjs could not see.
+  //
+  // `bubbleBg` was declared inside the Messages screen and read from
+  // AthleteMessageRow, a different function a hundred lines above. The Coach
+  // tab threw "Can't find variable: bubbleBg" for every athlete with a
+  // message. SIGNUP_V2_SECTIONS was the same mistake five days earlier.
+  //
+  // scope.mjs was supposed to be the check for this and missed both, because
+  // it collected candidate names with a regular expression anchored to
+  // column 0 and so only ever knew about declarations at module level. A
+  // name declared inside a component - which is exactly where this mistake
+  // gets made - was never in its list, so it was never looked for. Here the
+  // parser knows every binding in the file, wherever it is written.
+  if (!found && !BROWSER_GLOBALS.has(ref.name) && !unknown.has(ref.name)) {
+    unknown.set(ref.name, ref.line);
   }
 }
 
@@ -386,6 +438,20 @@ if (problems.length) {
     }
   }
   console.error(`\n${problems.length} use(s) before declaration.`);
-  process.exit(1);
 }
-console.log(`clean — ${refs.length} variable reads checked, none happen before the line that creates them`);
+
+for (const [name, line] of [...unknown].sort((a, b) => a[1] - b[1])) {
+  console.error(
+    `FAIL  ${FILE}:${line} reads \`${name}\`, which is not declared anywhere it can see.\n` +
+    `      Usually it IS declared, but inside another function, where this one\n` +
+    `      cannot reach it. The browser throws "Can't find variable: ${name}".\n` +
+    `      Move the declaration out to module level, or pass it in as a prop.`
+  );
+}
+if (unknown.size) console.error(`\n${unknown.size} name(s) that point at nothing.`);
+
+if (problems.length || unknown.size) process.exit(1);
+console.log(
+  `clean — ${refs.length} variable reads checked: none read before the line that\n` +
+  `        creates them, and none pointing at a name that does not exist`
+);

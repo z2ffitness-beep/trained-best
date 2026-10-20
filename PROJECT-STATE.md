@@ -276,13 +276,30 @@ message-deletion half of that doc did ship; this half did not.
   that really does run in order: a `.map` sitting inside a tap handler,
   or inside a function declared above the const it reads, is fine,
   because nothing calls it until long after the file has loaded.
-- **The three checks that read the whole file each catch a different
-  thing, and none of them substitutes for the others.** `scope.mjs`
-  catches a name that resolves to nothing. `tdz.mjs` catches a name that
-  resolves to something not ready yet. `hooks.mjs` catches a hook below
-  an early return. The 1,376 unit assertions catch none of the three,
-  because `extract.mjs` lifts functions out textually and runs them on
-  their own, where neither scope nor line order exists.
+- **A const declared inside a component, written at column 0, reads as
+  module level to everybody.** It happened twice in five days.
+  `SIGNUP_V2_SECTIONS` was declared inside `Onboarding` and read from
+  `OnboardingStepBodyRest`; `bubbleBg` was declared inside the Messages
+  screen and read from `AthleteMessageRow` a hundred lines above. Both
+  threw `Can't find variable:` on a whole tab. `tdz.mjs` now reports any
+  name that resolves to no binding at all, so the second one took
+  seconds to find once the check existed.
+- **`scope.mjs` could never have caught either of them, and looked like
+  it could.** It found candidate names with a regular expression
+  anchored to column 0, so it only ever knew about declarations at
+  module level - and a declaration at module level is exactly the case
+  that is NOT the bug. The one place this mistake gets made, inside a
+  component, was invisible to it. It is kept because reading the built
+  bundle catches things the source cannot show, but `tdz.mjs` is the
+  check that matters for this.
+- **The checks that read the whole file each catch a different thing,
+  and none substitutes for the others.** `tdz.mjs` catches a name that
+  resolves to nothing, and a name that resolves to something not ready
+  yet. `hooks.mjs` catches a hook below an early return. `unwired.mjs`
+  catches a component nothing renders. The 1,376 unit assertions catch
+  none of them, because `extract.mjs` lifts functions out textually and
+  runs them on their own, where neither scope nor line order exists.
+  Every crash that has reached Isaiah's phone has been in that gap.
 
 ## 6. Corrections to earlier documents
 

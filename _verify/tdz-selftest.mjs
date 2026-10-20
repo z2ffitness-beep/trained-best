@@ -14,9 +14,20 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const CHECK = path.join(HERE, "tdz.mjs");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tdz-"));
 
+// The checker now also reports names that point at nothing, so a fixture has
+// to declare the helpers it mentions or every case fails for the wrong
+// reason. Keeping that here rather than in each case keeps the cases short
+// enough to read at a glance, which is the whole point of them.
+const PREAMBLE = `
+import { useEffect, useMemo, useState } from "react";
+function weekStart() {} function weekName() {} function buildPlan() {}
+function add() {} function use() {} function send() {} function done() {}
+function buildProgramPlan() {}
+`;
+
 const run = (name, code) => {
   const file = path.join(dir, name);
-  fs.writeFileSync(file, code);
+  fs.writeFileSync(file, PREAMBLE + code);
   try {
     execFileSync("node", [CHECK, file], { stdio: "pipe" });
     return { failed: false, out: "" };
@@ -160,6 +171,37 @@ const cases = [
       return token;
     }
   `],
+  // ---- names that point at nothing: the Coach tab crash ----
+  ["a const declared inside another function, read from a sibling", true, `
+    function Row(m) { return bubbleBg(m.kind); }
+    function Screen() {
+      const bubbleBg = (kind) => kind === "me" ? "orange" : "grey";
+      return bubbleBg("me");
+    }
+  `],
+  ["a plain misspelling", true, `
+    function f() {
+      const total = 1;
+      return totl + 1;
+    }
+  `],
+  ["a browser global is not a missing name", false, `
+    function f() {
+      return window.location.href + JSON.stringify({}) + Math.max(1, 2);
+    }
+  `],
+  ["an imported name is not a missing name", false, `
+    import { createClient } from "@supabase/supabase-js";
+    const db = createClient("a", "b");
+  `],
+  ["import.meta is syntax, not a variable", false, `
+    const base = import.meta.env.VITE_API_BASE || "";
+  `],
+  ["a module const read from inside a component", false, `
+    const C = { orange: "#f60" };
+    function Row() { return C.orange; }
+  `],
+
   ["correct order, the fix that shipped", false, `
     function Screen(program) {
       const shownWeek = Math.min(program.weeks, 1);
@@ -186,4 +228,4 @@ if (fail) {
   console.error(`\ntdz self-test: ${fail} of ${cases.length} wrong.`);
   process.exit(1);
 }
-console.log(`tdz self-test clean — ${pass} cases, 9 real bugs caught, 11 lookalikes correctly ignored`);
+console.log(`tdz self-test clean — ${pass} cases, 11 real bugs caught, 15 lookalikes correctly ignored`);
