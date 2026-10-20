@@ -14,6 +14,13 @@ echo "== privacy page =="
 # Warns rather than fails: the placeholders are a release blocker, not a
 # reason to stop the rest of the checks while the app is still being built.
 node _verify/build-privacy.mjs || echo "   (fill these in before submitting)"
+echo "== the checker that reads line order, checked against itself =="
+node _verify/tdz-selftest.mjs
+echo "== consts read before the line that creates them =="
+# This is the check that would have caught "Cannot access 've' before
+# initialization" on the Program tab: shownWeek was read 47 lines above the
+# line that made it. Source-level, so it runs without a build.
+node _verify/tdz.mjs
 echo "== hooks below an early return =="
 node _verify/hooks.mjs
 echo "== unwired components and state =="

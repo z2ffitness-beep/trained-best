@@ -16927,21 +16927,6 @@ function AthleteProgram({ state, setState, nav }) {
     ? pausedWorkout
     : null;
 
-  // The week on screen, not necessarily the week it is. An athlete looking
-  // ahead at week 6 should see week 6's plan, and nothing in it should be
-  // marked missed - which falls out of planForWeek for free, because every
-  // date in it is in the future.
-  const planWeekStart = programWeekStart(myProgram, shownWeek) || weekStartFor(todayISO());
-  const planRows = planForWeek({
-    program: myProgram,
-    weekStart: planWeekStart,
-    logs: state.workoutLogs,
-    moves: state.sessionMoves,
-    pausedDayKey: pausedWorkout?.dayKey || null,
-    today: todayISO(),
-  });
-  const planProgress = weekProgress(planRows);
-
   // Moving, skipping and pulling forward all write the same kind of row, so
   // they are one call with a different kind rather than three paths that can
   // drift apart.
@@ -16981,6 +16966,28 @@ function AthleteProgram({ state, setState, nav }) {
   const shownWeek = Math.min(plan.weeks, Math.max(1, viewWeek || liveWeek));
   const activeBlock = plan.blocks.find(b => shownWeek >= b.startWeek && shownWeek <= b.endWeek) || plan.blocks[0];
   const shownIsDeload = plan.deloadWeeks.includes(shownWeek);
+
+  // The week on screen, not necessarily the week it is. An athlete looking
+  // ahead at week 6 should see week 6's plan, and nothing in it should be
+  // marked missed - which falls out of planForWeek for free, because every
+  // date in it is in the future.
+  //
+  // This MUST stay below shownWeek. It used to sit about fifty lines higher,
+  // where it read shownWeek before the line that creates it, and the whole
+  // Program tab threw "Cannot access 've' before initialization" the moment
+  // anybody opened it. A const is not hoisted the way a function is: the name
+  // exists from the top of the block but touching it before its own line is
+  // an error, so this was a crash on every render and not an undefined value.
+  const planWeekStart = programWeekStart(myProgram, shownWeek) || weekStartFor(todayISO());
+  const planRows = planForWeek({
+    program: myProgram,
+    weekStart: planWeekStart,
+    logs: state.workoutLogs,
+    moves: state.sessionMoves,
+    pausedDayKey: pausedWorkout?.dayKey || null,
+    today: todayISO(),
+  });
+  const planProgress = weekProgress(planRows);
 
   // Every exercise as prescribed for the week being viewed — so selecting the
   // deload week shows the deload, rather than describing one somewhere else.

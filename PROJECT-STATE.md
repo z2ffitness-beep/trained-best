@@ -255,6 +255,26 @@ message-deletion half of that doc did ship; this half did not.
   `if (!role)` (~7485) must tolerate `role === null`, `stepName ===
   undefined` and an empty `data`.
 
+- **A `const` read above its own line is a crash, not an undefined.** On
+  20 Oct the Program tab threw `Cannot access 've' before initialization`
+  for every athlete. In the source, line 16934 read `shownWeek`; line
+  16981 created it. Both in the same component body, 47 lines apart. The
+  name exists from the top of the block, which is why it looks fine and
+  why the build succeeded, but touching it before its own line throws.
+  Two checks now cover this: `_verify/tdz.mjs` parses App.jsx with a real
+  parser (acorn) and flags any read above its declaration in the same
+  function body, deliberately allowing reads inside callbacks because
+  those run later; `_verify/tdz-selftest.mjs` feeds the checker five
+  broken files and seven lookalikes so it can never quietly pass
+  everything the way `scope.mjs` did twice.
+- **The three checks that read the whole file each catch a different
+  thing, and none of them substitutes for the others.** `scope.mjs`
+  catches a name that resolves to nothing. `tdz.mjs` catches a name that
+  resolves to something not ready yet. `hooks.mjs` catches a hook below
+  an early return. The 1,376 unit assertions catch none of the three,
+  because `extract.mjs` lifts functions out textually and runs them on
+  their own, where neither scope nor line order exists.
+
 ## 6. Corrections to earlier documents
 
 `BACKEND-PLAN.md` says "your workout logs do not store weight at all" and
