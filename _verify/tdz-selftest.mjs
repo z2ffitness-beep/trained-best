@@ -63,6 +63,37 @@ const cases = [
     }
   `],
 
+  ["a .map callback runs immediately, so a later const breaks it", true, `
+    function Screen(days) {
+      const rows = days.map(d => d.id + plan.weeks);
+      const plan = buildPlan(days);
+      return rows;
+    }
+  `],
+  ["useMemo runs its function on the spot", true, `
+    function Screen(xs) {
+      const total = useMemo(() => xs.length + cap, [xs]);
+      const cap = 10;
+      return total;
+    }
+  `],
+  ["a helper const, called a few lines before the thing it reads", true, `
+    function Screen() {
+      const label = () => weekName(shownWeek);
+      const title = label();
+      const shownWeek = 3;
+      return title + shownWeek;
+    }
+  `],
+  ["a named callback handed to .map still runs immediately", true, `
+    function Screen(xs) {
+      const render = x => x + cap;
+      const rows = xs.map(render);
+      const cap = 1;
+      return rows;
+    }
+  `],
+
   // ---- must NOT be caught ----
   ["a callback that runs later may mention a later const", false, `
     function f() {
@@ -102,6 +133,33 @@ const cases = [
     function Page() { return <Row />; }
     const Row = () => <div className="x">hi</div>;
   `],
+  ["useEffect genuinely runs later", false, `
+    function Screen() {
+      useEffect(() => { send(cap); }, []);
+      const cap = 10;
+      return cap;
+    }
+  `],
+  [".map inside a tap handler runs on the tap, not now (scopedEdit)", false, `
+    function Screen(prog) {
+      const edit = (id) => prog.days.map(d => d.id === id ? plan.weeks : d);
+      const plan = buildPlan(prog);
+      return [edit, plan];
+    }
+  `],
+  [".forEach inside a hoisted function, over a later module const", false, `
+    function build(list) {
+      list.forEach(k => add(k, PHOTOS[k]));
+    }
+    const PHOTOS = {};
+  `],
+  ["a setTimeout callback runs later", false, `
+    function Screen() {
+      setTimeout(() => done(token), 0);
+      const token = 1;
+      return token;
+    }
+  `],
   ["correct order, the fix that shipped", false, `
     function Screen(program) {
       const shownWeek = Math.min(program.weeks, 1);
@@ -128,4 +186,4 @@ if (fail) {
   console.error(`\ntdz self-test: ${fail} of ${cases.length} wrong.`);
   process.exit(1);
 }
-console.log(`tdz self-test clean — ${pass} cases, 5 real bugs caught, 7 lookalikes correctly ignored`);
+console.log(`tdz self-test clean — ${pass} cases, 9 real bugs caught, 11 lookalikes correctly ignored`);

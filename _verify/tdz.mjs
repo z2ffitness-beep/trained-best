@@ -53,9 +53,30 @@ try {
 // that can be read too early. `ready` is var, function declarations, imports
 // and parameters: those are usable from the top of the scope, so reading one
 // above its line is legal and not our business.
-const makeScope = (parent, isFunction) => ({
-  parent, isFunction, lexical: new Map(), ready: new Set(),
-});
+const makeScope = (parent, isFunction) => {
+  const s = { parent, isFunction, lexical: new Map(), ready: new Set(), children: [], refs: [] };
+  if (parent) parent.children.push(s);
+  return s;
+};
+// Which scope belongs to which function node, so a helper stored in a const
+// can be looked up from its name later.
+const fnScopeOf = new Map();
+const callSites = [];
+// Function bodies written inline that RUN THERE AND THEN, rather than later.
+const inlineRuns = [];
+
+// `.map(x => ...)` runs its callback before the next line. So does useMemo,
+// and so does a useState initialiser. An arrow handed to one of these is not
+// deferred at all, however much it looks like every other callback.
+//
+// Deliberately NOT here: useEffect, setTimeout, .then, .addEventListener and
+// every onClick. Those really do run later - after the whole function body
+// has finished - so a read of a later const inside one is correct and common.
+const RUNS_NOW_FN = new Set(["useMemo", "useState"]);
+const RUNS_NOW_METHOD = new Set([
+  "map", "filter", "forEach", "reduce", "reduceRight", "find", "findIndex",
+  "findLast", "findLastIndex", "some", "every", "sort", "flatMap",
+]);
 const root = makeScope(null, true);
 const refs = [];
 // Identifiers that are BEING BOUND rather than read. The shorthand in
@@ -132,6 +153,13 @@ function isReference(node, parent, key) {
 
 const SKIP_KEYS = new Set(["type", "start", "end", "loc", "range", "parent"]);
 
+// What to call the thing in the message: `.map(...)`, `useMemo(...)`.
+const calleeLabel = callee =>
+  callee.type === "Identifier" ? `${callee.name}(...)`
+  : callee.type === "MemberExpression" && callee.property.type === "Identifier"
+    ? `.${callee.property.name}(...)`
+    : "this call";
+
 function walk(node, parent, key, scope) {
   if (!node || typeof node.type !== "string") return;
 
@@ -142,7 +170,11 @@ function walk(node, parent, key, scope) {
       for (const id of patternNames(d.id)) {
         if (node.kind === "var") functionScope(scope).ready.add(id.name);
         // The whole declarator is the danger zone, so `const x = x` counts.
-        else scope.lexical.set(id.name, { end: d.end, line: id.loc.start.line });
+        else scope.lexical.set(id.name, {
+          end: d.end, line: id.loc.start.line,
+          // A helper kept in a const, so a call to it can be followed.
+          initFn: (d.id === id && isFunctionNode(d.init)) ? d.init : null,
+        });
       }
     }
   } else if (node.type === "FunctionDeclaration" && node.id) {
@@ -156,13 +188,42 @@ function walk(node, parent, key, scope) {
   // --- record a read ---
   if ((node.type === "Identifier" || node.type === "JSXIdentifier")
       && !bindingIds.has(node) && isReference(node, parent, key)) {
-    refs.push({ name: node.name, start: node.start, line: node.loc.start.line, scope });
+    const r = { name: node.name, start: node.start, line: node.loc.start.line, scope };
+    refs.push(r);
+    scope.refs.push(r);
+  }
+
+  // --- record a call by name, for the deferred-but-not-really check below ---
+  if (node.type === "CallExpression") {
+    const callee = node.callee;
+    if (callee.type === "Identifier") {
+      callSites.push({ name: callee.name, start: node.start, line: node.loc.start.line, scope });
+    }
+    const runsNow =
+      (callee.type === "Identifier" && RUNS_NOW_FN.has(callee.name)) ||
+      (callee.type === "MemberExpression" && !callee.computed
+        && callee.property.type === "Identifier" && RUNS_NOW_METHOD.has(callee.property.name)) ||
+      isFunctionNode(callee);                       // an IIFE
+    if (runsNow) {
+      const here = { start: node.start, line: node.loc.start.line, scope };
+      if (isFunctionNode(callee)) inlineRuns.push({ ...here, fn: callee, what: "this block" });
+      for (const a of node.arguments) {
+        if (isFunctionNode(a)) inlineRuns.push({ ...here, fn: a, what: calleeLabel(callee) });
+      }
+      // `xs.map(helper)` - the callback is a name, and it still runs here.
+      for (const a of node.arguments) {
+        if (a.type === "Identifier") {
+          callSites.push({ name: a.name, start: node.start, line: node.loc.start.line, scope });
+        }
+      }
+    }
   }
 
   // --- work out the scope this node's children live in ---
   let child = scope;
   if (isFunctionNode(node)) {
     child = makeScope(scope, true);
+    fnScopeOf.set(node, child);
     if (node.id && node.type === "FunctionExpression") child.ready.add(node.id.name);
     node.params.forEach(p => { bind(p); patternNames(p).forEach(id => child.ready.add(id.name)); });
   } else if (node.type === "BlockStatement" && !isFunctionNode(parent)) {
@@ -209,15 +270,120 @@ for (const ref of refs) {
   }
 }
 
+// ---- the second shape: a helper that only LOOKS deferred ----------------
+//
+// The rule above lets a read inside a function body past, because a function
+// body runs when it is called. That is true right up until the call happens
+// a few lines later, still above the declaration:
+//
+//     const label = () => weekName(shownWeek);   // allowed: a body
+//     const title = label();                     // but it is called HERE
+//     const shownWeek = 3;                       // and this is below
+//
+// Every line is individually fine and the whole thing still throws. This
+// follows one hop: a call, by name, to a helper kept in a const, from a
+// place that really does run in order. Chains longer than one hop are not
+// followed - worth knowing, not worth the false positives.
+const allRefsIn = scope => {
+  const out = [];
+  const stack = [scope];
+  while (stack.length) {
+    const s = stack.pop();
+    out.push(...s.refs);
+    stack.push(...s.children);
+  }
+  return out;
+};
+
+// Resolve a read from inside a helper, reporting only bindings that live
+// OUTSIDE the helper - a local of the helper's own is never the problem.
+const resolveOutside = (refScope, name, helperScope) => {
+  let s = refScope, left = false;
+  while (s) {
+    if (s.ready.has(name)) return null;
+    const d = s.lexical.get(name);
+    if (d) return left ? { decl: d, owner: s } : null;
+    if (s === helperScope) left = true;
+    s = s.parent;
+  }
+  return null;
+};
+
+// The scopes whose lines genuinely run in order relative to a given call.
+// Everything from the call outwards to the function it sits in, and no
+// further: once past that function, the call itself is deferred and the
+// order of lines outside stops mattering.
+//
+// Without this, `uploaded.forEach(k => add(k, UPLOADED_EXERCISE_PHOTOS[k]))`
+// on line 183 reads as a bug because its const is on line 236 - but line 183
+// is inside a function nobody calls until long after the file has loaded.
+const straightLineScopes = scope => {
+  const out = new Set();
+  let s = scope;
+  while (s) { out.add(s); if (s.isFunction) break; s = s.parent; }
+  return out;
+};
+
+const seen = new Set();
+
+// Shared by both shapes: a function body that is about to run at `site`,
+// reading names from outside itself.
+const checkBodyAt = (helperScope, site, label) => {
+  if (!helperScope) return;
+  const inOrder = straightLineScopes(site.scope);
+  for (const ref of allRefsIn(helperScope)) {
+    const hit = resolveOutside(ref.scope, ref.name, helperScope);
+    if (!hit || !inOrder.has(hit.owner)) continue;
+    const decl = hit.decl;
+    if (site.start >= decl.end) continue;
+    const tag = `${site.line}:${ref.name}:${decl.line}`;
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    problems.push({
+      name: ref.name, usedLine: ref.line, madeLine: decl.line,
+      via: { helper: label, callLine: site.line },
+    });
+  }
+};
+
+for (const run of inlineRuns) {
+  checkBodyAt(fnScopeOf.get(run.fn), run, run.what);
+}
+
+for (const call of callSites) {
+  // Find what the called name is, and stop at the first function boundary:
+  // past one, the call itself is deferred and the order stops mattering.
+  let s = call.scope, crossed = false, helper = null;
+  while (s) {
+    if (s.ready.has(call.name)) break;
+    const d = s.lexical.get(call.name);
+    if (d) { if (!crossed && d.initFn) helper = d; break; }
+    if (s.isFunction) crossed = true;
+    s = s.parent;
+  }
+  if (!helper) continue;
+  checkBodyAt(fnScopeOf.get(helper.initFn), call, call.name);
+}
+
 problems.sort((a, b) => a.usedLine - b.usedLine);
 if (problems.length) {
   for (const p of problems) {
-    console.error(
-      `FAIL  ${FILE}:${p.usedLine} reads \`${p.name}\`, which is not created until line ${p.madeLine}.\n` +
-      `      Same function body, so line ${p.usedLine} runs first every time and throws\n` +
-      `      "Cannot access ... before initialization". Move the declaration above\n` +
-      `      the use, or move the use below the declaration.`
-    );
+    if (p.via) {
+      console.error(
+        `FAIL  ${FILE}:${p.via.callLine} calls \`${p.via.helper}\`, and ${p.via.helper} reads\n` +
+        `      \`${p.name}\` at line ${p.usedLine}, which is not created until line ${p.madeLine}.\n` +
+        `      The helper looks deferred, but the call on line ${p.via.callLine} runs it right\n` +
+        `      there, above the declaration, and it throws "Cannot access ...\n` +
+        `      before initialization". Move line ${p.madeLine} above line ${p.via.callLine}.`
+      );
+    } else {
+      console.error(
+        `FAIL  ${FILE}:${p.usedLine} reads \`${p.name}\`, which is not created until line ${p.madeLine}.\n` +
+        `      Same function body, so line ${p.usedLine} runs first every time and throws\n` +
+        `      "Cannot access ... before initialization". Move the declaration above\n` +
+        `      the use, or move the use below the declaration.`
+      );
+    }
   }
   console.error(`\n${problems.length} use(s) before declaration.`);
   process.exit(1);

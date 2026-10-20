@@ -263,10 +263,19 @@ message-deletion half of that doc did ship; this half did not.
   why the build succeeded, but touching it before its own line throws.
   Two checks now cover this: `_verify/tdz.mjs` parses App.jsx with a real
   parser (acorn) and flags any read above its declaration in the same
-  function body, deliberately allowing reads inside callbacks because
-  those run later; `_verify/tdz-selftest.mjs` feeds the checker five
-  broken files and seven lookalikes so it can never quietly pass
-  everything the way `scope.mjs` did twice.
+  function body; `_verify/tdz-selftest.mjs` feeds the checker nine broken
+  files and eleven lookalikes so it can never quietly pass everything the
+  way `scope.mjs` did twice.
+- **"It is inside a callback, so it runs later" is only true for some
+  callbacks.** `useEffect`, `setTimeout`, `.then` and every `onClick` do
+  run later. `.map`, `.filter`, `.forEach`, `.sort`, `useMemo` and a
+  `useState` initialiser run **right there, before the next line**, so a
+  const below them is just as fatal as a plain read. `tdz.mjs` knows the
+  difference, and also follows one hop into a helper kept in a const.
+  What stops it drowning in false alarms is that it only counts a call
+  that really does run in order: a `.map` sitting inside a tap handler,
+  or inside a function declared above the const it reads, is fine,
+  because nothing calls it until long after the file has loaded.
 - **The three checks that read the whole file each catch a different
   thing, and none of them substitutes for the others.** `scope.mjs`
   catches a name that resolves to nothing. `tdz.mjs` catches a name that
