@@ -9498,6 +9498,25 @@ function deleteExerciseEverywhere(state, setState, exerciseId, onError) {
 // athlete_id = Shaan. Delivery is live via Postgres change notifications, and
 // anything the other person sent gets marked read on open, which is what feeds
 // the unread badges.
+// Does this database have migration 006 yet?
+//
+// Module level and sticky: the first SELECT that fails on a missing column
+// turns it off for the whole session, so every other thread stops asking
+// rather than each one failing once. Starts optimistic, because once 006 is
+// applied - which is the permanent state - nothing should pay for a probe.
+//
+// Deliberately NOT reset on success. Flipping back and forth would mean a
+// single flaky request could put the media columns back into a query against
+// a database that still has not got them.
+let messageMediaReady = true;
+
+// Postgres says 42703 for "column does not exist". Supabase passes the code
+// straight through, so this does not depend on the wording of a message.
+function isMissingColumn(error) {
+  return error?.code === "42703"
+    || /column .* does not exist/i.test(error?.message || "");
+}
+
 function useMessageThread(athleteId, myUserId) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9509,15 +9528,35 @@ function useMessageThread(athleteId, myUserId) {
   // migration. hidden_for is a uuid[] of people who hid the message from their
   // own view only; deleted_at means the sender withdrew it for both sides, and
   // the body is blanked server-side at that point.
-  const COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for, media_path, media_kind";
+  //
+  // media_path / media_kind arrive with migration 006, which is deliberately
+  // NOT applied until merge time. Asking for a column that does not exist is
+  // not a soft failure - Postgres refuses the whole SELECT, so every message
+  // in every thread disappears for both people until the migration lands.
+  //
+  // coach_card got a fallback for exactly this reason and these columns did
+  // not, which is the same mistake twice. BASE_COLS is what has always
+  // existed; MEDIA_COLS is added only while the database admits to having
+  // them.
+  const BASE_COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for";
+  const MEDIA_COLS = "media_path, media_kind";
+  const COLS = messageMediaReady ? `${BASE_COLS}, ${MEDIA_COLS}` : BASE_COLS;
 
   const load = React.useCallback(async () => {
     if (!athleteId) { setMessages([]); setLoading(false); return; }
-    const { data, error: loadError } = await supabase
+    const read = (cols) => supabase
       .from("messages")
-      .select(COLS)
+      .select(cols)
       .eq("athlete_id", athleteId)
       .order("created_at", { ascending: true });
+
+    let { data, error: loadError } = await read(COLS);
+    // One retry, only for a missing column, and only ever downwards. Anything
+    // else is a real failure and is reported as one.
+    if (loadError && messageMediaReady && isMissingColumn(loadError)) {
+      messageMediaReady = false;
+      ({ data, error: loadError } = await read(BASE_COLS));
+    }
 
     if (loadError) { setError("Couldn't load this conversation."); setLoading(false); return; }
     setError(null);
@@ -9614,8 +9653,15 @@ function useMessageThread(athleteId, myUserId) {
         // Both or neither: the database has a constraint saying so, because
         // a path with no kind is unrenderable and a kind with no path is a
         // broken frame.
-        media_path: media?.path || null,
-        media_kind: media?.kind || null,
+        //
+        // Omitted entirely before migration 006, because naming a column
+        // that does not exist fails the whole INSERT - so a database without
+        // 006 would refuse plain text messages too, which is far worse than
+        // not being able to send a photo.
+        ...(messageMediaReady ? {
+          media_path: media?.path || null,
+          media_kind: media?.kind || null,
+        } : {}),
       })
       .select(COLS)
       .single();
@@ -14200,6 +14246,8 @@ function CoachMessages({ state, setState, nav, myUserId }) {
           <MessageComposer
             placeholder={`Message ${active?.name?.split(" ")[0] || ""}...`}
             sending={sending}
+            // No paperclip on a database that cannot store what it picks up.
+            allowMedia={messageMediaReady}
             onSend={(text, file) => send(text, file)}
           />
         </>
@@ -21257,7 +21305,7 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         placeholder={tab === "coach" ? (hasCoach ? "Message your coach..." : "No coach linked yet") : "Ask the AI assistant..."}
         disabled={tab === "coach" && !hasCoach}
         sending={tab === "coach" ? coachSending : aiLoading}
-        allowMedia={tab === "coach" && hasCoach}
+        allowMedia={tab === "coach" && hasCoach && messageMediaReady}
         onSend={(text, file) => (tab === "coach" ? sendToCoach(text, file) : sendAIText(text))}
       />
     </div>

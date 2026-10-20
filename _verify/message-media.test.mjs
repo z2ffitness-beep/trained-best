@@ -215,9 +215,51 @@ test("the row carries both media fields or neither", () => {
     "nothing stops half a media message being written");
 });
 
-test("the new columns are selected, or nothing ever renders", () => {
-  assert.ok(/const COLS = "[^"]*media_path, media_kind"/.test(src),
-    "media_path and media_kind are not read back, so no photo ever appears");
+test("the new columns are selected, but only once the database has them", () => {
+  // Asking for a column that does not exist is not a soft failure: Postgres
+  // refuses the whole SELECT, so every message in every thread vanishes for
+  // both people. Migration 006 is deliberately unapplied until merge time,
+  // so the columns are added to the query only when the database has
+  // admitted to having them.
+  assert.ok(/const BASE_COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for"/.test(src),
+    "there is no column list that works before migration 006");
+  assert.ok(/const MEDIA_COLS = "media_path, media_kind"/.test(src),
+    "the media columns are never read back, so no photo ever appears");
+  assert.ok(/const COLS = messageMediaReady \? `\$\{BASE_COLS\}, \$\{MEDIA_COLS\}` : BASE_COLS;/.test(src),
+    "the column list does not depend on whether the database has the columns");
+});
+
+test("a missing column is retried once, downwards, and nothing else is", () => {
+  const fn = src.slice(src.indexOf("  const load = React.useCallback"), src.indexOf("  // Mark the other person"));
+  assert.ok(/if \(loadError && messageMediaReady && isMissingColumn\(loadError\)\) \{/.test(fn),
+    "every failed load is retried, which hides real failures behind a second attempt");
+  assert.ok(/messageMediaReady = false;/.test(fn), "the retry does not remember, so every load pays for it twice");
+  assert.ok(/await read\(BASE_COLS\)/.test(fn), "the retry asks for the same columns that just failed");
+});
+
+test("the missing-column check reads the code, not the wording", () => {
+  // 42703 is "column does not exist". Matching only on message text breaks
+  // the day Supabase rephrases it, and the symptom would be every thread
+  // going blank.
+  assert.ok(/error\?\.code === "42703"/.test(src),
+    "a missing column is detected by its message text alone");
+});
+
+test("the flag never turns back on by itself", () => {
+  // Flipping back and forth means one flaky request puts the media columns
+  // into a query against a database that still has not got them.
+  assert.ok(/let messageMediaReady = true;/.test(src), "the flag is gone");
+  assert.equal((src.match(/messageMediaReady = true/g) || []).length, 1,
+    "something sets messageMediaReady back to true");
+});
+
+test("the insert does not name columns the database may not have", () => {
+  // Naming a missing column fails the whole INSERT, so a database without
+  // 006 would refuse plain text messages too - worse than not being able
+  // to send a photo.
+  const fn = src.slice(src.indexOf("  const send = async (body, file = null)"), src.indexOf("  // Withdraw your OWN message"));
+  assert.ok(/\.\.\.\(messageMediaReady \? \{/.test(fn),
+    "the media columns are always named on insert, so sending text fails before migration 006");
 });
 
 test("deleting for everyone takes the file with it", () => {
@@ -284,8 +326,12 @@ test("the send button is live for a photo with no caption", () => {
 test("the AI assistant is offered no attachment button", () => {
   // It is a text model. A photo would upload, cost storage and be ignored.
   assert.ok(/allowMedia = true/.test(composer), "the composer cannot be told to hide the picker");
-  assert.ok(/allowMedia=\{tab === "coach" && hasCoach\}/.test(src),
+  assert.ok(/allowMedia=\{tab === "coach" && hasCoach && messageMediaReady\}/.test(src),
     "the AI tab offers an attachment button, or the coach tab does not");
+  // And neither thread offers a paperclip on a database that cannot store
+  // what it picks up.
+  assert.ok(/allowMedia=\{messageMediaReady\}/.test(src),
+    "the coach thread offers an attachment button before migration 006");
 });
 
 test("switching tabs does not carry a draft across", () => {
