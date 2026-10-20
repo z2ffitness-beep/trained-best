@@ -95,6 +95,21 @@ message-deletion half of that doc did ship; this half did not.
 
 ## 4c. Waiting on Isaiah
 
+- **A THIRD ROLE OPTION was agreed and never built.** On 20 Oct Isaiah
+  said the welcome screen should offer a third choice beside "I'm a
+  coach" and "I have a coach" - something suggested in an earlier
+  conversation that he agreed with. That conversation was compacted away:
+  it is not in this session's transcript and was never written into any
+  document, so the idea is genuinely lost. Candidates floated while
+  trying to jog it: gym or facility owner, try-it-without-an-account,
+  join-a-team, invited-by-link. **Ask Isaiah what it was before
+  guessing.** The screen currently offers I'm a coach / I have a coach /
+  Solo training, and all three work.
+
+  This is the exact failure the spec files exist to prevent. **An agreed
+  decision that only lives in a chat is a decision that will be lost.**
+  Write it into the repo the same day.
+
 - **Push.** Nothing has been pushed from this machine.
   `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
 - **Three migrations are written and NOT applied: 004, 005, 006, in that
