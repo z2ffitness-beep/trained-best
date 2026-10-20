@@ -12032,7 +12032,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       sport: athlete.sport || null,
       days: [{ id: "d" + Date.now(), name: "Day 1", exercises: [] }],
     };
-    const res = await assignTemplateToAthlete({ template: blank, athlete, coachId: myUserId, state });
+    // allowEmpty: this program is blank on purpose, so the empty-program guard
+    // (meant for failed imports) must not block it.
+    const res = await assignTemplateToAthlete({ template: blank, athlete, coachId: myUserId, state, allowEmpty: true });
     if (!res.ok) {
       setBuilding(false);
       setEditError(res.message || "Couldn't create that program.");
