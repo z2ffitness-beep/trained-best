@@ -7080,52 +7080,20 @@ function accountStepValid(data) {
 // profile row (they confirmed their email elsewhere, so their answers are
 // gone). In that mode the account already exists, so the "Create Account" step
 // is dropped and their email is carried through from the session.
-function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
-  // useWide(), not useIsWide(). The context is provided inside the signed-in
-  // shell, and signup renders BEFORE that - so the context reader returns its
-  // default of false here and the split layout never appeared on a desktop.
-  // This hook measures for itself.
-  const pickerWide = useWide();
-  // A signup left halfway comes back where it was. Not used in resume mode:
-  // there the profile is the record of what was answered, not this draft.
-  const draft = existingUser ? null : readSignupDraft();
-  const [role, setRole] = useState(draft?.role ?? null);
-  const [step, setStep] = useState(draft?.step ?? 0);
-  const [submitting, setSubmitting] = useState(false);
-  const [data, setData] = useState({
-    weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
-    email: existingUser?.email || undefined,
-    ...(draft?.data || {}),
-  });
-  const set = (k, v) => setData(d => ({ ...d, [k]: v }));
-
-  // Written on every change rather than on every step, so closing the app
-  // mid-question keeps the answer that was mid-typing too.
-  useEffect(() => {
-    if (existingUser) return;
-    if (!role) { clearSignupDraft(); return; }
-    saveSignupDraft(role, step, data);
-  }, [role, step, data, existingUser]);
-
-  // Picking (or re-picking) a role, with the previous role's answers cleared.
-  //
-  // `data` is one object shared by every role's question set, and backing out
-  // to this screen left it fully populated. Someone who started "I have a
-  // coach", typed a code, backed out and chose "Self-guided athlete" instead
-  // still had that code in `data` at the end — and it was written into their
-  // profile's intake blob, so a self-guided account was permanently carrying an
-  // invite code it never used. On the next login the repair path in
-  // hydrateFromProfile reads exactly that field and tries to link them to
-  // whoever owns it. A real code there would silently put someone on a roster
-  // they'd chosen not to join.
-  // The account screen now carries the name as well, so the name has to be real
-// before the account is made - it is written into the profile at the same time
-// and there is no later step to correct it. The phone is deliberately NOT
-// checked: it is optional, nothing verifies it, and refusing a number because
-// it has brackets in it would be a lie about how much we care.
-
-const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit", "heightUnit"];
-
+// Declared at MODULE level, deliberately and with a note, because they were
+// not. Everything below sat INSIDE the Onboarding component, written at
+// column 0 so it read as top level to every human who looked at it -
+// including the person who put it there. stepComplete lives in the same
+// scope and resolved fine; OnboardingStepBodyRest is a separate function
+// and could not see any of it, so the app threw
+// "Can't find variable: SIGNUP_V2_SECTIONS" on every signup screen after
+// the role picker.
+//
+// Valid JavaScript - a free variable is only an error when it runs - so
+// esbuild passed it, and _verify/extract.mjs lifts these consts textually
+// into a fresh module where scope cannot matter, so 1,376 tests passed
+// against code that could not run. _verify/scope.mjs now reads the BUILT
+// bundle for exactly this.
 // ---------- signup, the short version ----------
 //
 // Fourteen screens down to six. Not by asking less - by stopping asking one
@@ -7294,6 +7262,53 @@ function stepComplete(stepName, data, role) {
     default: return true;
   }
 }
+
+function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
+  // useWide(), not useIsWide(). The context is provided inside the signed-in
+  // shell, and signup renders BEFORE that - so the context reader returns its
+  // default of false here and the split layout never appeared on a desktop.
+  // This hook measures for itself.
+  const pickerWide = useWide();
+  // A signup left halfway comes back where it was. Not used in resume mode:
+  // there the profile is the record of what was answered, not this draft.
+  const draft = existingUser ? null : readSignupDraft();
+  const [role, setRole] = useState(draft?.role ?? null);
+  const [step, setStep] = useState(draft?.step ?? 0);
+  const [submitting, setSubmitting] = useState(false);
+  const [data, setData] = useState({
+    weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
+    email: existingUser?.email || undefined,
+    ...(draft?.data || {}),
+  });
+  const set = (k, v) => setData(d => ({ ...d, [k]: v }));
+
+  // Written on every change rather than on every step, so closing the app
+  // mid-question keeps the answer that was mid-typing too.
+  useEffect(() => {
+    if (existingUser) return;
+    if (!role) { clearSignupDraft(); return; }
+    saveSignupDraft(role, step, data);
+  }, [role, step, data, existingUser]);
+
+  // Picking (or re-picking) a role, with the previous role's answers cleared.
+  //
+  // `data` is one object shared by every role's question set, and backing out
+  // to this screen left it fully populated. Someone who started "I have a
+  // coach", typed a code, backed out and chose "Self-guided athlete" instead
+  // still had that code in `data` at the end — and it was written into their
+  // profile's intake blob, so a self-guided account was permanently carrying an
+  // invite code it never used. On the next login the repair path in
+  // hydrateFromProfile reads exactly that field and tries to link them to
+  // whoever owns it. A real code there would silently put someone on a roster
+  // they'd chosen not to join.
+  // The account screen now carries the name as well, so the name has to be real
+// before the account is made - it is written into the profile at the same time
+// and there is no later step to correct it. The phone is deliberately NOT
+// checked: it is optional, nothing verifies it, and refusing a number because
+// it has brackets in it would be a lie about how much we care.
+
+const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit", "heightUnit"];
+
   // Read off the contract rather than written out by hand. The hand-written
   // list was ["🏅 Background", "📩 Invite Athletes"], which missed
   // "⚡ Specialties" and "🎯 Coaching Style" - so a coach who changed their

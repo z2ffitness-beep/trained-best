@@ -18,6 +18,12 @@ echo "== hooks below an early return =="
 node _verify/hooks.mjs
 echo "== unwired components and state =="
 node _verify/unwired.mjs
+echo "== names leaking into the bundle as globals =="
+# Reads the BUILT bundle, so it must run after a build. This is the only
+# check in the repo that would have caught "Can't find variable:
+# SIGNUP_V2_SECTIONS" - every source-level test passed against code that
+# could not run.
+node _verify/scope.mjs
 echo "== migrations, against a real Postgres =="
 # Every other check reads the .sql as text. This one RUNS it. A migration
 # that has never been executed anywhere is one Isaiah meets for the first
