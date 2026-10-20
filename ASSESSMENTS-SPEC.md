@@ -14,7 +14,8 @@ nothing.
 
 Movement screens are good for **tracking one person's change over time**
 and as a **shared language with a client**. They are weak as injury
-predictors - the research on FMS-style screens does not support that
+predictors - the research on screens of this kind (the Functional
+Movement Screen and its relatives) does not support that
 claim, and neither will this app.
 
 Two rules, not negotiable later:
@@ -28,14 +29,24 @@ Two rules, not negotiable later:
 
 Everything the app says should survive being read out loud to the client.
 
+## A note on words
+
+This spec is read by the person building it and by Isaiah. Where an
+abbreviation appears it is spelled out the first time, in the same
+sentence. "No-kit" was in an earlier draft as shorthand for "needs no
+equipment" and has been taken out: it is the writer's shorthand, not
+anybody else's, and the whole point of a spec is that it reads the same
+to both people.
+
 ## The shape: a library, not a battery
 
 The first draft was a fixed list of eleven tests. Isaiah's addition -
 force plates, VBT, heart rate, and coaches adding their own methods -
 changes it into a **test library**:
 
-- **Built-in, no kit.** On by default. Any coach, any gym, a hallway.
-- **Built-in, needs kit.** Shipped but hidden until the coach switches
+- **Built-in, needs no equipment.** On by default. Any coach, any gym,
+  a hallway.
+- **Built-in, needs equipment.** Shipped but hidden until the coach switches
   them on. A coach with no force plate never sees a force plate test.
 - **Custom.** The coach writes their own, from scratch or by copying a
   built-in and editing it.
@@ -82,9 +93,9 @@ and they would be right to.
 
 ## The built-in catalogue
 
-### No kit - on by default
+### Needs no equipment - on by default
 
-Kit for the whole set: a tape measure, a wall, a step, a phone timer,
+Equipment for the whole set: a tape measure, a wall, a step, a phone timer,
 and tape or chalk for a mark.
 
 **Movement screen** (flags only; the coach ticks what they see, nothing
@@ -109,21 +120,21 @@ is typed):
 | Single-leg balance, eyes closed | yes | time | s | yes |
 | Wall sit | no | time | s | yes |
 
-### Needs kit - shipped, off until switched on
+### Needs equipment - shipped, off until switched on
 
-**Force plate / jump mat**
-
-| Test | Metrics |
-|---|---|
-| Countermovement jump | jump height (cm, higher) · peak force (N, higher) · RSI-modified (ratio, higher) · left-right asymmetry (%, **lower**) |
-| Drop jump | RSI (ratio, higher) · contact time (s, **lower**) · jump height (cm, higher) |
-| Isometric mid-thigh pull | peak force (N, higher) · relative peak force (N/kg, higher) |
-
-**Velocity-based training**
+**Force plate or jump mat: a platform that measures force and time in the air**
 
 | Test | Metrics |
 |---|---|
-| Load-velocity profile | estimated 1RM (kg, higher) · load tested (kg, **context**) |
+| Countermovement jump (dip, then jump straight up) | jump height (cm, higher) · peak force (newtons, higher) · reactive strength index modified, which is jump height divided by how long they took to launch (ratio, higher) · left-right asymmetry (%, **lower**) |
+| Drop jump (step off a box, rebound immediately) | reactive strength index, jump height divided by ground contact time (ratio, higher) · contact time (seconds, **lower**) · jump height (cm, higher) |
+| Isometric mid-thigh pull: a pinned bar at mid-thigh, pull as hard as possible for about 5 seconds | peak force (newtons, higher) · peak force per kilo of bodyweight (newtons/kg, higher) |
+
+**Velocity-based training: measuring how fast the bar moves, with a phone app or a bar sensor**
+
+| Test | Metrics |
+|---|---|
+| Load-velocity profile: same lift at several loads, to estimate a maximum | estimated one-rep max (kg, higher) · load tested (kg, **context**) |
 | Mean concentric velocity at load | mean velocity (m/s, higher) · load (kg, **context**) |
 | Velocity loss across a set | velocity loss (%, **context** - it is a prescription, not a score) |
 
@@ -132,7 +143,7 @@ is typed):
 | Test | Metrics |
 |---|---|
 | Resting heart rate | bpm, **lower** |
-| HRV (rMSSD) | ms, higher |
+| Heart rate variability, measured as rMSSD (how much the gap between beats varies) | milliseconds, higher |
 | 3-minute step test | recovery HR at 1 min (bpm, **lower**) |
 | Submaximal HR at fixed workload | bpm, **lower** |
 
@@ -201,7 +212,7 @@ picks differed.
 Lead with the two things that are true without a reference population:
 
 1. **Asymmetry**, where the test is sided, as a percentage difference.
-   Six of the eleven no-kit tests are sided on purpose. "Your right ankle
+   Six of the eleven no-equipment tests are sided on purpose. "Your right ankle
    is 4cm and your left is 7cm" is a fact about this person, actionable,
    and needs nobody else's data.
 2. **Change since last time**, per metric, using `higher_is_better` to
@@ -288,7 +299,7 @@ Smallest useful thing first, and prove each layer before building on it.
    Test these hard, mutation-test them.
 3. **`retest_due` into `coachAttention`.** Smallest change, immediate
    value, and it is the thing Isaiah asked for by name.
-4. **Run Assessment screen**, no-kit tests only.
+4. **Run Assessment screen**, the no-equipment tests only.
 5. **Results on the Progress tab.**
 6. **The library screen**: kit opt-in, custom tests, default battery.
 7. **Athlete self-test**, last. It is the only part needing video review,
