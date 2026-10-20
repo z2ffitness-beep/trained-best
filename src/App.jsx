@@ -9941,6 +9941,56 @@ async function createProgramRow(athleteId, name, weeks, sport, rawDays, rational
   return data.id;
 }
 
+// ---- turning an AI result into this athlete's program -------------------
+//
+// This used to live inside the roster screen, which meant the ONLY place a
+// coach could build from an athlete's own answers was the Assign sheet on the
+// roster. The athlete's own page, which is where a coach actually is when
+// they decide somebody needs a program, could make a blank one and nothing
+// else. Lifting it to module level lets both screens call the same thing
+// instead of growing a second copy that drifts out of step.
+
+// The shape assignTemplateToAthlete expects, with every fallback the AI can
+// make us need. Pure, so the fallbacks are tested rather than hoped for.
+function programFromResult(result, athlete) {
+  // No name on file is rare but not impossible, and "Their's Program" is
+  // worse than saying nothing about whose it is.
+  const first = (athlete?.name || "").trim().split(/\s+/)[0];
+  return {
+    name: result?.programName || (first ? `${first}'s Program` : "New Program"),
+    weeks: result?.weeks || 8,
+    sport: athlete?.sport || null,
+    rationale: result?.rationale || null,
+    days: result?.days || [],
+  };
+}
+
+// `allowEmpty` is for the blank-start path only: a GENERATED program with no
+// days is a failed generation and must not be saved, or the athlete opens
+// their app to an empty week and no way to tell that anything went wrong.
+async function saveGeneratedProgram({ result, athlete, coachId, state, setState, allowEmpty = false }) {
+  if (!athlete || !result) return { ok: false, message: "Nothing to save." };
+  const res = await assignTemplateToAthlete({
+    template: programFromResult(result, athlete), athlete, coachId, state, allowEmpty,
+  });
+  if (!res.ok) return res;
+  const created = res.created;
+  setState(s => {
+    const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+    return {
+      ...s,
+      exercises: [...s.exercises, ...newExercises],
+      programs: [...s.programs, {
+        id: created.id, name: created.name, weeks: created.weeks, sport: created.sport,
+        rationale: created.rationale || null, startedOn: created.started_on || null,
+        athleteId: athlete.id, assignedCount: 1, days,
+      }],
+      athletes: s.athletes.map(a => a.id === athlete.id ? { ...a, program: created.id, customProgram: null } : a),
+    };
+  });
+  return { ok: true, created };
+}
+
 // Debounced writer for a program's NAME. Renaming ran through the same path as
 // day edits, and that path PATCHes only the `days` column — so the coach typed
 // a name, saw it everywhere, and got "New Program" back after every reload.
@@ -11070,30 +11120,9 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
     if (!athlete || !result) return;
     setAssigning(true);
     setAssignError(null);
-    const template = {
-      name: result.programName || `${athlete.name.split(" ")[0]}'s Program`,
-      weeks: result.weeks || 8,
-      sport: athlete.sport || null,
-      rationale: result.rationale || null,
-      days: result.days || [],
-    };
-    const res = await assignTemplateToAthlete({ template, athlete, coachId: myUserId, state, allowEmpty });
-    if (!res.ok) {
-      setAssigning(false);
-      setAssignError(res.message);
-      return;
-    }
-    const created = res.created;
-    setState(s => {
-      const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
-      return {
-        ...s,
-        exercises: [...s.exercises, ...newExercises],
-        programs: [...s.programs, { id: created.id, name: created.name, weeks: created.weeks, sport: created.sport, rationale: created.rationale || null, startedOn: created.started_on || null, athleteId, assignedCount: 1, days }],
-        athletes: s.athletes.map(a => a.id === athleteId ? { ...a, program: created.id, customProgram: null } : a),
-      };
-    });
+    const res = await saveGeneratedProgram({ result, athlete, coachId: myUserId, state, setState, allowEmpty });
     setAssigning(false);
+    if (!res.ok) { setAssignError(res.message); return; }
     setGenerateFor(null);
     setAssignOpen(null);
   };
@@ -11798,6 +11827,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
   const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
+  // Building from the athlete's signup answers, from this page rather than
+  // from the roster's Assign sheet.
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
@@ -12022,6 +12055,27 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Goes through the same assignTemplateToAthlete path as a real assignment so
   // the weekday pinning, the RPC that sets active_program_id, and the orphan
   // cleanup on failure are all shared rather than reimplemented here.
+  // What the athlete answered at signup, and whether there is enough of it to
+  // build on. Read once here so the button, its explanation and the generator
+  // all agree: a button that is enabled next to text saying the questionnaire
+  // is unfinished is worse than either on its own.
+  const athleteIntake = intakeForAthlete(athlete);
+  const canBuildFromAnswers = intakeIsUsable(athleteIntake);
+  const firstName = (athlete.name || "").trim().split(/\s+/)[0] || "them";
+
+  // No allowEmpty here on purpose. A generation that came back with no days
+  // failed, and saving it would leave the athlete opening an empty week with
+  // nothing to tell them anything went wrong.
+  const buildFromAnswers = async (result) => {
+    if (generating) return;
+    setGenerating(true);
+    setEditError(null);
+    const res = await saveGeneratedProgram({ result, athlete, coachId: myUserId, state, setState });
+    setGenerating(false);
+    if (!res.ok) { setEditError(res.message || "Couldn't create that program."); return; }
+    setGenerateOpen(false);
+  };
+
   const buildProgram = async () => {
     if (building) return;
     setBuilding(true);
@@ -12032,9 +12086,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       sport: athlete.sport || null,
       days: [{ id: "d" + Date.now(), name: "Day 1", exercises: [] }],
     };
-    // allowEmpty: this program is blank on purpose, so the empty-program guard
-    // (meant for failed imports) must not block it.
-    const res = await assignTemplateToAthlete({ template: blank, athlete, coachId: myUserId, state, allowEmpty: true });
+    const res = await assignTemplateToAthlete({ template: blank, athlete, coachId: myUserId, state });
     if (!res.ok) {
       setBuilding(false);
       setEditError(res.message || "Couldn't create that program.");
@@ -12286,12 +12338,31 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
                 Start one and add their sessions and exercises here.
               </p>
-              <div className="flex gap-2.5">
-                <Btn variant="secondary" className="flex-1" icon={ClipboardList} onClick={() => setImportOpen(true)}>Import</Btn>
-                <Btn className="flex-1" icon={Plus} disabled={building} onClick={buildProgram}>
-                  {building ? "Creating…" : "Build one"}
-                </Btn>
-              </div>
+              {/* Three ways to start, stacked, each on its own full-width
+                  row. Measured at 320px rather than reasoned about: Btn sets
+                  `whitespace-nowrap` AND `shrink-0`, so a row of two beats
+                  flex-1 and refuses to shrink. "Import" next to "Build one"
+                  already spilled past the card's padding before this screen
+                  gained a third option, and "Build from Christopher's
+                  answers" pushed the whole page sideways. Stacked, the
+                  longest label needs 211px of 238px at 320 wide.
+                  The name lives in the sentence, where it can wrap. */}
+              <Btn className="w-full mb-2" icon={Sparkles}
+                   disabled={generating || !canBuildFromAnswers}
+                   onClick={() => setGenerateOpen(true)}>
+                {generating ? "Building…" : "Use their answers"}
+              </Btn>
+              <p className="text-[11px] mb-3 leading-snug" style={{ color: C.faint }}>
+                {canBuildFromAnswers
+                  ? `${firstName}'s goals, injuries, sport, schedule and equipment, straight from their signup. You can edit every part of it afterwards.`
+                  : `${firstName} hasn't finished the questionnaire, so there are no training days or equipment on file to build from yet.`}
+              </p>
+              <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building} onClick={buildProgram}>
+                {building ? "Creating…" : "Start blank"}
+              </Btn>
+              <Btn variant="secondary" className="w-full" icon={ClipboardList} onClick={() => setImportOpen(true)}>
+                Import a program
+              </Btn>
             </div>
           )}
           {program && program.days.length > 0 && (
@@ -12551,6 +12622,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
       <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
         athlete={athlete} onImport={importProgram} saving={importing} />
+      {/* Fed this athlete's REAL answers, the same as the roster's Assign
+          sheet. An earlier version of that screen passed a hardcoded example
+          intake and so built a program for an imaginary MMA fighter whoever
+          the client was. */}
+      {generateOpen && (
+        <AIProgramGenerator
+          intake={athleteIntake}
+          onGenerated={buildFromAnswers}
+          onClose={() => setGenerateOpen(false)} />
+      )}
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}

@@ -62,7 +62,15 @@ test("only the blank button passes allowEmpty", () => {
   assert.ok(/const assignGenerated = async \(athleteId, result, allowEmpty = false\)/.test(body),
     "and it defaults to off, so a failed import is still caught");
   const generated = body.slice(body.indexOf("const assignGenerated"), body.indexOf("const assignBlank"));
-  assert.ok(/state, allowEmpty \}\)/.test(generated), "the flag has to reach the assign call");
+  assert.ok(/setState, allowEmpty \}\)/.test(generated), "the flag has to reach the save call");
+  // The athlete's own page gained the same build-from-answers option. It has
+  // no blank path of its own going through here, so it must never opt in: a
+  // generation that came back with no days failed, and saving it leaves the
+  // athlete opening an empty week with nothing to say so.
+  const detail = src.slice(src.indexOf("function CoachAthleteDetail("));
+  const call = detail.slice(detail.indexOf("saveGeneratedProgram({"));
+  assert.ok(!/allowEmpty/.test(call.slice(0, 160)),
+    "the athlete page must not pass allowEmpty");
 });
 
 test("the error no longer blames an import that never happened", () => {

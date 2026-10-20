@@ -134,11 +134,20 @@ test("a generated program is assigned through the same path as a template", () =
   // cleaning up if it fails halfway. A second copy of it would drift.
   const body = bodyOf("function CoachAthletes(");
   const fn = body.slice(body.indexOf("const assignGenerated"), body.indexOf("const assignBlank"));
-  // `allowEmpty` joined this call so a deliberately blank program can be
-  // created; the guard it bypasses is still on by default.
-  assert.ok(/assignTemplateToAthlete\(\{ template, athlete, coachId: myUserId, state, allowEmpty \}\)/.test(fn));
+  // The roster used to hold its own copy of all this. It now calls the
+  // module-level helper, which is also what the athlete's own page calls, so
+  // "build from their answers" cannot mean two different things depending on
+  // which screen the coach started from.
+  //
+  // `allowEmpty` is still threaded through so a deliberately blank program
+  // can be created; the guard it bypasses is on by default.
+  assert.ok(/saveGeneratedProgram\(\{ result, athlete, coachId: myUserId, state, setState, allowEmpty \}\)/.test(fn));
   assert.ok(/setAssignError\(res\.message\)/.test(fn), "a failure has to be reported");
-  assert.ok(/athletes: s\.athletes\.map\(a => a\.id === athleteId \? \{ \.\.\.a, program: created\.id/.test(fn),
+  assert.equal((src.match(/async function saveGeneratedProgram\b/g) || []).length, 1,
+    "one copy of the save path, not one per screen");
+  assert.ok(/assignTemplateToAthlete\(\{\s*template: programFromResult\(result, athlete\)/.test(src),
+    "and it must still go through the template path");
+  assert.ok(/athletes: s\.athletes\.map\(a => a\.id === athlete\.id \? \{ \.\.\.a, program: created\.id/.test(src),
     "and the athlete has to end up pointing at it");
 });
 
@@ -153,8 +162,16 @@ test("no generator is fed an invented athlete any more", () => {
   const uses = [...src.matchAll(/<AIProgramGenerator[\s\S]{0,200}?intake=\{([\s\S]*?)\}\s*\n/g)]
     .map(m => m[1].trim());
   assert.ok(uses.length >= 3, `expected all three call sites, found ${uses.length}`);
+  // The athlete's own page reads the intake once into a const, so the
+  // button, the sentence under it and the generator cannot disagree about
+  // whether there is anything to build from. That name is allowed here only
+  // because of the assertion directly below, which pins what it holds.
+  if (uses.includes("athleteIntake")) {
+    assert.ok(/const athleteIntake = intakeForAthlete\(athlete\)/.test(src),
+      "athleteIntake must be this athlete's own answers and nothing else");
+  }
   uses.forEach(u => {
-    const real = /intakeForAthlete\(/.test(u) || /state\.me\.intake/.test(u);
+    const real = /intakeForAthlete\(/.test(u) || /state\.me\.intake/.test(u) || u === "athleteIntake";
     assert.ok(real, `a generator must read a real person's answers, got: ${u.slice(0, 80)}`);
     assert.ok(!/"🥊 Sport \/ Focus":\s*"/.test(u),
       `a hardcoded intake describes nobody: ${u.slice(0, 80)}`);
