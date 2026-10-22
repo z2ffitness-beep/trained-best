@@ -1,0 +1,464 @@
+# Trained.best: read this first
+
+**Last updated 15 Oct 2026.** Anyone picking this project up, in any chat, on
+any machine, starts here. Keep it current: if you change something in this
+repo or the database, update this file in the same commit.
+
+It exists because context was lost between 7 and 15 Oct and a week of work
+had to be reconstructed from file timestamps.
+
+---
+
+## 1. Where things are
+
+| Thing | Where |
+|---|---|
+| The code | `~/Desktop/trained-best-live` on Isaiah's Mac. Git repo, origin `github.com/z2ffitness-beep/trained-best` |
+| The app file | `src/App.jsx` only. ~3.15 MB, one file |
+| Working branch | `redesign-branding`. Not merged to main. Main is the deployed app |
+| Live site | trained-best.vercel.app |
+| Database | Supabase project `pkujygyibuiyyrryrswr` |
+| Design handoff | `design-handoff/` (gitignored): spec, clickable prototype, 22 screens, and `CLAUDE-PROMPT.md`, the build brief |
+| Test suite | `_verify/`. `sh _verify/run.sh` from the repo root. 45 suites, 1194 assertions |
+| Media gap tracker | Live page, updated daily at 06:50 Toronto by a scheduled task. 220 exercises still flagged |
+
+**Stale copies that must never be uploaded:** `~/vercelsim` (6 Oct, retired),
+`~/Desktop/Claude outputs/App.jsx` (4 Oct), `~/Desktop/Claude outputs/tb-upload-set/App.jsx`
+(6 Oct), `~/Downloads/AppJsx_OLD/App-2.jsx`. See `WHICH-APP-JSX-IS-LIVE.md` on
+the Desktop.
+
+## 2. How Isaiah wants to work
+
+- Plain language. No jargon without explaining it.
+- **Say back what he asked for before building it.** He has been burned by
+  work going the wrong way.
+- Tell him exactly which file goes where, every single time. He uploads by
+  hand through the GitHub web UI.
+- Be concise. Don't pad.
+- Questions as multiple-choice options where possible.
+- No em dashes in anything the user sees in the app.
+
+## 3. Standing decisions
+
+**Scope agreed 15 Oct: phases 1 to 6. Stripe (phase 7) is out.** Billing
+stays manual for now.
+
+**Checkpoints: only stop when genuinely necessary.** Write up each phase and
+keep going; don't wait for a reply unless something would change existing
+behaviour.
+
+**Migrations: additive-only is pre-approved.** Adding tables and columns with
+RLS may be run without asking. Anything that drops or alters an existing
+column stops and asks. Every migration is still a numbered `.sql` file here.
+
+Taken 14 Oct, in `BACKEND-PLAN.md`:
+1. Build the prototype's behaviour in full, not a reduced version.
+2. Per-set storage is a table, not richer jsonb.
+3. Booking works both ways: coach opens times AND coach books directly AND
+   client requests a time.
+4. Coachless athletes appear nowhere on a coach's screens.
+5. Branding first, then phase 1.
+
+## 4. Status
+
+| Phase | State |
+|---|---|
+| 6. Coach branding | **Done.** `profiles.business_name/brand_color/logo_path`, `coach-logos` bucket, UI on this branch |
+| Message deletion | **Done.** Hide for me, delete for everyone, tombstones, realtime |
+| 1a. Per-set storage | **Migration applied and the UI is built.** Set table, lb/kg, fill-down, minus/plus, best-so-far placeholder, rows written to `workout_sets`, `counts` and `is_pr` filled |
+| 1a. Stop and save | **Done.** Red Stop button, three-way sheet, paused workout stored with no expiry, the card on Today, "Paused on [day]" on the Plan |
+| 1a. Typo warning | **Done.** More than double the other sets is queried, and barred from being a personal best |
+| 1a. lb/kg in My Info | **Done.** Same writer as the table header |
+| 1a. Appearance | **Done** (it already existed). Now stored in `profiles.theme_pref`, with `intake.theme` kept as the pre-mount copy |
+| 1b. Points, levels, badges | **Done.** Levels (one per 5 counted), perfect-week streaks with one shield a month, 13 badges, all derived from the logs and nothing stored |
+| 1b. Rewards screen | **Done.** Medal, points counting up, week dots, level bar, badges, new bests, See summary. Reduced motion skips the movement AND the waiting |
+| 1b. Print sheet | **Done.** One A4 page, black and white, from the home card and the Plan |
+| **Phase 1 overall** | **Complete**, except pull-forward, which Isaiah moved to the Plan rebuild |
+| Plan rebuild | **Done.** `session_moves` (migration 003), `planForWeek`, the ring/strip/list panel, the day action sheet, the missed card on Today, "pulled-forward goes back", and "I did it on Mon, log it" |
+| `src/` and the repo root | **Cleaned 15 Oct.** Seven stale duplicates deleted. `src/` holds exactly five files |
+| `api/chat.js` | **Fallback added.** A retired model id now retries once on a model we know exists, instead of taking every program generation down at once |
+| Profiles read hole | **Fixed in code, migration NOT applied.** `004_lock_down_profiles.sql` narrows the blanket SELECT policy and adds the `coach_card` RPC. See section 4c |
+| 2. Signup in 5 steps | **Done and switched ON.** 5 screens, 6 on the coached path. Session style derived from the training days. Plan-ready screen at the end. The v1 lists are still in the file so the way back is one line |
+| 3. Coach home | **Done.** Coach Home leads with "who needs you"; athlete detail is four tabs (Overview / Program / Progress / Notes); adjust plan is the editor on the Program tab; My Own Training is the existing mode switch, now pinned by tests |
+| 4. Schedule | **Done.** Month grid, the coach filling a time, no-show. Requests and moves already existed. Migration 005, **not applied** |
+| 5. Messages with media | **Done.** Photos and clips in the thread, one shared composer. Migration 006, **not applied** |
+| Storage policy bug | **Fixed in 006, not applied.** `form_check_files_read` and `progress_photo_read` could never let a coach see an athlete's file. See 4c |
+| 7. Billing with Stripe | **Excluded** by Isaiah, 15 Oct |
+
+**In one line: every phase in scope is done and on `redesign-branding`.**
+Three migrations (004, 005, 006) are written, run against a real Postgres,
+and deliberately unapplied - they go in at merge time, in that order.
+
+Never applied, still only written down in the Drive doc `app-jsx-changes.md`:
+**the coach roster sorted by next session** (`groupAthletesBySession`). The
+message-deletion half of that doc did ship; this half did not.
+
+## 4c. Waiting on Isaiah
+
+- **A THIRD ROLE OPTION was agreed and never built.** On 20 Oct Isaiah
+  said the welcome screen should offer a third choice beside "I'm a
+  coach" and "I have a coach" - something suggested in an earlier
+  conversation that he agreed with. That conversation was compacted away:
+  it is not in this session's transcript and was never written into any
+  document, so the idea is genuinely lost. Candidates floated while
+  trying to jog it: gym or facility owner, try-it-without-an-account,
+  join-a-team, invited-by-link. **Ask Isaiah what it was before
+  guessing.** The screen currently offers I'm a coach / I have a coach /
+  Solo training, and all three work.
+
+  This is the exact failure the spec files exist to prevent. **An agreed
+  decision that only lives in a chat is a decision that will be lost.**
+  Write it into the repo the same day.
+
+- **Push.** Nothing has been pushed from this machine.
+  `cd ~/Desktop/trained-best-live && git push origin redesign-branding`
+- **Three migrations are written and NOT applied: 004, 005, 006, in that
+  order.** All three have been applied to a throwaway Postgres built from
+  the live schema and exercised there (`sh _verify/sql/run-sql-tests.sh`,
+  72 checks), so none of them is meeting Postgres for the first time on
+  production. 005 and 006 are additive. 004 is the one that changes access
+  control on a live table.
+- **006 fixes a bug that is live right now.** `form_check_files_read` and
+  `progress_photo_read` compare an athlete's id against the first segment
+  of their DISPLAY NAME instead of the file path, so the "a coach can see
+  their athlete's file" branch can never be true: **a coach cannot open any
+  form check or progress photo at all.** Nothing has been uploaded to
+  either bucket yet, so fixing it costs nothing. If only one thing from
+  this work ships, make it this.
+- **Migration 004 is written and NOT applied.** It is the only one so far
+  that changes who can read what on a live table, so it goes in at merge
+  time, with the code that matches it. The client carries a fallback to the
+  old read, so the code and the migration can land in either order without a
+  window where the coach's name vanishes from every athlete's screen.
+  Rehearsed read-only against live on 15 Oct: rows readable by any signed-in
+  athlete 11 -> 1, coach 6, all 5 coached athletes still load their coach's
+  card, 0 load anyone else's.
+- **Two existing athletes train five days with no split recorded.** The new
+  signup derives a split from the training days, but only for new accounts -
+  deriving at read time would have restructured two real people's training
+  on their next generation without anybody deciding to. If Isaiah wants them
+  moved to upper/lower it is one update each, and it is his call, not the
+  app's.
+- **`ANTHROPIC_API_KEY` is still missing from the Vercel PREVIEW
+  environment**, which is why program generation failed on the branch URL.
+- **Check Settings -> Functions** for the Hobby plan's maximum duration
+  against `maxDuration: 300` in `api/chat.js`.
+
+## 4b. Decisions Isaiah made on 15 Oct
+
+- **"I did it on Mon, log it" is one tap and counts for nothing.** It writes
+  a log on the day it happened with no sets and no weights, `counts: false`.
+  It buys the truth about the calendar - the session stops being missed, the
+  coach stops seeing a gap, nobody is nagged about a workout they did - and
+  nothing else. An athlete who cannot remember what they lifted has not
+  earned the same credit as one who wrote it down, and inventing numbers to
+  make the maths tidy would poison every best and every trend downstream.
+  The Plan labels it "Done, not logged" rather than plain "Done".
+
+- **The 50% rule is split.** The spec says a workout counts toward streak,
+  level, points and badges only if half its sets are ticked. The app already
+  scored short sessions. Points stay as they were; streak and the
+  perfect-week bonus follow the spec. Reasoning: a score of zero for an
+  honest four-of-twelve session teaches people to stay home or to tick sets
+  they did not do, whereas a streak a two-set session keeps alive means
+  nothing. Do not quietly change either half.
+- **Pull-forward waits for the Plan rebuild.** "Do it today instead" does not
+  exist, so neither does the rule about a pulled-forward workout going back
+  to its own day when stopped. Both land together with the Plan screen.
+
+## 5. Traps that have already cost time
+
+- **`messages` has column-level UPDATE grants.** Only `read_at`,
+  `deleted_at`, `deleted_by`, `hidden_for` can be written, and a trigger
+  blocks edits to the body. A new message column must be added to that grant
+  or writes fail looking like a bug, not a permission error. This will bite
+  in phase 5.
+- **A set now lives in two places**: `workout_sets` rows and the older
+  `workout_logs.exercises` jsonb. Decide per screen which one is read. Writing
+  both and reading whichever is handy is how they drift.
+- **Nav is load bearing.** Eight places link to the workout route. When the
+  Workout tab was merged into Program, the route stayed and only the bar
+  entry went. Do the same for any further tab change.
+- **The spec's streak is not the app's streak.** The app counts consecutive
+  days trained; the spec counts consecutive Perfect Weeks. Shipping the
+  spec's version changes every athlete's number. Tell them.
+- **The sandbox is not the Mac.** Commands run in an isolated Linux VM with
+  Isaiah's Desktop mounted. Git there has no identity and no GitHub
+  credentials, and cannot delete files without permission, which leaves
+  `.git` lock files that break his own git. Identity is now set repo-locally.
+  **Pushing must be done by Isaiah**: `cd ~/Desktop/trained-best-live &&
+  git push origin redesign-branding`.
+- **`availability_slots.session_type_id` is NOT NULL.** A coach-made direct
+  booking still needs a session type.
+- **`session_change_requests` has only a SELECT policy.** It needs INSERT and
+  UPDATE before phase 4 can use it.
+- **The draft, the timer and a paused workout are three different things.**
+  The session draft (`tb_session_draft`) is a crash net and expires after 14
+  hours. The stored timer (`tb_session_timer`) is one stopwatch. A paused
+  workout (`tb_paused_workout`) is a deliberate Stop, has no expiry, and is
+  what the home screen asks about. All three are keyed by
+  `sessionIdentity(program, day)` and NOT by `day.id`, which is a fresh
+  random string on every launch. Two bugs of exactly that shape were fixed on
+  15 Oct; if a restore ever silently does nothing, check the key first.
+- **`device_commit_files` can write a stale copy** when the same
+  `stagedPath` was committed earlier in a session. Use a fresh filename, or
+  `force`, and check with md5sum. It silently cost a test file once.
+- **`src/index.css` is the stylesheet that is built.** `main.jsx` imports
+  it. There used to be a byte-identical `index.css` at the repo ROOT that
+  nothing imported, and the rewards animations went in there first and did
+  nothing at all. **Deleted on 15 Oct**, along with the stale
+  `src/App_1.jsx`, `App_2.jsx`, `App_22.jsx`, `App_23.jsx`, `index_1.css`
+  and `index_OLD.css` - none of them were imported by anything, all of them
+  were a trap for a hand upload. `src/` now holds exactly five files:
+  `App.jsx`, `exerciseImages.js`, `index.css`, `main.jsx`,
+  `supabaseClient.js`. If a duplicate ever reappears there, it is a mistake,
+  not a backup - git is the backup.
+- **`_verify/hooks.mjs` earns its keep.** It caught a `useState` below an
+  early return in `AthleteProgram` during the print-sheet work - the
+  "Rendered fewer hooks than expected" crash, before it ever ran.
+- **`chat.js` at the repo root is NOT the file that runs.** `api/chat.js`
+  is. They had drifted 265 lines apart and each had something the other
+  lacked. The one thing worth keeping - a 404 retry on a known model - was
+  ported into `api/chat.js` on 15 Oct. The root copy is still there, left
+  deliberately until the fallback has been seen working in production, and
+  should be deleted after that.
+- **Measure layouts at 320px rather than reasoning about them.** Three real
+  bugs came out of doing it: the workout header truncating the session name
+  to "D...", the level bar rendering as an empty track because an `<i>` is
+  inline, and the Plan's day strip trying to fit "Upcoming" into 30px.
+
+- **Running `_verify/run.sh` twice in one shell command killed the
+  container** on 16 Oct (exit 137, out of memory). Run it once, redirect to
+  a file, and read the file.
+- **A coach's device does not automatically have an athlete's data.** It
+  loads logs, progress, check-ins and (since 16 Oct) session moves by
+  explicit query. Anything new an athlete writes needs adding to that load
+  or every coach-side screen reads it as empty - which is how the roster
+  once showed 0/7 on everyone's accountability tracker.
+- **`splitStyleOf` must not start deriving.** Eleven profiles exist, two of
+  them train five days and none ever answered the session-style question.
+  Deriving at read time would restructure two real athletes' programmes on
+  their next generation. The derivation belongs at the WRITE
+  (`withDerivedSplit`), where an explicit answer always wins.
+
+- **A test that reads a constant as DATA does not exercise the line that
+  uses it.** `signup-v2.test.mjs` had eight tests over `SIGNUP_V2_STEPS`
+  and every one passed while the app crashed on the first screen anybody
+  sees: `SIGNUP_V2_STEPS[role]` runs ~100 lines above the `if (!role)`
+  early return, so with the picker up it looked up a null key, got
+  undefined, and `steps.length` threw. The v1 expression ended in a plain
+  `: athleteSteps` and so always produced an array. The fix is a `??`
+  fallback; the lesson is that the test now lifts the real expression out
+  of the source and RUNS it for every value `role` can hold, null first.
+- **The signup component computes its step list long before it knows the
+  role.** Anything added between `const allSteps` (~7369) and
+  `if (!role)` (~7485) must tolerate `role === null`, `stepName ===
+  undefined` and an empty `data`.
+
+- **A `const` read above its own line is a crash, not an undefined.** On
+  20 Oct the Program tab threw `Cannot access 've' before initialization`
+  for every athlete. In the source, line 16934 read `shownWeek`; line
+  16981 created it. Both in the same component body, 47 lines apart. The
+  name exists from the top of the block, which is why it looks fine and
+  why the build succeeded, but touching it before its own line throws.
+  Two checks now cover this: `_verify/tdz.mjs` parses App.jsx with a real
+  parser (acorn) and flags any read above its declaration in the same
+  function body; `_verify/tdz-selftest.mjs` feeds the checker nine broken
+  files and eleven lookalikes so it can never quietly pass everything the
+  way `scope.mjs` did twice.
+- **"It is inside a callback, so it runs later" is only true for some
+  callbacks.** `useEffect`, `setTimeout`, `.then` and every `onClick` do
+  run later. `.map`, `.filter`, `.forEach`, `.sort`, `useMemo` and a
+  `useState` initialiser run **right there, before the next line**, so a
+  const below them is just as fatal as a plain read. `tdz.mjs` knows the
+  difference, and also follows one hop into a helper kept in a const.
+  What stops it drowning in false alarms is that it only counts a call
+  that really does run in order: a `.map` sitting inside a tap handler,
+  or inside a function declared above the const it reads, is fine,
+  because nothing calls it until long after the file has loaded.
+- **A const declared inside a component, written at column 0, reads as
+  module level to everybody.** It happened twice in five days.
+  `SIGNUP_V2_SECTIONS` was declared inside `Onboarding` and read from
+  `OnboardingStepBodyRest`; `bubbleBg` was declared inside the Messages
+  screen and read from `AthleteMessageRow` a hundred lines above. Both
+  threw `Can't find variable:` on a whole tab. `tdz.mjs` now reports any
+  name that resolves to no binding at all, so the second one took
+  seconds to find once the check existed.
+- **`scope.mjs` could never have caught either of them, and looked like
+  it could.** It found candidate names with a regular expression
+  anchored to column 0, so it only ever knew about declarations at
+  module level - and a declaration at module level is exactly the case
+  that is NOT the bug. The one place this mistake gets made, inside a
+  component, was invisible to it. It is kept because reading the built
+  bundle catches things the source cannot show, but `tdz.mjs` is the
+  check that matters for this.
+- **The checks that read the whole file each catch a different thing,
+  and none substitutes for the others.** `tdz.mjs` catches a name that
+  resolves to nothing, and a name that resolves to something not ready
+  yet. `hooks.mjs` catches a hook below an early return. `unwired.mjs`
+  catches a component nothing renders. The 1,376 unit assertions catch
+  none of them, because `extract.mjs` lifts functions out textually and
+  runs them on their own, where neither scope nor line order exists.
+  Every crash that has reached Isaiah's phone has been in that gap.
+
+## 6. Corrections to earlier documents
+
+`BACKEND-PLAN.md` says "your workout logs do not store weight at all" and
+concludes the new table can start empty. That was wrong. The backfill in
+migration 002 recovered **29 real sets across 4 logs, all with weights**.
+Had it started empty, bests and last-time's numbers would have treated those
+sessions as if they never happened.
+
+## 7. What phase 1a's UI actually does now
+
+Three commits on `redesign-branding`, 15 Oct:
+
+- **`unit_pref` is the LIFTING unit.** `intake.weightUnit` stays the
+  bodyweight one and the profile editor still owns it. They used to be the
+  same setting, which left anyone who weighs in kilos and lifts in pounds
+  with no way to say so.
+- **Pounds are the store of record.** `displayWeight` converts on the way
+  out and rounds kilos to the nearest half, because plates come in 1.25 kg
+  pairs. Every comparison - bests, PRs, totals - happens in pounds, or a
+  110 kg squat ranks below a 225 lb one.
+- **The set table** replaced the stack of cards. SET / REPS / WEIGHT / DONE,
+  the lb/kg switch in the WEIGHT heading, minus and plus at 5 lb or 2.5 kg,
+  the placeholder is their best so far. Laid out against a 320px screen, not
+  guessed at.
+- **Fill-down**: a weight typed into one set copies to every set below it,
+  except ones already ticked (history) and ones typed by hand (a decision).
+  Clearing a box clears only that box. The hand-set flags are saved in the
+  session draft and end up in `workout_sets.manually_set`.
+- **On finish**: one `workout_sets` row per prescribed set in pounds,
+  `workout_logs.counts` from the 50% rule, and `is_pr` on the one set per
+  movement that beat the standing best. Offline sessions carry their set
+  rows into the queue.
+
+## 7b. What phase 2 and 3 actually changed
+
+**Signup is five screens** (six if you join a coach), down from fourteen.
+The combined screens are the OLD step bodies stacked under section headings,
+not a rewrite of them: `SIGNUP_V2_SECTIONS` describes the composition and
+`OnboardingStepBodyRest` recurses into itself once per section. That is why
+the height dial, the weight slider and the per-area injury cards behave
+exactly as they did.
+
+`isStepComplete` came out of the Onboarding component as **`stepComplete`**,
+so the rules can be checked against an object. A combined screen is complete
+when every section SHOWING on it is - so a non-fighter is never held on the
+goal screen by a question they were never asked.
+
+**Session style is no longer a question.** `deriveSplit` works it out from
+`trainingDays.length`: four or fewer is full body, five is upper/lower, six
+or seven is push/pull/legs. Applied by `withDerivedSplit` at the two places
+answers become a profile (`writeProfileAndContinue` and the coach's own
+training intake), never at read time - `splitStyleOf` is unchanged, so no
+existing athlete's programme shape moved.
+
+**Signup ends on `PlanReadyScreen`**: what was chosen, then what is left of
+this week. Only the days still to come, because a programme generated on a
+Thursday that opens with "Monday - Lower Body" reads as three sessions
+already missed on day one.
+
+**Coach Home leads with `coachAttention`**, one pure function over state
+that ranks athletes by what blocks them: no programme, then missed, then
+never started, then quiet for ten days, then today. Today is deliberately
+not counted as a problem.
+
+**The coach's device now loads its athletes' `session_moves`.** Without
+them a session an athlete deliberately moved reads as missed, and the coach
+accuses them of skipping a session they did. No migration: 003 already
+granted coaches SELECT on that table, it was simply never asked for.
+
+**The athlete page is four tabs**: Overview, Program, Progress, Notes.
+Identity and the three tiles stay above the tabs.
+
+Two things the test suite caught that nothing else would have:
+
+1. The coached-athlete path had **no goal screen**. Nobody joining a coach
+   would have been asked their sport, goals, experience or timeframe, and
+   every one of them would have got a General Fitness programme with no
+   error anywhere. `signup-v2.test.mjs` now checks the contract PER PATH;
+   pooling the three paths was what hid it.
+2. `COACH_ONLY_KEYS` listed two of the four coach-only answers, so a coach
+   who changed their mind and signed up as an athlete carried
+   `"⚡ Specialties"` and `"🎯 Coaching Style"` into their athlete intake.
+
+## 7c. What phase 4 and 5 changed
+
+**The schedule had three gaps** and the rest of it already worked - opening
+times, repeating times, booking, cancelling, the notice window, change
+requests, the coach's decision, moving a booking, closing a time and
+refunding everyone in it. The three:
+
+- `groupSlotsByDay` shows the FUTURE only, which is right for "what is
+  coming up" and is also why no-show could never be recorded: by the time a
+  coach wanted to mark a session it had dropped off the only screen that
+  listed it. **`sessionsToMark`** is the other half.
+- The coach could not **put anybody in a time**. Most sessions in a real gym
+  are agreed in person, and without this the coach has to ask the client to
+  tap it in. `book_athlete_into_slot` allows it with no credits left, on
+  purpose, and the UI says so before they do it.
+- **`calendarMonth`**: six rows of seven, Monday first, always.
+
+**The documented blocker for phase 4 was wrong.** `session_change_requests`
+does not need INSERT and UPDATE policies. Every write in that subsystem goes
+through a security definer function, which is not subject to RLS at all.
+
+**Media in messages** extends the thread, not `form_checks` - a conversation
+is not a review queue. The first path segment is the THREAD's athlete, not
+the uploader, because both people upload. One `MessageComposer` serves both
+threads.
+
+## 7d. The SQL layer, added 16 Oct
+
+`_verify/sql/` builds a throwaway Postgres from the live schema, applies
+004, 005 and 006 to it, and exercises them. **This is the only check in the
+repo that RUNS a migration**; everything else reads the `.sql` as text,
+which proves a line is present and nothing else.
+
+Three things to know about it:
+
+1. **Run the policy checks as a NON-SUPERUSER.** Postgres lets a superuser
+   straight through row level security whatever `force row level security`
+   says, so running them as the table owner passes every check without
+   consulting a single policy. `00_scaffold.sql` creates `rls_tester` for
+   this, and the exercises `set role` to it.
+2. **A raw statement that raises just prints and scrolls past** with
+   `ON_ERROR_STOP off`. The runner greps for `ERROR:` as well as `FAIL`
+   because a mutation slipped through exactly that way.
+3. **A DELETE the policy filters out of affects no rows and succeeds.**
+   Check whether the row survived, not whether the statement raised.
+
+It skips itself, loudly, where there is no Postgres, so the suite still runs
+on the Mac. Four real problems came out of building it, all in the tests:
+three checks were being refused for the wrong reason, and the harness was
+counting a SQL error as a pass.
+
+## 8. Next action
+
+**Every phase in scope is complete and on `redesign-branding`.** Stripe was
+excluded by Isaiah on 15 Oct.
+
+What is left is Isaiah's, not the code's - see section 4c: push, apply 004,
+005 and 006 in order at merge time, add `ANTHROPIC_API_KEY` to the Vercel
+Preview environment, and decide about the two five-day athletes.
+
+Worth doing once this has been seen running:
+
+- Delete the **v1 signup step lists** (`athleteSteps`, `coachSteps`,
+  `coachedAthleteSteps`) and the `SIGNUP_V2` flag, once a real account has
+  been made on the preview. Not before: while both lists exist, switching
+  back is one line rather than a revert of four commits.
+- Delete the root **`chat.js`** once the 404 fallback has been seen working
+  in production.
+- The **Caught Up** badge can become the spec's **Comeback**, now that
+  "missed" is a real concept.
+- The never-applied **`groupAthletesBySession`** from the Drive doc. The
+  roster already sorts by next session via `withNextSession`, so check
+  whether this is still wanted at all before building it.
+
+Run `sh _verify/run.sh` before every commit. It was **1370/1370 across 52
+suites, plus 72 SQL checks**, on 16 Oct. Run it ONCE per command.
+
+Isaiah pushes: `cd ~/Desktop/trained-best-live && git push origin redesign-branding`

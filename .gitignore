@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+design-handoff/
+TrainedBest-redesign-handoff.zip
+dist/
+.env
+.env.local
+
+# Local build previews and App.jsx working copies. Keeping a 3 MB snapshot in
+# the repo is how the "which App.jsx is real" confusion started.
+preview-dist/
+main-appjsx-TEMP.jsx
+*-TEMP.jsx

@@ -8,7 +8,7 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone
+  Moon, Leaf, Heart, Phone, Minus, Printer
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -236,6 +236,41 @@ const EXERCISE_IMAGE_INDEX = (() => {
 const UPLOADED_EXERCISE_PHOTOS = {};
 const EXERCISE_PHOTO_BUCKET = "exercise-photos";
 
+// A coach's branding colour. Fixed swatches rather than a free picker — the
+// colour has to read well as a wordmark accent and a card border in both
+// themes, which a hex input invites a coach to break on the first try.
+const COACH_LOGO_BUCKET = "coach-logos";
+const BRAND_COLORS = ["#7C5CFC", "#2E86FF", "#2BC47A", "#F0A93C", "#FF5D6E", "#E7EBF2"];
+
+function coachLogoUrl(path) {
+  if (!path) return null;
+  const { data } = supabase.storage.from(COACH_LOGO_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || null;
+}
+
+// Same shape as uploadExercisePhoto: shrink in the browser, upload under the
+// coach's own uid (the bucket's write policy requires it), then point the
+// profile row at the new file. A fresh random name per upload rather than a
+// fixed one, so a coach replacing their logo doesn't collide with whatever
+// the public bucket's CDN still has cached under the old URL.
+async function uploadCoachLogo(coachId, file) {
+  const blob = await shrinkImage(file, 480, 0.88);
+  const path = `${coachId}/${crypto.randomUUID()}.jpg`;
+
+  const { error: upErr } = await supabase.storage
+    .from(COACH_LOGO_BUCKET)
+    .upload(path, blob, { contentType: "image/jpeg", upsert: false });
+  if (upErr) throw new Error(upErr.message || "Couldn't upload that logo.");
+
+  const { error: rowErr } = await supabase.from("profiles").update({ logo_path: path }).eq("id", coachId);
+  if (rowErr) {
+    await supabase.storage.from(COACH_LOGO_BUCKET).remove([path]);
+    throw new Error(rowErr.message || "Uploaded, but couldn't save it to your profile.");
+  }
+
+  return { path, url: coachLogoUrl(path) };
+}
+
 // A coach's own photo wins over the built-in one: if they went and shot a
 // better Back Squat than the stock image, that is the one their athletes
 // should see.
@@ -424,7 +459,6 @@ const FEATURES = {
   exerciseLibrary: false,  // the standalone browse-all-exercises screen
   aiAssistant: true,       // the AI chat tab that sits beside the coach thread
   nutrition: false,        // never actually built — a stub screen
-  achievements: false,     // PR counters and badges with no real data behind them
 };
 
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap";
@@ -1010,6 +1044,83 @@ const mapFormCheck = (r) => ({
   createdAt: r.created_at,
 });
 
+// ---------- media in a message ----------
+//
+// Same shape form_checks proved - private bucket, first path segment says
+// who the file belongs to, signed URL at read time - with one difference
+// that matters: the segment is the THREAD's athlete, not the uploader.
+//
+// In a form check only the athlete ever uploads, so "whose file is this" and
+// "who sent it" are the same question. In a thread both people upload, and
+// keying on the uploader would force the storage policy to answer "is the
+// person who sent this in a conversation with me", which needs the message
+// row. Keying on the thread makes it one comparison the policy can do on the
+// path alone.
+const MESSAGE_MEDIA_BUCKET = "message-media";
+const MESSAGE_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+const MESSAGE_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
+const MESSAGE_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"];
+const MESSAGE_MEDIA_URL_TTL = 60 * 60;
+
+// 'image' or 'video', which is all the thread needs to know. Stored rather
+// than re-derived, so a renderer never has to decide this a second time and
+// differently.
+function messageMediaKind(file) {
+  const type = (file?.type || "").toLowerCase();
+  if (MESSAGE_IMAGE_TYPES.includes(type)) return "image";
+  if (MESSAGE_VIDEO_TYPES.includes(type)) return "video";
+  // Some Android browsers hand over an empty type for a freshly recorded or
+  // captured file. Guessing from the extension beats refusing a photo that
+  // is perfectly fine, and the bucket has the final say either way.
+  const ext = (file?.name || "").split(".").pop()?.toLowerCase();
+  if (["jpg", "jpeg", "png", "webp", "heic"].includes(ext)) return "image";
+  if (["mp4", "mov", "webm", "m4v"].includes(ext)) return "video";
+  return null;
+}
+
+function messageMediaError(file) {
+  if (!file) return "Pick a photo or a clip first.";
+  if (file.size > MESSAGE_MEDIA_MAX_BYTES) {
+    // Rounded UP, so a file one byte over never reports the same size as the
+    // limit it just broke.
+    return `That file is ${Math.ceil(file.size / 1048576)}MB. Keep it under ${Math.floor(MESSAGE_MEDIA_MAX_BYTES / 1048576)}MB.`;
+  }
+  if (!messageMediaKind(file)) {
+    return "That doesn't look like a photo or a video the app can show. JPG and MP4 work everywhere.";
+  }
+  return null;
+}
+
+async function uploadMessageMedia(file, athleteId) {
+  const problem = messageMediaError(file);
+  if (problem) return { error: problem };
+  if (!athleteId) return { error: "There's no conversation to attach this to." };
+
+  const kind = messageMediaKind(file);
+  const extension = (file.name || "").split(".").pop();
+  const safeExtension = /^[a-z0-9]{2,5}$/i.test(extension || "")
+    ? extension.toLowerCase()
+    : (kind === "image" ? "jpg" : "mp4");
+  const path = `${athleteId}/${clientId()}.${safeExtension}`;
+
+  const { error } = await supabase.storage
+    .from(MESSAGE_MEDIA_BUCKET)
+    .upload(path, file, {
+      contentType: file.type || (kind === "image" ? "image/jpeg" : "video/mp4"),
+      upsert: false,
+    });
+  if (error) return { error: error.message || "Couldn't upload that." };
+  return { path, kind };
+}
+
+async function signMessageMedia(storagePath) {
+  if (!storagePath) return null;
+  const { data, error } = await supabase.storage
+    .from(MESSAGE_MEDIA_BUCKET)
+    .createSignedUrl(storagePath, MESSAGE_MEDIA_URL_TTL);
+  return error ? null : data?.signedUrl || null;
+}
+
 // The path is always "<athlete uuid>/<something>", because the storage policy
 // reads the first segment as the owner rather than looking anything up.
 async function uploadFormCheck(file, { athleteId, coachId, exerciseName, programDay, note }) {
@@ -1253,6 +1364,275 @@ function convertWeight(weight, from, to) {
             : from === "lb" && to === "kg" ? weight / LB_PER_KG
             : weight;
   return Math.round(out * 10) / 10;
+}
+
+// ---------- one unit underneath, whichever one is on screen ----------
+//
+// Pounds are the store of record from here on. The jsonb log keeps the number
+// exactly as typed with its unit beside it, which is honest about history and
+// useless for comparison: a best set in kilos and today's set in pounds cannot
+// be ranked without a conversion, and the code that forgets the conversion is
+// the code that tells an athlete 60 kg is lighter than 135 lb. Everything
+// written to workout_sets is converted on the way in, so a comparison is a
+// comparison rather than a units puzzle.
+//
+// Kilos are shown coarsely on the way back out. Plates come in 1.25 kg pairs,
+// so the smallest honest change on a bar is 2.5 kg; printing 61.2 kg claims a
+// precision no gym has, and an athlete reading it decides the app is broken.
+// Pounds keep one decimal, because micro-plates are real.
+const KG_DISPLAY_STEP = 0.5;
+
+function displayWeight(weight, from, to) {
+  const converted = convertWeight(weight, from || "lb", to || "lb");
+  if (converted == null) return null;
+  if (to !== "kg") return Math.round(converted * 10) / 10;
+  return Math.round(converted / KG_DISPLAY_STEP) * KG_DISPLAY_STEP;
+}
+
+// A stored set as it reads on a screen set to `unit` - the number converted
+// and the unit relabelled together. Returning one without the other is how a
+// 60 that used to be kilos gets printed as 60 lb.
+function setInUnit(entry, unit) {
+  if (!entry) return null;
+  const to = unit === "kg" ? "kg" : "lb";
+  if (entry.weight == null) return { ...entry, unit: to };
+  return { ...entry, weight: displayWeight(entry.weight, entry.unit || "lb", to), unit: to };
+}
+
+// What the minus and plus buttons move by. Five pounds is the smallest pair of
+// plates on a bar in pounds, 2.5 kg the smallest in kilos. Deliberately not
+// the same weight as each other: the step is the smallest real change in the
+// unit the athlete is using, not a converted version of the other one.
+const weightStepFor = unit => (unit === "kg" ? 2.5 : 5);
+
+// The heaviest this athlete has ever ticked off on this movement, in the unit
+// they are currently reading. It is what the weight box shows as a
+// placeholder, so an empty field says what they are capable of instead of a
+// dash.
+//
+// Ticked sets only, through wasLifted. A number typed into a set that was then
+// failed and left unticked is a plan, and handing it back as a best would be
+// the app congratulating someone for a lift they did not make.
+function bestLoggedWeight(exerciseName, logs, unit = "lb") {
+  if (!exerciseName) return null;
+  const key = String(exerciseName).toLowerCase();
+  let best = null;
+  for (const log of logs || []) {
+    const match = (log?.exercises || []).find(e => String(e?.name || "").toLowerCase() === key);
+    for (const entry of match?.sets || []) {
+      if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+      const inUnit = displayWeight(entry.weight, entry.unit || "lb", unit);
+      if (inUnit != null && (best == null || inUnit > best)) best = inUnit;
+    }
+  }
+  return best;
+}
+
+// Typing a weight into one set fills it down the rest of the exercise.
+//
+// Nobody does five sets at five different weights, and before this the
+// athlete typed the same number into every box with chalky hands between
+// sets. Filling down is the default because it is almost always right.
+//
+// Two kinds of set are never overwritten. A ticked set is history - it was
+// done at whatever was on the bar at the time, and rewriting it would turn a
+// record into a guess. A hand-set set is a decision: the athlete typed 185
+// into set 4 on purpose, and having set 3 overwrite it the moment they
+// corrected a typo above is the behaviour that makes people stop trusting
+// the fill.
+//
+// Clearing a box clears only that box. Blanking set 1 and watching sets 2
+// through 5 empty out behind it is a data-loss bug wearing a feature's
+// clothes.
+function fillWeightDown({ weights = [], handSet = [], checks = [], index, value, total = 0 }) {
+  const length = Math.max(total, weights.length, index + 1);
+  const out = Array.from({ length }, (_, i) => weights[i]);
+  out[index] = value;
+  if (value === "" || value == null) return out;
+  for (let i = index + 1; i < length; i++) {
+    if ((checks || []).includes(i)) continue;
+    if ((handSet || [])[i]) continue;
+    out[i] = value;
+  }
+  return out;
+}
+
+// One press of the minus or plus button beside a weight box.
+//
+// An empty box has no number to step from, so the first press fills in the
+// placeholder - their best so far, which is the number they are about to
+// adjust away from. Starting at zero instead means holding the plus button
+// down forty times to get to a working weight, which is not a feature
+// anyone would use twice. With no history at all, plus starts one step up
+// and minus has nowhere to go.
+function stepWeight(current, direction, unit, fallback = null) {
+  const step = weightStepFor(unit);
+  const typed = normalizeWeight(current);
+  if (typed == null) {
+    const best = normalizeWeight(fallback);
+    if (best != null) return best;
+    return direction > 0 ? step : 0;
+  }
+  // Never below zero. A negative weight is not a lighter lift, it is a
+  // number that breaks every total downstream of it.
+  return Math.max(0, Math.round((typed + direction * step) * 10) / 10);
+}
+
+// Did this session count?
+//
+// Half the prescribed sets, ticked. Below that it still saves - an hour of
+// someone's work is never thrown away for missing a threshold - but it does
+// not feed the streak, the level, the points or the badges, because a run of
+// two-set sessions is not a training streak and a number that says otherwise
+// is worth nothing to the athlete reading it.
+//
+// A session with nothing prescribed is an extra the athlete added
+// themselves. There is no bar to clear, so doing anything at all clears it.
+const COUNTS_THRESHOLD = 0.5;
+
+function sessionCounts(setsCompleted, setsPrescribed) {
+  const done = Number(setsCompleted) || 0;
+  const asked = Number(setsPrescribed) || 0;
+  if (asked <= 0) return done > 0;
+  return done / asked >= COUNTS_THRESHOLD;
+}
+
+// The standing best on a movement before today: the heaviest ticked set in
+// pounds, and the most reps ever done AT that weight. Both numbers, because
+// the same weight for more reps is progress and the app has to be able to
+// say so rather than going quiet on a session that was genuinely better.
+//
+// Pounds throughout. History can hold both units for the same lift once
+// someone changes their setting, and comparing the bare numbers ranks a
+// 110 kg squat below a 225 lb one.
+function priorBest(exerciseName, logs) {
+  if (!exerciseName) return null;
+  const key = String(exerciseName).toLowerCase();
+  let weightLb = null;
+  let reps = null;
+  for (const log of logs || []) {
+    const match = (log?.exercises || []).find(e => String(e?.name || "").toLowerCase() === key);
+    for (const entry of match?.sets || []) {
+      if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+      const lb = convertWeight(entry.weight, entry.unit || "lb", "lb");
+      if (lb == null) continue;
+      if (weightLb == null || lb > weightLb) {
+        weightLb = lb;
+        reps = typeof entry.reps === "number" ? entry.reps : null;
+      } else if (lb === weightLb && typeof entry.reps === "number" && (reps == null || entry.reps > reps)) {
+        reps = entry.reps;
+      }
+    }
+  }
+  return weightLb == null ? null : { weightLb, reps };
+}
+
+// Heavier than the standing best, or the same weight for more reps. The
+// first loaded set of a movement is a best by definition - there is nothing
+// behind it to beat.
+function beatsBest(weightLb, reps, best) {
+  if (weightLb == null) return false;
+  if (!best || best.weightLb == null) return true;
+  if (weightLb > best.weightLb) return true;
+  if (weightLb < best.weightLb) return false;
+  return typeof reps === "number" && typeof best.reps === "number" && reps > best.reps;
+}
+
+// One database row per prescribed set, in pounds.
+//
+// The log's own jsonb keeps the session as it was typed, which is the honest
+// record and the wrong shape for every question worth asking: what has this
+// athlete done on this movement, is it going up, which set was the best one.
+// Answering any of those from jsonb means reading every session they have
+// ever logged and unpacking it. These rows are the same numbers in a form
+// Postgres can index.
+//
+// Warm-ups and cool-downs write nothing. They are recorded as done or not on
+// the log itself, and giving them set rows would put them into strength
+// history as zero-weight lifts.
+function workoutSetRows({ logId, userId, exercises, bests = {} }) {
+  const rows = [];
+  for (const ex of exercises || []) {
+    if (!ex || ex.tracked === false) continue;
+    const best = bests[String(ex.name || "").toLowerCase()] || null;
+    const beaten = [];
+    for (const entry of ex.sets || []) {
+      const weightLb = entry.weight == null
+        ? null
+        : convertWeight(entry.weight, entry.unit || "lb", "lb");
+      const row = {
+        log_id: logId,
+        user_id: userId,
+        exercise_name: ex.name,
+        set_number: entry.set,
+        reps: typeof entry.reps === "number" ? entry.reps : null,
+        weight_lb: weightLb,
+        done: entry.done === true,
+        // Typed into this set on purpose rather than filled down from the
+        // set above. A coach reading the history can tell a deliberate drop
+        // set from a copied number.
+        manually_set: entry.manual === true,
+        is_pr: false,
+      };
+      rows.push(row);
+      // Ticked sets only. A weight typed into a set that was then failed and
+      // left unticked is an ambition, not a personal best.
+      //
+      // And nothing the typo guard queried. A mistyped 1350 beats every best
+      // there has ever been, and once it is stored as one it sets the bar for
+      // every session afterwards - the athlete is told they are getting
+      // weaker for the rest of the block.
+      const others = (ex.sets || []).filter(o => o !== entry && typeof o.weight === "number")
+        .map(o => convertWeight(o.weight, o.unit || "lb", "lb"));
+      if (wasLifted(entry) && !looksLikeTypo(weightLb, others) && beatsBest(weightLb, row.reps, best)) {
+        beaten.push(row);
+      }
+    }
+    // One flag per movement per session. Three sets that all clear an old
+    // best are one new best, not three; flagging each would hand the rewards
+    // screen three medals for one achievement.
+    if (beaten.length) {
+      beaten.sort((a, b) => (b.weight_lb - a.weight_lb) || ((b.reps || 0) - (a.reps || 0)));
+      beaten[0].is_pr = true;
+    }
+  }
+  return rows;
+}
+
+// A stored log row's flag, worked out from the row itself when the column is
+// null. Sessions logged before the column existed have no flag, and treating
+// a missing one as "did not count" would quietly wipe out a streak somebody
+// earned.
+function logCounts(logRow) {
+  if (typeof logRow?.counts === "boolean") return logRow.counts;
+  // A database row and the camelCase copy the app holds in state are two
+  // shapes of the same thing, and a helper that knew only one of them would
+  // quietly answer "no" for the other - which, where this is used, means
+  // silently wiping out a streak.
+  const done = logRow?.sets_completed ?? logRow?.setsCompleted;
+  const asked = logRow?.sets_prescribed ?? logRow?.setsPrescribed;
+  return sessionCounts(done, asked);
+}
+
+// A number that is more than double every other set of the same movement in
+// the same session.
+//
+// Typing 1350 where 135 was meant is the commonest entry mistake there is,
+// and it poisons everything downstream of it: the athlete's best, next
+// session's suggested load, the strength trend, and the coach's read of what
+// they can handle. It is not treated as an error - plenty of real sessions
+// have one heavy single among lighter work - it is queried, and it does not
+// get to be a personal best on its own.
+//
+// Compared against the other sets rather than against history on purpose. A
+// genuine ten-pound jump is nothing like double, and someone coming back from
+// a layoff would otherwise be told every set they do is a typo.
+const TYPO_MULTIPLE = 2;
+
+function looksLikeTypo(weight, otherWeights) {
+  const others = (otherWeights || []).filter(w => typeof w === "number" && Number.isFinite(w) && w > 0);
+  if (typeof weight !== "number" || !Number.isFinite(weight) || !others.length) return false;
+  return weight > Math.max(...others) * TYPO_MULTIPLE;
 }
 
 function exerciseHistory(exerciseName, logs) {
@@ -2495,6 +2875,100 @@ const SPLIT_STYLES = [
 ];
 const DEFAULT_SPLIT = "full_body";
 
+// Session style stopped being a question in the short signup. It was always a
+// worse way of asking "how many days a week do you train", because that is the
+// only thing the answer can sensibly depend on: a five-day full-body week is
+// bad programming whoever asks for it, and a three-day push/pull/legs week
+// trains each pattern once a fortnight.
+//
+// So the split is DERIVED from the days, and written down at signup like any
+// other answer. Derived, not inferred at read time, for one reason: eleven
+// profiles already exist, two of them train five days and none of them ever
+// answered this question. Deriving at read time would quietly restructure two
+// real athletes' programmes on their next generation. Writing it at signup
+// changes nobody who is already here, and splitStyleOf keeps doing what it
+// always did - an explicit answer wins, and an absent one is full body.
+function deriveSplit(days) {
+  const n = Array.isArray(days) ? days.length : 0;
+  // Six or seven days is the only week with room to hit each pattern twice,
+  // which is what push/pull/legs needs to not be a once-a-week programme.
+  if (n >= 6) return "push_pull_legs";
+  // Five full-body sessions cannot be recovered from. Upper/lower gives each
+  // half of the body two or three exposures with a day between them.
+  if (n === 5) return "upper_lower";
+  // Four or fewer: full body, every time. Each session has to count because
+  // there are not enough of them to specialise.
+  return DEFAULT_SPLIT;
+}
+
+// ---------- the plan-ready screen ----------
+//
+// What signup ends on. Not a spinner that vanishes, and not the dashboard:
+// somebody who has just answered twenty questions should be shown what those
+// answers turned into, before being asked to find it themselves.
+//
+// Two pure functions do the work, so what the screen claims can be checked
+// against an intake and a programme rather than by signing up again.
+
+// What was chosen, in the athlete's own words. Only rows with a real answer:
+// an empty "Injuries —" line reads as a question that failed to save.
+function planReadySummary(intake, splitStyle) {
+  const rows = [];
+  const sport = intake?.["🥊 Sport / Focus"];
+  if (sport) rows.push({ label: "Training for", value: sport });
+  const goals = (intake?.goals || []).filter(Boolean);
+  if (goals.length) rows.push({ label: goals.length > 1 ? "Goals" : "Goal", value: goals.join(", ") });
+  const days = (intake?.trainingDays || []).filter(Boolean);
+  if (days.length) {
+    rows.push({ label: "Days a week", value: `${days.length} — ${days.map(d => d.slice(0, 3)).join(", ")}` });
+    const key = splitStyle || deriveSplit(days);
+    const style = SPLIT_STYLES.find(s => s.key === key);
+    // "How the week splits" wrapped onto two lines in the 104px label column
+    // at 320px, next to a value that was also wrapping. Measured.
+    if (style) rows.push({ label: "Week split", value: style.label });
+  }
+  const minutes = intake?.sessionMinutes;
+  if (minutes) rows.push({ label: "Session length", value: `About ${minutes} minutes` });
+  const kit = (intake?.equipment || []).filter(Boolean);
+  if (kit.length) {
+    // The full list is up to eleven items and would be the longest row on the
+    // screen for no benefit. Three and a count says the same thing.
+    rows.push({ label: "Equipment", value: kit.length <= 3 ? kit.join(", ") : `${kit.slice(0, 3).join(", ")} +${kit.length - 3} more` });
+  }
+  const hurt = (intake?.injuries || []).filter(a => a && a !== "None currently");
+  // Said out loud either way. "Working around: nothing" is worth reading when
+  // you have just spent a screen saying what hurts.
+  rows.push({ label: "Working around", value: hurt.length ? hurt.join(", ") : "Nothing you told us about" });
+  return rows;
+}
+
+// This week's sessions, from today on. Not the whole week: a programme
+// generated on a Thursday that opens with "Monday — Lower Body" reads as
+// three sessions already missed, on day one, before anybody has done
+// anything. What is left of the week is the honest version, and an empty
+// list is a real answer - it means the next session is next week.
+function planReadyWeek(days, todayName) {
+  const from = WEEKDAY_ORDER.indexOf(todayName);
+  if (from < 0) return [];
+  const rest = new Set(WEEKDAY_ORDER.slice(from));
+  return WEEKDAY_ORDER.slice(from).flatMap(wd =>
+    (days || []).filter(d => d && d.weekday === wd && rest.has(d.weekday)));
+}
+
+// Applied once, where the answers are written, so the stored intake,
+// buildMeFromOnboarding and buildAIPrompt all see the same value rather than
+// three places each deriving it slightly differently.
+//
+// An existing answer always wins. The coach's own training intake still asks
+// the question outright, and a signup resumed from a draft written before this
+// change already has one. Nothing with no training days gets a split invented
+// for it either - that is a half-finished signup, not a programming decision.
+function withDerivedSplit(data) {
+  if (!data || data.splitStyle) return data;
+  if (!Array.isArray(data.trainingDays) || data.trainingDays.length === 0) return data;
+  return { ...data, splitStyle: deriveSplit(data.trainingDays) };
+}
+
 // Read the athlete's choice, defaulting to full body. An account that predates
 // the question, or one that answered nothing, gets the default — which is the
 // whole point of the default being this one.
@@ -3205,11 +3679,28 @@ function parseRestSeconds(rest, fallback = 90) {
 
 // Consecutive days trained, counting back from `dateStr` inclusive. Derived
 // from the log history rather than incremented, so it can't drift.
-function computeStreak(logs, dateStr) {
-  const dates = new Set((logs || []).map(l => l.date));
-  dates.add(dateStr);
+// Consecutive days trained. Part sessions do not extend it.
+//
+// Under half the prescribed sets is still a day the athlete turned up for,
+// and it is still worth points - that is deliberate, because a score of zero
+// for an honest short session teaches people either to stay home or to tick
+// sets they did not do. A STREAK is a different promise. A number that a
+// two-set session keeps alive stops meaning anything, and the only value a
+// streak has is what it means.
+//
+// `todayCounts` is the session being saved right now, which is not in `logs`
+// yet. Passing it as false is how a part session finishes without extending
+// the run.
+function computeStreak(logs, dateStr, todayCounts = true) {
+  const dates = new Set((logs || []).filter(logCounts).map(l => l.date));
+  if (todayCounts) dates.add(dateStr);
   let streak = 0;
   const cursor = new Date(dateStr + "T00:00:00");
+  // A part session today has not extended the run, but it has not broken it
+  // either - yesterday still happened. Counting from today would find nothing
+  // and report zero, taking a whole streak away from someone for a session
+  // they actually turned up to, which is the opposite of the point.
+  if (!todayCounts) cursor.setDate(cursor.getDate() - 1);
   while (dates.has(toLocalISO(cursor))) {
     streak += 1;
     cursor.setDate(cursor.getDate() - 1);
@@ -3550,6 +4041,41 @@ async function decideSessionChange({ requestId, approve, slotId, note }, setStat
   return await loadBooking(setState);
 }
 
+// The coach putting an athlete into one of their own times.
+//
+// Most sessions in a real gym are arranged in person or over a text, and
+// without this the coach has to ask the client to go and tap it into an app.
+// Everyone forgets, and the schedule drifts away from the truth until it is
+// worth nothing - which also quietly breaks the session ledger, because a
+// session that was trained and never booked is never counted.
+//
+// Unlike an athlete booking themselves, this is allowed with no credits
+// left: the coach is the person who is owed, and refusing would just send
+// them back to doing it on paper. The booking still spends a session, so the
+// balance goes negative and the Packs screen shows it in red.
+async function bookAthleteIntoSlot(slotId, athleteId, setState) {
+  const { error } = await supabase.rpc("book_athlete_into_slot", {
+    p_slot_id: slotId, p_athlete_id: athleteId,
+  });
+  if (error) {
+    // Refresh regardless: "that session is full" means the screen was stale.
+    await loadBooking(setState);
+    return error.message || "Couldn't book them in.";
+  }
+  return await loadBooking(setState);
+}
+
+// Did they turn up. Reversible, because this is one tap next to somebody's
+// name and the cost of a mistap is a session they paid for plus a line on
+// their record saying they did not show.
+async function markNoShow(bookingId, noShow, setState) {
+  const { error } = await supabase.rpc("mark_no_show", {
+    p_booking_id: bookingId, p_no_show: noShow,
+  });
+  if (error) return error.message || "Couldn't record that.";
+  return await loadBooking(setState);
+}
+
 // The coach moving a session with no request involved.
 async function moveBooking(bookingId, slotId, setState) {
   const { error } = await supabase.rpc("move_booking", { p_booking_id: bookingId, p_slot_id: slotId });
@@ -3815,6 +4341,89 @@ function groupSlotsByDay(slots, { fromMs = Date.now() } = {}) {
       dateIso,
       slots: list.sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt)),
     }));
+}
+
+// Sessions that have happened and have nobody marked present or absent.
+//
+// groupSlotsByDay deliberately shows the future only, which is right for
+// "what is coming up" and is also why no-show could never be recorded: a
+// session the coach needed to mark had already dropped off the only screen
+// that listed it. This is the other half of the schedule.
+//
+// A booking stays on this list only while it is still `booked`. Marking it
+// either way - attended or no_show - takes it off, so the list empties as
+// the coach works down it instead of being a permanent wall of history.
+//
+// `withinDays` because a coach coming back from two weeks away should be
+// shown last week, not everything since they signed up.
+function sessionsToMark(booking, { nowMs = Date.now(), withinDays = 14 } = {}) {
+  const floor = nowMs - withinDays * 86400000;
+  const rows = [];
+  for (const slot of booking?.slots || []) {
+    if (slot.cancelledAt) continue;
+    const t = new Date(slot.startsAt).getTime();
+    if (!isFinite(t) || t > nowMs || t < floor) continue;
+    const waiting = (booking.bookings || []).filter(b => b.slotId === slot.id && b.status === "booked");
+    if (waiting.length) rows.push({ slot, bookings: waiting });
+  }
+  // Most recent first: the session that just finished is the one the coach
+  // is thinking about.
+  return rows.sort((a, b) => new Date(b.slot.startsAt) - new Date(a.slot.startsAt));
+}
+
+// A month of the schedule, as six rows of seven days.
+//
+// Always six rows, always seven days, whatever the month - a grid that
+// changes height as you page through it makes everything below it jump, and
+// the days either side are shown greyed rather than left blank so the first
+// and last weeks are not ragged.
+//
+// Monday first, like WEEKDAY_ORDER and like every other week in this app.
+function calendarMonth({ slots = [], year, month, todayIso = todayISO() }) {
+  const byDate = new Map();
+  for (const slot of slots) {
+    if (slot.cancelledAt) continue;
+    const d = new Date(slot.startsAt);
+    // Deliberate, not defensive habit. Without it toLocalISO returns the
+    // string "NaN-NaN-NaN" and the slot is filed under a key no cell ever
+    // looks up - so it disappears anyway, by accident, and would start
+    // appearing the day that function is changed to do something else with
+    // an invalid date. Dropped on purpose here instead.
+    if (isNaN(d)) continue;
+    const iso = toLocalISO(d);
+    if (!byDate.has(iso)) byDate.set(iso, []);
+    byDate.get(iso).push(slot);
+  }
+  for (const list of byDate.values()) {
+    list.sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+  }
+
+  const first = new Date(year, month, 1);
+  // getDay() is Sunday-first; this app's weeks start on Monday.
+  const lead = (first.getDay() + 6) % 7;
+  const start = new Date(year, month, 1 - lead);
+
+  const weeks = [];
+  for (let w = 0; w < 6; w++) {
+    const row = [];
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + d);
+      const iso = toLocalISO(day);
+      row.push({
+        dateIso: iso,
+        day: day.getDate(),
+        // Month alone, with no year check: six rows starting at most six
+        // days before the 1st span only month-1, month and month+1, and no
+        // two of those share a month number. A year comparison here would
+        // be a branch no input can reach.
+        inMonth: day.getMonth() === month,
+        isToday: iso === todayIso,
+        slots: byDate.get(iso) || [],
+      });
+    }
+    weeks.push(row);
+  }
+  return weeks;
 }
 
 function formatSlotTime(iso) {
@@ -4149,6 +4758,10 @@ function perfectWeeks(logs, sessionsPerWeek) {
   if (!Number.isFinite(per) || per <= 0) return [];
   const byWeek = new Map();
   for (const l of logs || []) {
+    // "Every planned workout in the week is done AND counted." A week carried
+    // by a two-set Thursday is not a perfect week, and the bonus is the one
+    // part of the score that is meant to be hard to get.
+    if (!logCounts(l)) continue;
     const start = l?.date ? weekStartFor(l.date) : null;
     if (!start) continue;
     byWeek.set(start, (byWeek.get(start) || 0) + 1);
@@ -4182,6 +4795,486 @@ function pointsTotals(logs, sessionsPerWeek, todayIso) {
     year: tally(inYear),
     all: tally(() => true),
   };
+}
+
+// ---------- levels, perfect-week streaks and badges ----------
+//
+// All of it is DERIVED from the logs, every time, and none of it is stored.
+//
+// That is a deliberate choice and the expensive-looking one. A stored level
+// or badge list is a second copy of the truth, and the moment the two
+// disagree the athlete is the one who finds out - a badge that vanishes, a
+// level that goes backwards after a coach edits a programme. Recomputing
+// costs one pass over a list that is, for a real athlete, a few hundred rows.
+//
+// The one thing that IS stored is `workout_logs.counts`, because that is not
+// derivable later: it is a judgement made against the prescription as it
+// stood on the day, and the prescription can change underneath a past
+// session.
+
+const WORKOUTS_PER_LEVEL = 5;
+
+// Level 1 from the first day. Starting at zero means the number an athlete
+// sees before their first session is the same one they see after it, which
+// makes the first session feel like it did nothing.
+function levelFor(logs) {
+  const counted = (logs || []).filter(logCounts).length;
+  const into = counted % WORKOUTS_PER_LEVEL;
+  return {
+    level: Math.floor(counted / WORKOUTS_PER_LEVEL) + 1,
+    counted,
+    into,
+    toNext: WORKOUTS_PER_LEVEL - into,
+    // 0 to 1 across the current level, for the bar.
+    progress: into / WORKOUTS_PER_LEVEL,
+  };
+}
+
+// Did a level boundary fall between these two counts? Used on the finish
+// screen, where the question is "did THIS session level them up", and the
+// answer has to be worked out before and after rather than from a stored
+// number that may already have been written.
+function leveledUp(countedBefore, countedAfter) {
+  return Math.floor(countedAfter / WORKOUTS_PER_LEVEL) > Math.floor(countedBefore / WORKOUTS_PER_LEVEL);
+}
+
+// Perfect weeks in a row, counting back from the last week that has finished.
+//
+// The week in progress is left out on purpose. A Tuesday cannot break a
+// streak: there are still four days in which to do the rest of the week, and
+// a number that drops to zero every Monday morning and climbs back by Sunday
+// is not a streak, it is an anxiety generator.
+//
+// One shield a month covers one week that fell short. The shield is not a
+// currency the athlete spends - it is applied automatically to the first week
+// that needs it in any calendar month, and a shielded week bridges the run
+// without adding to it, because it was not a perfect week and saying it was
+// would be a lie about their training.
+function perfectWeekStreak(logs, sessionsPerWeek, todayIso) {
+  const per = Number(sessionsPerWeek);
+  const thisWeek = weekStartFor(todayIso);
+  if (!Number.isFinite(per) || per <= 0 || !thisWeek) return { weeks: 0, shieldsUsed: [] };
+
+  const perfect = new Set(perfectWeeks(logs, per));
+  // How far back there is any history at all. Without a floor this walks
+  // backwards for ever through weeks that never existed.
+  const first = (logs || []).map(l => l?.date).filter(Boolean).sort()[0];
+  const floor = first ? weekStartFor(first) : null;
+
+  let weeks = 0;
+  const shieldsUsed = [];
+  const monthsShielded = new Set();
+  let cursor = shiftDays(thisWeek, -7);
+
+  // `floor` in the condition rather than an early return above it, so there
+  // is one guard instead of two saying the same thing. With no history there
+  // is no floor and the loop never runs, which is the right answer.
+  while (floor && cursor && cursor >= floor) {
+    if (perfect.has(cursor)) {
+      weeks += 1;
+    } else {
+      const month = cursor.slice(0, 7);
+      if (monthsShielded.has(month)) break;
+      monthsShielded.add(month);
+      shieldsUsed.push(cursor);
+    }
+    cursor = shiftDays(cursor, -7);
+  }
+  return { weeks, shieldsUsed };
+}
+
+// Has this athlete ever beaten their own heaviest set on a movement?
+//
+// Worked out from the logs rather than read back from workout_sets.is_pr,
+// which is the same answer from a table this screen does not otherwise load.
+// Oldest session first, carrying the best forward: a best can only be beaten
+// by something that came after it.
+function hasNewBest(logs) {
+  const ordered = [...(logs || [])].sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const bests = new Map();
+  for (const log of ordered) {
+    for (const ex of log?.exercises || []) {
+      const key = String(ex?.name || "").toLowerCase();
+      if (!key) continue;
+      const others = (ex.sets || []).filter(o => typeof o.weight === "number")
+        .map(o => convertWeight(o.weight, o.unit || "lb", "lb"));
+      for (const entry of ex.sets || []) {
+        if (!wasLifted(entry) || typeof entry.weight !== "number") continue;
+        const lb = convertWeight(entry.weight, entry.unit || "lb", "lb");
+        if (lb == null) continue;
+        const rest = others.filter(w => w !== lb);
+        const typo = looksLikeTypo(lb, rest);
+        const best = bests.get(key) || null;
+        if (!typo && best && beatsBest(lb, typeof entry.reps === "number" ? entry.reps : null, best)) return true;
+        if (!typo && (!best || lb > best.weightLb)) {
+          bests.set(key, { weightLb: lb, reps: typeof entry.reps === "number" ? entry.reps : null });
+        } else if (!typo && best && lb === best.weightLb && typeof entry.reps === "number"
+                   && (best.reps == null || entry.reps > best.reps)) {
+          bests.set(key, { weightLb: lb, reps: entry.reps });
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// A session done later in the week than the day it was scheduled for.
+//
+// The spec calls this a missed workout made up on a later day. The app has no
+// concept of "missed" yet - that arrives with the Plan rebuild - so this is
+// the honest version of the same thing: Tuesday's session, trained on
+// Thursday. Earlier in the week does not count; that is being ahead, not
+// catching up.
+function hasCaughtUp(logs, program) {
+  const byName = new Map((program?.days || []).map(d => [d.name, d.weekday]));
+  for (const log of logs || []) {
+    if (!log?.date || !log.programDay) continue;
+    const planned = byName.get(log.programDay);
+    if (!planned) continue;
+    const plannedIdx = WEEKDAY_ORDER.indexOf(planned);
+    const doneIdx = (new Date(log.date + "T00:00:00").getDay() + 6) % 7;
+    if (plannedIdx >= 0 && doneIdx > plannedIdx && logCounts(log)) return true;
+  }
+  return false;
+}
+
+// Thirteen, as the design asks for. Six for things worth doing once and
+// seven for sticking at it, because a wall made only of milestones says
+// nothing until the tenth session and a wall made only of one-offs stops
+// saying anything after the first month.
+const BADGES = [
+  { key: "first",    name: "First Workout", hint: "Log your first session" },
+  { key: "week1",    name: "Week One",      hint: "Train in the first week of your programme" },
+  { key: "perfect",  name: "Perfect Week",  hint: "Do every session a week schedules" },
+  { key: "caughtup", name: "Caught Up",     hint: "Train a session later in the week than it was planned for" },
+  { key: "everyset", name: "Every Set",     hint: "Finish a session with every prescribed set ticked" },
+  { key: "newbest",  name: "New Best",      hint: "Beat your own heaviest set on a movement" },
+  { key: "w10",  name: "10 Sessions",  hint: "Ten sessions that counted",            count: 10 },
+  { key: "w25",  name: "25 Sessions",  hint: "Twenty-five sessions that counted",    count: 25 },
+  { key: "w50",  name: "50 Sessions",  hint: "Fifty sessions that counted",          count: 50 },
+  { key: "w100", name: "100 Sessions", hint: "A hundred sessions that counted",      count: 100 },
+  { key: "w150", name: "150 Sessions", hint: "A hundred and fifty that counted",     count: 150 },
+  { key: "w200", name: "200 Sessions", hint: "Two hundred sessions that counted",    count: 200 },
+  { key: "w250", name: "250 Sessions", hint: "Two hundred and fifty that counted",   count: 250 },
+];
+
+// Which of the thirteen this athlete has. A Set of keys, in BADGES order
+// wherever it is rendered, so the wall does not reshuffle itself as badges
+// arrive.
+function badgesEarned(logs, { sessionsPerWeek, program, todayIso } = {}) {
+  const list = (logs || []).filter(Boolean);
+  const counted = list.filter(logCounts);
+  const earned = new Set();
+  if (counted.length) earned.add("first");
+
+  // Milestones read from the counted sessions only. A wall that counts part
+  // sessions says "100 sessions" to someone who has done sixty.
+  for (const badge of BADGES) {
+    if (badge.count && counted.length >= badge.count) earned.add(badge.key);
+  }
+
+  if (program && counted.some(l => programWeekFor(program, l.date) === 1)) earned.add("week1");
+  if (perfectWeeks(list, sessionsPerWeek).length) earned.add("perfect");
+  if (hasCaughtUp(list, program)) earned.add("caughtup");
+  // Every prescribed set ticked. Guarded on prescribed > 0, or a session with
+  // nothing prescribed hands it out for free.
+  if (counted.some(l => Number(l.setsPrescribed) > 0 && Number(l.setsCompleted) >= Number(l.setsPrescribed))) {
+    earned.add("everyset");
+  }
+  if (hasNewBest(list)) earned.add("newbest");
+  return earned;
+}
+
+// What this session just earned that the athlete did not have before it.
+// Computed by running the whole thing twice, with and without the new log,
+// rather than by a rule per badge - one implementation, so a badge cannot be
+// awarded on the wall and missed on the rewards screen.
+function newlyEarnedBadges(logsBefore, logsAfter, opts) {
+  const before = badgesEarned(logsBefore, opts);
+  const after = badgesEarned(logsAfter, opts);
+  return BADGES.filter(b => after.has(b.key) && !before.has(b.key));
+}
+
+// ---------- what became of each day in a week ----------
+//
+// One function, read by the Plan screen and by the home screen's missed
+// card, so the two cannot disagree about whether Tuesday was missed. Pure,
+// and given everything it needs rather than reaching for it, because the
+// interesting cases - a session moved, then moved back, on a week that
+// straddles the programme's start - are cases you want to be able to write
+// down rather than reproduce by hand in a gym.
+//
+// Returns one row per DATE, Monday to Sunday.
+
+const PLAN_STATUS = {
+  rest: "Rest",
+  done: "Done",
+  missed: "Missed",
+  paused: "Paused",
+  skipped: "Skipped",
+  today: "Today",
+  upcoming: "Upcoming",
+  extra: "Extra",
+};
+
+// The move that applies to one session on one date, or null. At most one, by
+// the unique key on the table.
+function moveFor(moves, programDay, dateIso) {
+  return (moves || []).find(m => m?.programDay === programDay && m?.fromDate === dateIso) || null;
+}
+
+function logFor(logs, programDay, dateIso) {
+  return (logs || []).find(l => l?.date === dateIso && l?.programDay === programDay) || null;
+}
+
+function planForWeek({ program, weekStart, logs = [], moves = [], pausedDayKey = null, today }) {
+  if (!weekStart) return [];
+  const days = program?.days || [];
+  // Days before the programme began are never missed. A plan that starts on
+  // the day someone signs up has no history behind it, and marking the
+  // Monday before as missed is the app telling a new athlete they are
+  // already behind.
+  const start = program?.startedOn || program?.started_on || null;
+
+  return WEEKDAY_ORDER.map((weekday, i) => {
+    const date = shiftDays(weekStart, i);
+    const before = !!start && date < start;
+    const sessions = [];
+
+    // Sessions that belong to this date by the programme, minus any that
+    // have been moved off it.
+    for (const day of days) {
+      if (!isDayScheduledOn(day, date)) continue;
+      const move = moveFor(moves, day.name, date);
+      if (move) {
+        sessions.push({
+          day,
+          status: move.kind === "skip" || !move.toDate ? "skipped" : "moved-away",
+          movedTo: move.toDate || null,
+          moveKind: move.kind,
+          log: null,
+        });
+        continue;
+      }
+      sessions.push({ day, status: null, movedTo: null, moveKind: null, log: null });
+    }
+
+    // Sessions moved ONTO this date from somewhere else.
+    for (const move of moves || []) {
+      // A skip has no destination, so it never matches a date and never
+      // arrives anywhere. One condition rather than two saying it.
+      if (move?.toDate !== date) continue;
+      const day = days.find(d => d.name === move.programDay);
+      if (!day) continue;
+      sessions.push({
+        day, status: null, movedTo: null, moveKind: move.kind,
+        movedFrom: move.fromDate, log: null,
+      });
+    }
+
+    // Resolve each one. Done beats everything: a session that was logged
+    // happened, whatever the plan said about it.
+    for (const session of sessions) {
+      const log = logFor(logs, session.day.name, date);
+      if (log) { session.status = "done"; session.log = log; continue; }
+      if (session.status) continue;                 // already skipped or moved away
+      if (pausedDayKey && sessionIdentity(program, session.day) === pausedDayKey) {
+        session.status = "paused"; continue;
+      }
+      if (date === today) { session.status = "today"; continue; }
+      if (date > today) { session.status = "upcoming"; continue; }
+      session.status = before ? "upcoming" : "missed";
+    }
+
+    // Anything logged on this date that no scheduled session accounts for:
+    // a session trained on a day it was not planned for, or an extra one the
+    // athlete added. Shown rather than swallowed - work that happened and
+    // appears nowhere is how an athlete stops trusting the screen.
+    const named = new Set(sessions.map(x => x.day.name));
+    for (const log of logs || []) {
+      if (log?.date !== date || named.has(log.programDay)) continue;
+      const day = days.find(d => d.name === log.programDay) || { name: log.programDay || "Session" };
+      sessions.push({ day, status: "extra", movedTo: null, moveKind: null, log });
+    }
+
+    return {
+      date,
+      weekday,
+      isToday: date === today,
+      isPast: date < today,
+      beforeStart: before,
+      sessions,
+      status: sessions.length ? null : "rest",
+    };
+  });
+}
+
+// This week at a glance: how many sessions were asked for and how many are
+// done. A session that was moved away counts where it landed, not where it
+// started, or a week with one move reads as both short and over-full.
+function weekProgress(rows) {
+  let planned = 0;
+  let done = 0;
+  for (const row of rows || []) {
+    for (const session of row.sessions || []) {
+      if (session.status === "skipped" || session.status === "moved-away") continue;
+      if (session.status === "extra") { done += 1; continue; }
+      planned += 1;
+      if (session.status === "done") done += 1;
+    }
+  }
+  return { planned, done, ratio: planned > 0 ? Math.min(1, done / planned) : 0 };
+}
+
+// Sessions that were due and did not happen, newest first. The home screen
+// asks for the fortnight behind today, because a card offering to catch up
+// on something from five weeks ago is noise rather than help.
+function missedSessions({ program, logs, moves, pausedDayKey, today, weeksBack = 2 }) {
+  const out = [];
+  let weekStart = weekStartFor(shiftDays(today, -7 * weeksBack));
+  for (let w = 0; w <= weeksBack; w++) {
+    for (const row of planForWeek({ program, weekStart, logs, moves, pausedDayKey, today })) {
+      for (const session of row.sessions) {
+        if (session.status === "missed") out.push({ date: row.date, day: session.day });
+      }
+    }
+    weekStart = shiftDays(weekStart, 7);
+  }
+  return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+// A session pulled forward to today, which is therefore reversible.
+//
+// The difference between a pull and a move is what they are decisions
+// ABOUT. "Do it today instead" is a decision about today; stopping part-way
+// through unmakes it, and the session goes back to its own day still
+// paused. "Move" is a decision about the week, and stopping does not
+// unmake it - it stays where it was put.
+function pullToUndo(moves, programDay, dateIso) {
+  return (moves || []).find(
+    m => m?.kind === "pull" && m?.programDay === programDay && m?.toDate === dateIso) || null;
+}
+
+// One decision per session per scheduled date. Upserted on that key, so
+// changing your mind replaces the row rather than stacking a second one
+// behind it and leaving the screen to pick.
+//
+// The screen is updated first and the write is not awaited for success. A
+// move is a small, reversible thing and the athlete is standing in a gym;
+// a spinner on "move this to Thursday" buys nothing, and a failure leaves
+// the week as it was on the next load rather than losing anything.
+// "I did it on Monday, log it."
+//
+// One tap, and deliberately thin: it records that the session happened, on
+// the day it happened, and nothing else. No sets and no weights, so it does
+// not count toward the streak, the level or the points - which is right. An
+// athlete who cannot remember what they lifted has not earned the same
+// credit as one who wrote it down, and inventing numbers to make the maths
+// tidy would poison every best and every trend downstream of it.
+//
+// What it does buy is the truth about the calendar: the session stops being
+// missed, the coach stops seeing a gap, and nobody is nagged about a workout
+// they actually did.
+async function logSessionAsDone({ setState, userId, day, program, date, week }) {
+  if (!day?.name || !date) return;
+  const prescribed = prescribedSetCount(day, program, week);
+  const id = clientId();
+  const row = {
+    id, user_id: userId, date, program_day: day.name,
+    duration: null, timed_seconds: null, mood: null,
+    sets_completed: 0, sets_prescribed: prescribed,
+    // Under half of anything is under half. Stored rather than left null so
+    // it reads the same way everywhere, today and in a year.
+    counts: false,
+    exercises: [], notes: null,
+  };
+  const local = {
+    id, date, programDay: day.name, duration: null, timedSeconds: null, mood: null,
+    setsCompleted: 0, setsPrescribed: prescribed, counts: false, notes: null, exercises: [],
+  };
+  setState(s => ({ ...s, workoutLogs: [local, ...s.workoutLogs] }));
+  if (!userId) return;
+  try {
+    const { error } = await supabase.from("workout_logs").insert(row);
+    // Queued on a bad connection like any other session. A tick that
+    // vanishes on the next reload is worse than no tick at all: the athlete
+    // has already stopped expecting to be asked about it.
+    if (error && isTransientError(error)) {
+      queuePendingLog({ row, meta: { dayName: day.name, date, setsCompleted: 0, setsPrescribed: prescribed } });
+    }
+  } catch (err) {
+    if (isTransientError(err)) {
+      queuePendingLog({ row, meta: { dayName: day.name, date, setsCompleted: 0, setsPrescribed: prescribed } });
+    }
+  }
+}
+
+async function saveSessionMove(setState, userId, row) {
+  const next = {
+    programDay: row.programDay,
+    fromDate: row.fromDate,
+    toDate: row.toDate || null,
+    kind: row.kind || "move",
+  };
+  setState(s => ({
+    ...s,
+    sessionMoves: [
+      ...(s.sessionMoves || []).filter(
+        m => !(m.programDay === next.programDay && m.fromDate === next.fromDate)),
+      next,
+    ],
+  }));
+  if (!userId) return;
+  try {
+    await supabase.from("session_moves").upsert(
+      { user_id: userId, program_day: next.programDay, from_date: next.fromDate,
+        to_date: next.toDate, kind: next.kind },
+      { onConflict: "user_id,program_day,from_date" });
+  } catch { /* the week reads as it did before on the next load */ }
+}
+
+async function clearSessionMove(setState, userId, programDay, fromDate) {
+  setState(s => ({
+    ...s,
+    sessionMoves: (s.sessionMoves || []).filter(
+      m => !(m.programDay === programDay && m.fromDate === fromDate)),
+  }));
+  if (!userId) return;
+  try {
+    await supabase.from("session_moves").delete()
+      .eq("user_id", userId).eq("program_day", programDay).eq("from_date", fromDate);
+  } catch { /* it reappears on the next load, which is the safe direction */ }
+}
+
+// How many sets a session asks for in a given week.
+//
+// The same arithmetic the save path does, pulled out so that a session which
+// was ticked off rather than trained still records what it WOULD have been
+// measured against. Without it the row says "0 of 0", which reads as a
+// session that asked for nothing.
+function prescribedSetCount(day, program, week) {
+  const plan = buildProgramPlan(program?.weeks);
+  const weekly = programHasWeeklyPlan(program);
+  let total = 0;
+  for (const raw of day?.exercises || []) {
+    const item = prescribeForWeek(raw, plan, week, weekly);
+    if (!item || !isTrackedExercise(item)) continue;
+    total += Number(item.sets) || 0;
+  }
+  return total;
+}
+
+// A session that was ticked off rather than trained: logged on the right
+// day, with nothing in it.
+//
+// Worth telling apart on screen. "Done" next to no numbers at all reads as a
+// bug, and a coach scanning the week needs to know the difference between
+// "they trained and wrote it down" and "they say they trained".
+function isTickedOffLog(log) {
+  if (!log) return false;
+  return Number(log.setsCompleted) === 0
+    && !(log.exercises || []).length
+    && Number(log.setsPrescribed) > 0;
 }
 
 function complianceBaseline(logs) {
@@ -4674,6 +5767,30 @@ function Avatar({ initials, size = 40, accent = C.orange, photoUrl }) {
         color: "#FFFFFF", fontFamily: DISPLAY, fontWeight: 700, fontSize: size * 0.36,
       }}>
       {initials}
+    </div>
+  );
+}
+
+// One component for every place a coach's branding appears: the signup
+// card, the My Info preview, the sidebar wordmark, the phone header strip.
+// Falls back to a coloured square of initials when there's no logo yet, so
+// it never renders a blank box while a coach is mid-setup.
+function CoachBrandMark({ name, logoUrl, color, initials, size = 36 }) {
+  const accent = color || C.orange;
+  return (
+    <div className="flex items-center gap-2.5 min-w-0">
+      <div className="rounded-lg overflow-hidden shrink-0 flex items-center justify-center"
+        style={{ width: size, height: size, background: logoUrl ? "transparent" : accent }}>
+        {logoUrl
+          ? <img src={logoUrl} alt="" className="w-full h-full object-cover" />
+          : <span style={{ color: "#fff", fontFamily: DISPLAY, fontWeight: 700, fontSize: size * 0.4 }}>{initials || "?"}</span>}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate" style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: size * 0.42, letterSpacing: "-.01em", color: C.text, lineHeight: 1.15 }}>{name}</div>
+        <div style={{ fontSize: Math.max(10, size * 0.24), color: C.sub }}>
+          by <span style={{ color: accent, fontWeight: 700 }}>Trained.Best</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5963,6 +7080,189 @@ function accountStepValid(data) {
 // profile row (they confirmed their email elsewhere, so their answers are
 // gone). In that mode the account already exists, so the "Create Account" step
 // is dropped and their email is carried through from the session.
+// Declared at MODULE level, deliberately and with a note, because they were
+// not. Everything below sat INSIDE the Onboarding component, written at
+// column 0 so it read as top level to every human who looked at it -
+// including the person who put it there. stepComplete lives in the same
+// scope and resolved fine; OnboardingStepBodyRest is a separate function
+// and could not see any of it, so the app threw
+// "Can't find variable: SIGNUP_V2_SECTIONS" on every signup screen after
+// the role picker.
+//
+// Valid JavaScript - a free variable is only an error when it runs - so
+// esbuild passed it, and _verify/extract.mjs lifts these consts textually
+// into a fresh module where scope cannot matter, so 1,376 tests passed
+// against code that could not run. _verify/scope.mjs now reads the BUILT
+// bundle for exactly this.
+// ---------- signup, the short version ----------
+//
+// Fourteen screens down to six. Not by asking less - by stopping asking one
+// question per screen.
+//
+// THE CONTRACT. The new screens are a different arrangement of inputs over
+// an IDENTICAL data model. Everything downstream of signup - the profile
+// row, buildMeFromOnboarding, and above all buildAIPrompt - reads `data` by
+// key, and none of it knows or cares which screen a key was typed on. So the
+// rewrite is safe exactly as long as every key below still gets set, and
+// dangerous the moment one quietly stops being asked for.
+//
+// That is not hypothetical. Drop "🥊 Sport / Focus" and every generated
+// programme silently becomes General Fitness - no error, no warning, just
+// worse training for everyone including the fighters. SIGNUP_KEYS is the
+// list, and signup.test.mjs checks it against what buildAIPrompt and the
+// profile write actually read, so a key added to the prompt and forgotten
+// here fails the suite rather than the athlete.
+const SIGNUP_KEYS = {
+  // Identity and login. Collected on the account screen, which has not
+  // changed.
+  account: ["name", "email", "password"],
+  // One screen now, was four.
+  about: ["sex", "birthday", "heightCm", "weightLb", "weightUnit", "heightUnit"],
+  // One screen, was three: goals, how deep, and how long they have trained.
+  // Sport lives here too. It has no screen of its own in the design and it
+  // feeds the prompt, so it goes on the screen it is closest to rather than
+  // being dropped - Isaiah's call, 15 Oct.
+  goal: ["goals", "goalNotes", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "timeframe", "fightDate"],
+  // One screen, was three. Session style is gone as a question: the split is
+  // worked out from how many days a week they train, which is what it was
+  // being inferred from anyway.
+  week: ["trainingDays", "sessionMinutes", "equipment"],
+  injuries: ["injuries", "injuryNotes"],
+  // Coached athletes only, and asked FIRST - the code decides whose roster
+  // they land on, and showing the coach's card before anything else is what
+  // makes the rest of the signup feel like joining something.
+  coached: ["inviteCode", "inviteCoachId"],
+  // The coach path. Background, specialties and style were three screens and
+  // are now one, and the business name goes in beside them because it is what
+  // an athlete sees on the coach card the moment they type the invite code.
+  coach: ["🏅 Background", "⚡ Specialties", "🎯 Coaching Style", "businessName"],
+};
+
+// The screens, in order, per path.
+//
+// Kept beside the old lists rather than replacing them, and chosen by the
+// flag below, so the live signup keeps working while this is built and the
+// switch is one line to put back.
+const SIGNUP_V2_STEPS = {
+  athlete: ["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
+  // The code first, then the account. The design is explicit about this and
+  // it is the right way round: someone joining a coach wants to see whose
+  // app this is before they type a password into it.
+  // Same questions as the solo path, with the code in front. An earlier draft
+  // of this list left "🎯 Your Goal" out, which asked a coached athlete for
+  // nothing about their goals, their sport, their experience or their
+  // timeframe - and produced a General Fitness programme for a fighter with
+  // no error anywhere. signup-v2.test.mjs now fails on a missing key rather
+  // than letting the list and the contract drift apart.
+  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
+  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"],
+};
+
+// How the combined screens are built.
+//
+// Each one is the OLD step bodies stacked under section headings, not a
+// rewrite of them. That is the whole trick, and it is deliberate: the height
+// dial, the weight slider, the per-area injury cards and the competition-date
+// maths are all behaviour that took a while to get right, and retyping any of
+// it to fit a new layout is how you lose it. Composing them instead means the
+// combined screens set exactly the keys the single screens set - which is the
+// contract above, kept by construction rather than by being careful.
+//
+// `when` hides a section that does not apply, in place, rather than making it
+// a screen that is skipped.
+const SIGNUP_V2_SECTIONS = {
+  "👤 About You": [
+    { step: "🧬 Sex", label: "Sex" },
+    { step: "🎂 Birthday", label: "Birthday" },
+    { step: "📏 Height", label: "Height" },
+    { step: "⚖️ Weight", label: "Weight" },
+  ],
+  "🎯 Your Goal": [
+    { step: "🎯 Goals", label: "What you want" },
+    { step: "🥊 Sport / Focus", label: "Sport or focus" },
+    // Was a screen of its own that was skipped for everyone but fighters.
+    // Inline and conditional says the same thing without the empty step.
+    { step: "🥋 Sport Details", label: "Your fighting", when: d => d["🥊 Sport / Focus"] === "MMA" },
+    { step: "💪 Training Experience", label: "How long you have trained" },
+    { step: "🔍 Goal Depth", label: "What is in the way, and by when" },
+  ],
+  "📅 Your Week": [
+    // Session style is not here, and not anywhere. See deriveSplit.
+    { step: "📅 Training Schedule", label: "Your days" },
+    { step: "🏋️ Equipment", label: "What you can train with" },
+  ],
+  "🏅 Your Coaching Business": [
+    { step: "🏅 Background", label: "How long you have coached" },
+    { step: "⚡ Specialties", label: "What you specialise in" },
+    { step: "🎯 Coaching Style", label: "How you coach" },
+    { step: "💼 Business Name", label: "Your business name" },
+  ],
+};
+
+// On. The v1 lists below are still here and still correct, so the way back
+// is this one line rather than a revert. They come out once the short signup
+// has been through a real account on the preview - not before, because
+// signup is the one path where a bug costs a real person's first impression
+// and there is no way to ask them to try again.
+const SIGNUP_V2 = true;
+
+// Can this screen be left?
+//
+// Lifted out of the Onboarding component so it can be called with a role, a
+// step name and an object, instead of only by driving the real UI. A combined
+// screen is complete when every section on it is - including, exactly, the
+// sections that are actually showing, so a non-fighter is never held on
+// "🎯 Your Goal" by a question they were never asked.
+function stepComplete(stepName, data, role) {
+  const sections = SIGNUP_V2_SECTIONS[stepName];
+  if (sections) {
+    return sections
+      .filter(s => !s.when || s.when(data))
+      .every(s => stepComplete(s.step, data, role));
+  }
+  if (role === "coach") {
+    switch (stepName) {
+      case "👤 Your Name": return !!(data.name || "").trim();
+      case "🏅 Background": return !!data["🏅 Background"];
+      case "⚡ Specialties": return true;
+      case "🎯 Coaching Style": return true;
+      // Optional by design. A coach with no business name is just a coach,
+      // and the athlete's card falls back to their own name.
+      case "💼 Business Name": return true;
+      case "📩 Invite Athletes": return true; // optional by design
+      case "📩 Invite Your Athletes": return true; // nothing to fill in
+      case "📸 Profile Photo": return true; // optional by design
+      case "🔐 Create Account": return accountStepValid(data);
+      default: return true;
+    }
+  }
+  switch (stepName) {
+    case "👤 Your Name": return !!(data.name || "").trim();
+    case "💪 Training Experience": return !!data.experience;
+    // Requires a code that actually resolves to a real coach, not just six
+    // characters — "AAAAAA" used to pass, and the athlete finished the whole
+    // signup believing they'd joined a roster they were never linked to.
+    case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
+    case "🧬 Sex": return !!data.sex;
+    case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+    case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
+    case "🎯 Goals": return (data.goals || []).length > 0;
+    case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
+    // An area picked with no side is a half-answered question, so Continue
+    // waits. Everything else on this step stays skippable.
+    case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
+    case "🎂 Birthday": return isUsableBirthday(data.birthday);
+    case "📏 Height": return !!data.heightCm;
+    case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
+    case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
+    case "🧩 Session Style": return true; // defaults to full body
+    case "🏋️ Equipment": return (data.equipment || []).length > 0;
+    case "📸 Profile Photo": return true; // optional by design
+    case "🔐 Create Account": return accountStepValid(data);
+    default: return true;
+  }
+}
+
 function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   // useWide(), not useIsWide(). The context is provided inside the signed-in
   // shell, and signup renders BEFORE that - so the context reader returns its
@@ -6008,7 +7308,14 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
 // it has brackets in it would be a lie about how much we care.
 
 const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit", "heightUnit"];
-  const COACH_ONLY_KEYS = ["🏅 Background", "📩 Invite Athletes"];
+
+  // Read off the contract rather than written out by hand. The hand-written
+  // list was ["🏅 Background", "📩 Invite Athletes"], which missed
+  // "⚡ Specialties" and "🎯 Coaching Style" - so a coach who changed their
+  // mind and signed up as an athlete carried their coaching answers into
+  // their athlete intake, where buildAIPrompt would never read them and
+  // nothing would ever clear them.
+  const COACH_ONLY_KEYS = [...SIGNUP_KEYS.coach, "📩 Invite Athletes"];
 
   const chooseRole = (next) => {
     setData(d => {
@@ -6059,7 +7366,22 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // The code decides whose roster they land on, so it is asked next to the
   // account rather than buried after thirteen training questions.
   const coachedAthleteSteps = ["🔐 Create Account", "🔑 Coach Invite Code", ...athleteSteps.slice(1)];
-  const allSteps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
+  const v1Steps = role === "coach" ? coachSteps : role === "athlete_coached" ? coachedAthleteSteps : athleteSteps;
+  // The short signup, or the long one. Both lists are kept so the switch back
+  // is this one flag rather than a revert, for as long as that is worth it.
+  // The `?? SIGNUP_V2_STEPS.athlete` is load bearing, and its absence
+  // crashed the app on the very first screen anybody sees.
+  //
+  // `role` is null while the role picker is up, and this line runs 100+
+  // lines ABOVE the `if (!role)` early return - so the lookup happened with
+  // a null key, came back undefined, and `steps.length` on the next line
+  // threw before the picker could render. The v1 expression it replaced
+  // ended in a plain `: athleteSteps`, so it always produced an array
+  // whatever `role` was, and nothing ever noticed the difference.
+  //
+  // Which list is irrelevant here: the value is thrown away on the render
+  // where role is null. It only has to be an array.
+  const allSteps = (SIGNUP_V2 ? SIGNUP_V2_STEPS[role] : v1Steps) ?? SIGNUP_V2_STEPS.athlete;
   // The account already exists in resume mode — asking for an email and
   // password again would create a second one.
   const steps = existingUser
@@ -6082,47 +7404,9 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     setStep(Math.max(0, Math.min(steps.length - 1, next)));
   };
 
-  // returns true if the current step has the information it needs to proceed
-  const isStepComplete = () => {
-    if (role === "coach") {
-      switch (stepName) {
-        case "👤 Your Name": return !!(data.name || "").trim();
-        case "🏅 Background": return !!data["🏅 Background"];
-        case "⚡ Specialties": return true;
-        case "🎯 Coaching Style": return true;
-        case "📩 Invite Athletes": return true; // optional by design
-        case "📸 Profile Photo": return true; // optional by design
-        case "🔐 Create Account": return accountStepValid(data);
-        default: return true;
-      }
-    }
-    switch (stepName) {
-      case "👤 Your Name": return !!(data.name || "").trim();
-      case "💪 Training Experience": return !!data.experience;
-      // Requires a code that actually resolves to a real coach, not just six
-      // characters — "AAAAAA" used to pass, and the athlete finished the whole
-      // signup believing they'd joined a roster they were never linked to.
-      case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
-      case "🧬 Sex": return !!data.sex;
-      case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
-      case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
-      case "🎯 Goals": return (data.goals || []).length > 0;
-      case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
-      // An area picked with no side is a half-answered question, so Continue
-      // waits. Everything else on this step stays skippable.
-      case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
-      case "🎂 Birthday": return isUsableBirthday(data.birthday);
-      case "📏 Height": return !!data.heightCm;
-      case "⚖️ Weight": return !!data.weightLb && data.weightLb > 0;
-      case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
-      case "🧩 Session Style": return true; // defaults to full body
-      case "🏋️ Equipment": return (data.equipment || []).length > 0;
-      case "📸 Profile Photo": return true; // optional by design
-      case "🔐 Create Account": return accountStepValid(data);
-      default: return true;
-    }
-  };
-  const canProceed = isStepComplete();
+  // One definition, at the top of the file, so the rules can be checked
+  // against an object instead of only by tapping through fourteen screens.
+  const canProceed = stepComplete(stepName, data, role);
 
   const handleNext = () => {
     // Guard against a double tap or a double Enter on the final step. There was
@@ -6325,7 +7609,14 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         )}
       </div>
 
-      <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
+      {/* Stuck to the bottom of the viewport, not to the bottom of the page.
+          The one-question screens were short enough that the footer was
+          always on screen; a combined screen is 1,170px of content at 320px
+          wide, which put Continue 1,362px down a 760px-tall phone. Measured,
+          not guessed. Sticky costs nothing on a short screen - it sits where
+          it always did - and on a long one the way forward never leaves. */}
+      <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0"
+        style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
         <Btn variant="secondary" disabled={submitting} onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
         <Btn className="flex-1" disabled={!canProceed || submitting} onClick={handleNext}>
           {submitting ? "Setting up…" : isLast ? "Finish Setup" : "Continue"}
@@ -6418,6 +7709,9 @@ function useCoachCodeLookup(code) {
         avatar: row.avatar,
         photo_url: row.photo_url,
         accountabilityEnabled: row.accountability_enabled ?? true,
+        businessName: row.business_name || null,
+        brandColor: row.brand_color || null,
+        logoPath: row.logo_path || null,
       } : null);
       // A dropped connection is not a wrong code. Reporting one as the other
       // sends someone off to re-type a code that was right all along.
@@ -6494,7 +7788,13 @@ function InviteCodeStep({ code, setData, set }) {
             style={{ background: i < code.length ? C.orange : C.border, transform: i < code.length ? "scale(1.3)" : "scale(1)" }} />
         ))}
       </div>
-      {valid && (
+      {valid && coach.businessName && (
+        <div className="rounded-xl p-3.5 mb-3" style={{ background: `${C.olive}0F`, border: `1px solid ${C.olive}55` }}>
+          <CoachBrandMark name={coach.businessName} logoUrl={coachLogoUrl(coach.logoPath)} color={coach.brandColor} initials={coach.avatar} size={40} />
+          <div className="text-[12.5px] mt-2" style={{ color: C.olive }}>Joining {coachName}'s roster</div>
+        </div>
+      )}
+      {valid && !coach.businessName && (
         <div className="rounded-lg p-3 mb-3 text-center text-[15px]" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55`, color: C.olive }}>
           Joining <strong>{coachName}</strong>'s roster
         </div>
@@ -6534,6 +7834,31 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     ? <p className="text-[12.5px] -mt-2 mb-4" style={{ color: C.red }}>{errFor(field)}</p>
     : null;
 
+  // A combined screen is the old step bodies stacked under headings, so this
+  // recurses into itself once per section. Handled first, before the coach
+  // branch below, which matches on everything coach-side and would otherwise
+  // swallow "🏅 Your Coaching Business" and render an empty list.
+  const sections = SIGNUP_V2_SECTIONS[stepName];
+  if (sections) {
+    const showing = sections.filter(s => !s.when || s.when(data));
+    return (
+      <div>
+        {showing.map((s, i) => (
+          <div key={s.step}
+            // A rule and a gap between sections, nothing on the first. Four
+            // question blocks run together read as one long form and people
+            // answer the top of it and tap Continue.
+            style={i === 0 ? undefined : { marginTop: 26, paddingTop: 22, borderTop: `1px solid ${C.border}` }}>
+            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>
+              {s.label}
+            </div>
+            <OnboardingStepBodyRest role={role} stepName={s.step} data={data} setData={setData} set={set} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const sharedSteps = ["👤 Your Name", "📸 Profile Photo", "🔐 Create Account"];
   if (role === "coach" && !sharedSteps.includes(stepName)) {
     const opts = {
@@ -6541,7 +7866,28 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       "⚡ Specialties": ["Strength & Power", "MMA / Combat Performance", "Olympic Lifting", "Return-to-Play", "Conditioning", "General Fitness Coaching"],
       "🎯 Coaching Style": ["High intensity / direct", "Technical / cue-heavy", "Collaborative / athlete-led", "Data-driven"],
     };
-    if (stepName === "📩 Invite Athletes") {
+    // What athletes see on the coach card before they have typed a password,
+    // so it is worth asking for while the coach is still filling things in.
+    // Optional: a coach who trains people under their own name leaves it and
+    // the card falls back to that.
+    if (stepName === "💼 Business Name") {
+      return (
+        <div>
+          <input
+            type="text"
+            placeholder="e.g. Trained By The Best"
+            value={data.businessName || ""}
+            onChange={e => set("businessName", e.target.value)}
+            style={{ ...inputStyle, fontSize: 18, padding: "14px" }}
+          />
+          <p className="text-[12.5px] mt-2" style={{ color: C.faint }}>
+            Optional. This is the name your athletes see when they enter your invite code. Leave it
+            blank to use your own name, and you can add a logo and colour later under Settings.
+          </p>
+        </div>
+      );
+    }
+    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Athletes") {
       // This step used to show an email input with no value/onChange and an
       // "Add another" button with no onClick — a coach could type their whole
       // roster, tap the button, watch nothing happen, and continue believing
@@ -7186,6 +8532,92 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     }
     default: return null;
   }
+}
+
+// The last screen of signup, and the first time the app has anything to show.
+//
+// It exists because the alternative is what was there before: a spinner, then
+// the dashboard. Somebody who has just answered twenty questions lands on a
+// home screen and has to go looking for what those answers did. This closes
+// the loop - here is what you told us, here is what is left of your week -
+// and then gets out of the way.
+function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart }) {
+  const rows = planReadySummary(intake, splitStyle);
+  const todayName = WEEKDAY_ORDER[(new Date().getDay() + 6) % 7];
+  const thisWeek = planReadyWeek(days, todayName);
+  const total = (days || []).length;
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background: C.bg }}>
+      <div className="px-6 pt-10 pb-6 text-center shrink-0">
+        <div className="mx-auto mb-4 grid place-items-center"
+          style={{ width: 64, height: 64, borderRadius: 20, background: `${C.olive}1F`, border: `1px solid ${C.olive}55` }}>
+          <CheckCircle2 size={30} style={{ color: C.olive }} />
+        </div>
+        <h2 className="text-2xl font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>Your plan is ready</h2>
+        <p className="text-[15px] mt-2" style={{ color: C.sub }}>
+          {programName ? `${programName} — ` : ""}{total} session{total === 1 ? "" : "s"} a week
+          {weeks ? `, ${weeks} weeks` : ""}.
+        </p>
+      </div>
+
+      <div className="flex-1 px-6 pb-4 overflow-y-auto">
+        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>
+          Built from your answers
+        </div>
+        <div className="rounded-2xl overflow-hidden" style={card()}>
+          {rows.map((r, i) => (
+            <div key={r.label} className="px-4 py-3 flex items-start gap-3"
+              style={i === 0 ? undefined : { borderTop: `1px solid ${C.border}` }}>
+              <div className="text-[12.5px] shrink-0" style={{ color: C.sub, width: 104 }}>{r.label}</div>
+              <div className="text-[14px] flex-1" style={{ color: C.text }}>{r.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mt-7 mb-1" style={{ color: C.sub }}>
+          The rest of this week
+        </div>
+        <p className="text-[12.5px] mb-3" style={{ color: C.faint }}>
+          {/* Said plainly, because a short first week otherwise looks like
+              sessions have already been missed on day one. */}
+          Your week starts today, not last Monday. Nothing here is late.
+        </p>
+        {thisWeek.length === 0 ? (
+          <div className="rounded-2xl px-4 py-5 text-center" style={card()}>
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nothing left this week</div>
+            <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>
+              Your first session is on {(days || [])[0]?.weekday || "your first training day"}. Rest up.
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {thisWeek.map((d, i) => (
+              <div key={`${d.weekday}-${d.name}-${i}`} className="rounded-xl px-4 py-3.5 flex items-center gap-3" style={card({ borderRadius: 16 })}>
+                <span className="shrink-0 grid place-items-center text-[12px] font-bold"
+                  style={{ width: 42, height: 42, borderRadius: 12, background: `${C.orange}18`, border: `1px solid ${C.orange}40`, color: C.orange }}>
+                  {d.weekday.slice(0, 3).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  {/* Wraps rather than truncating. "Upper Push and Posterior
+                      Chain" lost its last two words to an ellipsis at 320px,
+                      and the session name is the only thing on the row that
+                      says what the session is. */}
+                  <div className="text-[15px] font-semibold" style={{ color: C.text }}>{d.name}</div>
+                  {d.focus && <div className="text-[12.5px] truncate" style={{ color: C.sub }}>{d.focus}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="px-6 pb-8 pt-4 shrink-0"
+        style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
+        <Btn className="w-full" onClick={onStart}>Start training</Btn>
+      </div>
+    </div>
+  );
 }
 
 // ============================================================
@@ -8081,6 +9513,25 @@ function deleteExerciseEverywhere(state, setState, exerciseId, onError) {
 // athlete_id = Shaan. Delivery is live via Postgres change notifications, and
 // anything the other person sent gets marked read on open, which is what feeds
 // the unread badges.
+// Does this database have migration 006 yet?
+//
+// Module level and sticky: the first SELECT that fails on a missing column
+// turns it off for the whole session, so every other thread stops asking
+// rather than each one failing once. Starts optimistic, because once 006 is
+// applied - which is the permanent state - nothing should pay for a probe.
+//
+// Deliberately NOT reset on success. Flipping back and forth would mean a
+// single flaky request could put the media columns back into a query against
+// a database that still has not got them.
+let messageMediaReady = true;
+
+// Postgres says 42703 for "column does not exist". Supabase passes the code
+// straight through, so this does not depend on the wording of a message.
+function isMissingColumn(error) {
+  return error?.code === "42703"
+    || /column .* does not exist/i.test(error?.message || "");
+}
+
 function useMessageThread(athleteId, myUserId) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -8092,15 +9543,35 @@ function useMessageThread(athleteId, myUserId) {
   // migration. hidden_for is a uuid[] of people who hid the message from their
   // own view only; deleted_at means the sender withdrew it for both sides, and
   // the body is blanked server-side at that point.
-  const COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for";
+  //
+  // media_path / media_kind arrive with migration 006, which is deliberately
+  // NOT applied until merge time. Asking for a column that does not exist is
+  // not a soft failure - Postgres refuses the whole SELECT, so every message
+  // in every thread disappears for both people until the migration lands.
+  //
+  // coach_card got a fallback for exactly this reason and these columns did
+  // not, which is the same mistake twice. BASE_COLS is what has always
+  // existed; MEDIA_COLS is added only while the database admits to having
+  // them.
+  const BASE_COLS = "id, athlete_id, sender_id, body, created_at, read_at, deleted_at, deleted_by, hidden_for";
+  const MEDIA_COLS = "media_path, media_kind";
+  const COLS = messageMediaReady ? `${BASE_COLS}, ${MEDIA_COLS}` : BASE_COLS;
 
   const load = React.useCallback(async () => {
     if (!athleteId) { setMessages([]); setLoading(false); return; }
-    const { data, error: loadError } = await supabase
+    const read = (cols) => supabase
       .from("messages")
-      .select(COLS)
+      .select(cols)
       .eq("athlete_id", athleteId)
       .order("created_at", { ascending: true });
+
+    let { data, error: loadError } = await read(COLS);
+    // One retry, only for a missing column, and only ever downwards. Anything
+    // else is a real failure and is reported as one.
+    if (loadError && messageMediaReady && isMissingColumn(loadError)) {
+      messageMediaReady = false;
+      ({ data, error: loadError } = await read(BASE_COLS));
+    }
 
     if (loadError) { setError("Couldn't load this conversation."); setLoading(false); return; }
     setError(null);
@@ -8161,23 +9632,64 @@ function useMessageThread(athleteId, myUserId) {
     return () => { supabase.removeChannel(channel); };
   }, [athleteId, load, myUserId]);
 
-  const send = async (body) => {
+  // `file` is optional. A message may be text, a photo or clip, or both -
+  // but not neither, which is why the guard below asks for one or the other
+  // rather than for text.
+  const send = async (body, file = null) => {
     const text = (body || "").trim();
     // Guard on a ref, not the `sending` state value: state read from the render
     // closure is stale, so a fast paste-then-double-Enter could clear both
     // checks and post the same message twice. The button's disabled attribute
     // doesn't cover the keyboard path.
-    if (!text || !athleteId || !myUserId || sendingRef.current) return false;
+    if ((!text && !file) || !athleteId || !myUserId || sendingRef.current) return false;
     sendingRef.current = true;
     setSending(true);
+
+    // The file first. A row pointing at a file that never uploaded renders
+    // as a broken frame in the thread for ever, and there is nothing the
+    // sender can do about it - the body cannot be edited and the media
+    // cannot be replaced.
+    let media = null;
+    if (file) {
+      const up = await uploadMessageMedia(file, athleteId);
+      if (up.error) {
+        sendingRef.current = false;
+        setSending(false);
+        setError(up.error);
+        return false;
+      }
+      media = up;
+    }
+
     const { data, error: sendError } = await supabase
       .from("messages")
-      .insert({ athlete_id: athleteId, sender_id: myUserId, body: text })
+      .insert({
+        athlete_id: athleteId, sender_id: myUserId, body: text,
+        // Both or neither: the database has a constraint saying so, because
+        // a path with no kind is unrenderable and a kind with no path is a
+        // broken frame.
+        //
+        // Omitted entirely before migration 006, because naming a column
+        // that does not exist fails the whole INSERT - so a database without
+        // 006 would refuse plain text messages too, which is far worse than
+        // not being able to send a photo.
+        ...(messageMediaReady ? {
+          media_path: media?.path || null,
+          media_kind: media?.kind || null,
+        } : {}),
+      })
       .select(COLS)
       .single();
     sendingRef.current = false;
     setSending(false);
-    if (sendError) { setError("Message didn't send. Check your connection and try again."); return false; }
+    if (sendError) {
+      // The file is already up. Without this it is orphaned in the bucket
+      // with no row to find it by - wasted storage nobody can reach or
+      // clean up, which is exactly what uploadFormCheck tidies after.
+      if (media) await supabase.storage.from(MESSAGE_MEDIA_BUCKET).remove([media.path]);
+      setError("Message didn't send. Check your connection and try again.");
+      return false;
+    }
     setError(null);
     // Add it immediately rather than waiting for the realtime echo, which can
     // lag; the id check above stops it appearing twice.
@@ -8209,6 +9721,17 @@ function useMessageThread(athleteId, myUserId) {
       setError("Couldn't delete that message. Check your connection and try again.");
       load();
       return false;
+    }
+    // The file goes too. "Delete for everyone" that leaves the photo sitting
+    // in the bucket, reachable by anyone in the thread with the signed URL
+    // they already loaded, is a promise the app does not keep. Done AFTER the
+    // row, so a failure here leaves a tombstone pointing at a file rather
+    // than a live message pointing at nothing.
+    if (msg.media_path) {
+      await supabase.storage.from(MESSAGE_MEDIA_BUCKET).remove([msg.media_path]);
+      setMessages(prev => prev.map(m => (
+        m.id === messageId ? { ...m, media_path: null, media_kind: null } : m
+      )));
     }
     setError(null);
     return true;
@@ -8416,6 +9939,56 @@ async function createProgramRow(athleteId, name, weeks, sport, rawDays, rational
   // program the athlete cannot open yet is worse than no notice.
   notifyAthleteOfProgramChange(data.id, name ? `New program: ${name}` : "You have a new program");
   return data.id;
+}
+
+// ---- turning an AI result into this athlete's program -------------------
+//
+// This used to live inside the roster screen, which meant the ONLY place a
+// coach could build from an athlete's own answers was the Assign sheet on the
+// roster. The athlete's own page, which is where a coach actually is when
+// they decide somebody needs a program, could make a blank one and nothing
+// else. Lifting it to module level lets both screens call the same thing
+// instead of growing a second copy that drifts out of step.
+
+// The shape assignTemplateToAthlete expects, with every fallback the AI can
+// make us need. Pure, so the fallbacks are tested rather than hoped for.
+function programFromResult(result, athlete) {
+  // No name on file is rare but not impossible, and "Their's Program" is
+  // worse than saying nothing about whose it is.
+  const first = (athlete?.name || "").trim().split(/\s+/)[0];
+  return {
+    name: result?.programName || (first ? `${first}'s Program` : "New Program"),
+    weeks: result?.weeks || 8,
+    sport: athlete?.sport || null,
+    rationale: result?.rationale || null,
+    days: result?.days || [],
+  };
+}
+
+// `allowEmpty` is for the blank-start path only: a GENERATED program with no
+// days is a failed generation and must not be saved, or the athlete opens
+// their app to an empty week and no way to tell that anything went wrong.
+async function saveGeneratedProgram({ result, athlete, coachId, state, setState, allowEmpty = false }) {
+  if (!athlete || !result) return { ok: false, message: "Nothing to save." };
+  const res = await assignTemplateToAthlete({
+    template: programFromResult(result, athlete), athlete, coachId, state, allowEmpty,
+  });
+  if (!res.ok) return res;
+  const created = res.created;
+  setState(s => {
+    const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+    return {
+      ...s,
+      exercises: [...s.exercises, ...newExercises],
+      programs: [...s.programs, {
+        id: created.id, name: created.name, weeks: created.weeks, sport: created.sport,
+        rationale: created.rationale || null, startedOn: created.started_on || null,
+        athleteId: athlete.id, assignedCount: 1, days,
+      }],
+      athletes: s.athletes.map(a => a.id === athlete.id ? { ...a, program: created.id, customProgram: null } : a),
+    };
+  });
+  return { ok: true, created };
 }
 
 // Debounced writer for a program's NAME. Renaming ran through the same path as
@@ -8857,6 +10430,164 @@ function PhotosNeededPanel({ state }) {
   );
 }
 
+// ---------- who needs the coach today ----------
+//
+// The coach's question when they open the app is not "how many athletes do I
+// have". It is "is anybody stuck, and is anybody about to be". A dashboard of
+// counts cannot answer that, and the answer was previously spread across four
+// screens: a missed session on the athlete page, a message in Messages, a
+// missing programme nowhere at all.
+//
+// One function, so the list can be checked against a state object rather than
+// by signing in as a coach with a roster arranged just so. Pure: it reads
+// state and today, and returns rows.
+//
+// Order is by what blocks whom. An athlete with no programme cannot train at
+// all, so they come before one who missed Tuesday, who comes before one who
+// simply has not finished today's session yet - which is not a problem at
+// 9am and is only on the list so the coach can see the day.
+const ATTENTION_KINDS = [
+  // kind, how urgent (lower is worse), and whether it is a problem or just
+  // the state of the day. `info` rows never show a warning colour.
+  { kind: "no_program", rank: 0, tone: "bad" },
+  { kind: "program_failed", rank: 0, tone: "bad" },
+  { kind: "missed", rank: 1, tone: "bad" },
+  { kind: "never_trained", rank: 2, tone: "warn" },
+  { kind: "quiet", rank: 3, tone: "warn" },
+  { kind: "due_today", rank: 4, tone: "info" },
+  { kind: "trained_today", rank: 5, tone: "good" },
+];
+const ATTENTION_RANK = Object.fromEntries(ATTENTION_KINDS.map(k => [k.kind, k.rank]));
+const ATTENTION_TONE = Object.fromEntries(ATTENTION_KINDS.map(k => [k.kind, k.tone]));
+
+// How long without a session before a coach should notice. Not a missed
+// session - that is a scheduled day they did not train - but silence from
+// somebody whose programme has no days this week, or who has drifted off.
+const QUIET_DAYS = 10;
+
+function coachAttention(state, todayStr = todayISO()) {
+  const rows = [];
+  for (const a of state?.athletes || []) {
+    const program = (state?.programs || []).find(p => p.id === a.program);
+    const logs = a.workoutLogs || [];
+    const moves = a.sessionMoves || [];
+
+    const push = (kind, label, detail) =>
+      rows.push({ athleteId: a.id, name: a.name, avatar: a.avatar, photoUrl: a.photoUrl,
+        kind, label, detail, rank: ATTENTION_RANK[kind], tone: ATTENTION_TONE[kind] });
+
+    // Nothing to train. Said first and on its own, because every other
+    // signal is meaningless without a programme and listing them too would
+    // bury the only one the coach can act on.
+    //
+    // athleteNeedsProgram, not a second reading of the same fields: the
+    // roster already distinguishes "the build failed" from "nobody has got
+    // to them yet", and two definitions of that would eventually disagree
+    // on the same athlete in two places on the same screen.
+    const needs = athleteNeedsProgram(a);
+    if (needs) {
+      push(needs === "failed" ? "program_failed" : "no_program",
+        needs === "failed" ? "Programme failed to build" : "No programme yet",
+        needs === "failed" ? "Build one for them, or ask them to retry" : "They cannot train until they have one");
+      continue;
+    }
+    // Linked to a programme id that is not loaded. Rare, but silently
+    // skipping them would drop a real athlete off the list entirely.
+    if (!program) {
+      push("no_program", "Programme missing", "Their programme could not be loaded");
+      continue;
+    }
+
+    // Missed, with the athlete's own moves taken into account, so a session
+    // deliberately shifted is not reported as skipped.
+    const missed = missedSessions({ program, logs, moves, pausedDayKey: null, today: todayStr, weeksBack: 1 });
+    if (missed.length) {
+      push("missed",
+        missed.length === 1 ? "Missed a session" : `Missed ${missed.length} sessions`,
+        `${missed[0].day?.name || "A session"} on ${formatLogDate(missed[0].date)}`);
+      continue;
+    }
+
+    // Never started. Distinct from "quiet": nobody has drifted, they have
+    // simply not begun, and the thing to do about it is different.
+    if (logs.length === 0) {
+      push("never_trained", "Has not trained yet", "No sessions logged since joining");
+      continue;
+    }
+
+    const last = a.lastActive || logs[0]?.date || null;
+    const silentFor = last ? daysBetweenISO(last, todayStr) : null;
+    if (silentFor !== null && silentFor >= QUIET_DAYS) {
+      push("quiet", `Quiet for ${silentFor} days`, `Last trained ${formatLogDate(last)}`);
+      continue;
+    }
+
+    // Today. Not a problem, and on the list so the coach can see the day at
+    // a glance rather than to be chased.
+    const todayDay = (program.days || []).find(d => isDayScheduledOn(d, todayStr));
+    if (todayDay) {
+      const done = logs.some(l => l?.date === todayStr);
+      push(done ? "trained_today" : "due_today",
+        done ? "Trained today" : "Due today", todayDay.name);
+    }
+  }
+
+  // Stable within a rank: whoever has been waiting is not reordered by a
+  // re-render, which is what makes the list readable at a glance.
+  return rows
+    .map((r, i) => ({ ...r, i }))
+    .sort((x, y) => (x.rank - y.rank) || (x.name || "").localeCompare(y.name || "") || (x.i - y.i))
+    .map(({ i, ...r }) => r);
+}
+
+// How many of those rows are actually a problem. The header says "3 need
+// you", not "11 athletes", and counting the informational rows would make it
+// say 11 on a morning when nothing at all is wrong.
+function attentionNeeded(rows) {
+  return (rows || []).filter(r => r.tone === "bad" || r.tone === "warn").length;
+}
+
+function AttentionPanel({ state, nav }) {
+  const rows = coachAttention(state);
+  const needed = attentionNeeded(rows);
+
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody on your roster yet</div>
+        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Share your invite code above and they will appear here.</p>
+      </div>
+    );
+  }
+
+  const toneColor = { bad: C.red, warn: C.amber, info: C.sub, good: C.olive };
+
+  return (
+    <div>
+      <div className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>
+        {needed === 0
+          ? <span><span className="font-semibold" style={{ color: C.olive }}>Nothing needs you.</span> Here is the day.</span>
+          : <span><span className="font-semibold" style={{ color: C.text }}>{needed}</span> need{needed === 1 ? "s" : ""} you</span>}
+      </div>
+      <div className="space-y-2">
+        {rows.map(r => (
+          <button key={`${r.athleteId}-${r.kind}`} onClick={() => nav.go("coach-athlete-detail", r.athleteId)}
+            className="w-full rounded-xl p-3 flex items-center gap-3 text-left"
+            style={{ ...card(), border: `1px solid ${r.tone === "bad" ? `${C.red}55` : r.tone === "warn" ? `${C.amber}55` : C.border}` }}>
+            <Avatar initials={r.avatar} size={34} photoUrl={r.photoUrl} />
+            <div className="flex-1 min-w-0">
+              <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{r.name}</div>
+              <div className="text-[12.5px] font-semibold" style={{ color: toneColor[r.tone] }}>{r.label}</div>
+              {r.detail && <div className="text-[11px] truncate" style={{ color: C.faint }}>{r.detail}</div>}
+            </div>
+            <ChevronRight size={16} className="shrink-0" style={{ color: C.faint }} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CoachTodayPanel({ state, nav }) {
   const today = todayISO();
 
@@ -9051,6 +10782,13 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const save = async () => {
     if (saving) return;
     setSaving(true); setError(null);
+    // Same rule as an athlete's signup: a split that was chosen wins, and one
+    // that was not is worked out from the training days. This screen still
+    // ASKS the question, so most of the time there is an answer already - but
+    // the step can be passed without tapping anything, and without this a
+    // coach training six days a week would be programmed full body six times
+    // because they never touched a question whose default was full body.
+    const answers = withDerivedSplit(data);
     // Read-modify-write rather than a blind update: `intake` already holds the
     // coach's own settings - accountability, cancellation window, payment
     // methods - and overwriting the column would take all of it with it.
@@ -9058,13 +10796,13 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       .from("profiles").select("intake").eq("id", state.me.id).single();
     if (readErr) { setSaving(false); setError("Couldn't reach your profile. Check your connection and try again."); return; }
 
-    const merged = { ...(row?.intake || {}), training: data };
+    const merged = { ...(row?.intake || {}), training: answers };
     const { error: writeErr } = await supabase
       .from("profiles").update({ intake: merged }).eq("id", state.me.id);
     setSaving(false);
     if (writeErr) { setError("Couldn't save your answers. Check your connection and try again."); return; }
 
-    setState(s => ({ ...s, me: { ...s.me, ...buildMeFromOnboarding({ ...data, name: s.me.name }), id: s.me.id, name: s.me.name, avatar: s.me.avatar, photoUrl: s.me.photoUrl, coachId: null, hasCoach: false, selfGuided: true, intake: data, program: s.me.program, customProgram: null } }));
+    setState(s => ({ ...s, me: { ...s.me, ...buildMeFromOnboarding({ ...answers, name: s.me.name }), id: s.me.id, name: s.me.name, avatar: s.me.avatar, photoUrl: s.me.photoUrl, coachId: null, hasCoach: false, selfGuided: true, intake: answers, program: s.me.program, customProgram: null } }));
     onDone?.();
   };
 
@@ -9121,6 +10859,16 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
       <TopBar title="Dashboard" onLogout={nav.logout} />
       <div className="px-5 pt-5">
         {onSwitchMode && !wideDash && <ModeSwitch training={false} onChange={onSwitchMode} />}
+
+        {/* Who needs you, first. The counts and the invite code are still
+            here, underneath: a coach opening the app wants to know whether
+            anybody is stuck, and "11 athletes, 9 programs" cannot answer
+            that. The answer used to be spread across four screens - a missed
+            session on the athlete page, a stalled programme nowhere at all. */}
+        <ChalkDivider label="Who needs you" />
+        <AttentionPanel state={state} nav={nav} />
+
+        <ChalkDivider label="Your roster" />
         <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
           <StatCard icon={Users} label="Athletes" value={totalAthletes} />
@@ -9137,6 +10885,10 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
           </button>
         )}
 
+        {/* Still here, and still worth its space: this is the session-by-
+            session view of today, with who has finished and how long they
+            took. The panel above answers "is anyone stuck"; this one answers
+            "how is today going". */}
         <ChalkDivider label="Today" />
         <CoachTodayPanel state={state} nav={nav} />
 
@@ -9368,30 +11120,9 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
     if (!athlete || !result) return;
     setAssigning(true);
     setAssignError(null);
-    const template = {
-      name: result.programName || `${athlete.name.split(" ")[0]}'s Program`,
-      weeks: result.weeks || 8,
-      sport: athlete.sport || null,
-      rationale: result.rationale || null,
-      days: result.days || [],
-    };
-    const res = await assignTemplateToAthlete({ template, athlete, coachId: myUserId, state, allowEmpty });
-    if (!res.ok) {
-      setAssigning(false);
-      setAssignError(res.message);
-      return;
-    }
-    const created = res.created;
-    setState(s => {
-      const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
-      return {
-        ...s,
-        exercises: [...s.exercises, ...newExercises],
-        programs: [...s.programs, { id: created.id, name: created.name, weeks: created.weeks, sport: created.sport, rationale: created.rationale || null, startedOn: created.started_on || null, athleteId, assignedCount: 1, days }],
-        athletes: s.athletes.map(a => a.id === athleteId ? { ...a, program: created.id, customProgram: null } : a),
-      };
-    });
+    const res = await saveGeneratedProgram({ result, athlete, coachId: myUserId, state, setState, allowEmpty });
     setAssigning(false);
+    if (!res.ok) { setAssignError(res.message); return; }
     setGenerateFor(null);
     setAssignOpen(null);
   };
@@ -10040,6 +11771,55 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
 }
 
 // Coach view of one athlete: metrics, results, AND per-athlete program editing
+// The four tabs on an athlete's page.
+//
+// Listed in one place so the labels, the keys and the order cannot drift
+// apart, and so a test can assert that every key the page renders is one a
+// tab can actually reach - a panel keyed "progress" behind a tab keyed
+// "history" is invisible with no error anywhere.
+const ATHLETE_TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "program", label: "Program" },
+  { key: "progress", label: "Progress" },
+  { key: "notes", label: "Notes" },
+];
+
+function AthleteDetailTabs({ tab, onChange }) {
+  return (
+    // Scrolls sideways rather than shrinking, and bleeds to the screen edges
+    // so a scrolled tab is not clipped by the page gutter.
+    //
+    // Measured rather than reasoned about. Four equal-width pills do not work:
+    // at 320px that is 66px each and "Overview", "Program" and "Progress" all
+    // lose their last letters to an ellipsis. Scrolling at the original
+    // padding was worse - 433px of tabs in a 320px screen put "Notes"
+    // entirely off the edge with nothing to say it was there, so a coach on an
+    // iPhone SE would never learn the tab existed.
+    //
+    // 11px of side padding brings the row to 384px: the whole of it fits by
+    // 390px, and at 320px a 21px slice of the last pill stays on screen, which
+    // is the cue that there is more.
+    <div className="flex gap-1.5 mb-5 overflow-x-auto -mx-5 px-5" style={{ scrollbarWidth: "none" }}>
+      {ATHLETE_TABS.map(t => {
+        const on = tab === t.key;
+        return (
+          <button key={t.key} onClick={() => onChange(t.key)}
+            aria-current={on ? "page" : undefined}
+            className="shrink-0 rounded-full text-[12.5px] font-semibold whitespace-nowrap"
+            style={{
+              padding: "9px 11px",
+              background: on ? `${C.orange}1F` : C.panel,
+              border: `1px solid ${on ? C.orange : C.border}`,
+              color: on ? C.orange : C.sub,
+            }}>
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
@@ -10047,6 +11827,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
   const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
+  // Building from the athlete's signup answers, from this page rather than
+  // from the roster's Assign sheet.
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
@@ -10067,6 +11851,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [removeTarget, setRemoveTarget] = useState(null);
   const [offRosterOpen, setOffRosterOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // Which tab. Overview first: the coach opening an athlete most often wants
+  // to know how they are doing, not to edit their programme.
+  const [tab, setTab] = useState("overview");
 
   // Sessions and credits are loaded by the booking screens, which this page is
   // not. Without this the removal dialog would report zero unused sessions for
@@ -10268,6 +12055,27 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Goes through the same assignTemplateToAthlete path as a real assignment so
   // the weekday pinning, the RPC that sets active_program_id, and the orphan
   // cleanup on failure are all shared rather than reimplemented here.
+  // What the athlete answered at signup, and whether there is enough of it to
+  // build on. Read once here so the button, its explanation and the generator
+  // all agree: a button that is enabled next to text saying the questionnaire
+  // is unfinished is worse than either on its own.
+  const athleteIntake = intakeForAthlete(athlete);
+  const canBuildFromAnswers = intakeIsUsable(athleteIntake);
+  const firstName = (athlete.name || "").trim().split(/\s+/)[0] || "them";
+
+  // No allowEmpty here on purpose. A generation that came back with no days
+  // failed, and saving it would leave the athlete opening an empty week with
+  // nothing to tell them anything went wrong.
+  const buildFromAnswers = async (result) => {
+    if (generating) return;
+    setGenerating(true);
+    setEditError(null);
+    const res = await saveGeneratedProgram({ result, athlete, coachId: myUserId, state, setState });
+    setGenerating(false);
+    if (!res.ok) { setEditError(res.message || "Couldn't create that program."); return; }
+    setGenerateOpen(false);
+  };
+
   const buildProgram = async () => {
     if (building) return;
     setBuilding(true);
@@ -10396,324 +12204,364 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           <StatCard icon={Flame} label="Streak" value={athlete.streak} accent={C.amber} />
         </div>
 
-        {(athlete.goals || []).length > 0 && (
-          <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
-            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
-            <div className="flex flex-wrap gap-2">
-              {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
-            </div>
-          </div>
-        )}
 
-        {/* Weekly accountability tracker */}
-        {(() => {
-          const today = new Date(); const dow = today.getDay();
-          const weekDays = Array.from({length:7},(_,i)=>{const d=new Date(today);d.setDate(today.getDate()-dow+i);return d;});
-          const loggedDates = new Set(athleteLogs.map(l=>l.date));
-          const dayLabels=["S","M","T","W","T","F","S"];
-          const completed=weekDays.filter(d=>loggedDates.has(toLocalISO(d))).length;
-          return (
-            <div className="rounded-xl p-4 mb-5" style={{background:C.panel,border:`1px solid ${C.border}`}}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[15px] font-semibold" style={{color:C.text}}>This Week's Accountability</div>
-                <div className="text-[12.5px] tabular-nums font-semibold" style={{color:completed>=3?C.olive:C.sub}}>{completed}/7</div>
-              </div>
-              <div className="flex gap-1.5 justify-between">
-                {weekDays.map((d,i)=>{const done=loggedDates.has(toLocalISO(d));return(
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="text-[11px]" style={{color:C.faint}}>{dayLabels[i]}</div>
-                    <div className="w-full aspect-square rounded-lg flex items-center justify-center" style={{background:done?C.olive:C.border}}>
-                      {done&&<CheckCircle2 size={12} style={{color:"#fff"}}/>}
-                    </div>
-                  </div>
-                );})}
+        {/* Four tabs, not one 1,400-line scroll.
+            The page had everything on it in one column: who they are, their
+            week, their billing, the whole programme editor, and at the very
+            bottom the button that ends the coaching. Finding anything meant
+            scrolling past the programme editor, and the editor is the tallest
+            thing in the app.
+
+            Identity and the three tiles stay ABOVE the tabs, because they are
+            who you are looking at rather than one of the things you came to
+            look at. */}
+        <AthleteDetailTabs tab={tab} onChange={setTab} />
+
+        {tab === "overview" && (<>
+          {(athlete.goals || []).length > 0 && (
+            <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
+              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
+              <div className="flex flex-wrap gap-2">
+                {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
               </div>
             </div>
-          );
-        })()}
-
-        {athlete.injuries?.length > 0 && (
-          <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
-            <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
-            <div className="text-[12.5px]" style={{ color: C.red }}>Injury flags: {injuryLines(athlete.intake) !== "None" ? injuryLines(athlete.intake) : athlete.injuries.join(", ")}</div>
-          </div>
-        )}
-
-        {/* Billing status */}
-        {FEATURES.payments && (() => {
-          const payments = state.payments || { rates: [], clientBilling: {}, methods: [] };
-          const billing = payments.clientBilling[athlete.id];
-          const rate = billing ? payments.rates.find(r => r.id === billing.rateId) : null;
-          return (
-            <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${rate ? C.olive + "88" : C.border}` }}>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Billing</div>
-                <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>Manage →</button>
-              </div>
-              {rate ? (
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-[15px] font-semibold" style={{ color: C.text }}>{rate.label}</div>
-                      <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{rate.cycle} · Next due {formatLogDate(billing.nextDue)}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="tabular-nums font-bold text-xl" style={{ color: C.olive }}>${rate.amount}</div>
-                      <div className="text-[11px]" style={{ color: C.faint }}>{billing.paidCount || 0} paid</div>
-                    </div>
-                  </div>
-                  {(payments.methods || []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      {payments.methods.map(m => <span key={m} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: `${C.blue}22`, color: C.blue }}>{m}</span>)}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <span className="text-[15px]" style={{ color: C.faint }}>No billing set up for this client</span>
-                  <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.orange}18`, color: C.orange }}>Set Up</button>
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {state.coachProfile?.complianceAlerts !== false && (
-          <>
-            <ChalkDivider label="Session Length" />
-            <CompliancePanel logs={athleteLogs} />
-          </>
-        )}
-
-        {/* The athlete's own words about each session. Collecting a note the
-            coach never sees would be worse than not asking. */}
-        <ChalkDivider label="Recent Sessions" />
-        {athleteLogs.length === 0 ? (
-          <div className="rounded-lg p-3.5 text-[15px]" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>
-            No sessions logged yet.
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
-          </div>
-        )}
-
-        <ChalkDivider label="How they’ve been" />
-        <CheckinSummaryPanel entries={athleteProgress} athleteName={athlete.name} />
-
-        <ChalkDivider label="Progress History" />
-        <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
-          {athleteProgress.length === 0 ? (
-            <div className="text-center text-[12.5px] py-6" style={{ color: C.faint }}>No progress entries logged yet.</div>
-          ) : (
-          <div className="flex items-end gap-2 h-24">
-            {(() => {
-              // Only entries that carry a weight. A check-in about sleep alone
-              // has no bar to draw, and Math.max over its null is NaN.
-              const weighed = athleteProgress.filter(d => typeof d.weightKg === "number");
-              if (!weighed.length) {
-                return <div className="w-full text-center text-[12.5px]" style={{ color: C.faint }}>No weight logged yet.</div>;
-              }
-              const vals = weighed.map(p => p.weightKg);
-              const max = Math.max(...vals), min = Math.min(...vals);
-              return weighed.map((d, i) => {
-                const h = ((d.weightKg - min + 1) / (max - min + 2)) * 100;
-                return (
-                  <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full rounded-t-md" style={{ height: `${h}%`, background: i === weighed.length - 1 ? C.orange : C.steel }} />
-                    <span className="text-[8px]" style={{ color: C.faint }}>
-                      {formatSessionDate(d.date, { withWeekday: false }) || d.date}
-                    </span>
-                  </div>
-                );
-              });
-            })()}
-          </div>
           )}
-        </div>
 
-        <ChalkDivider label="Assigned Program — Edit" />
-        {program && (
-          <button onClick={() => setImportOpen(true)}
-            className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-            style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
-            <ClipboardList size={15} /> Import a program from a doc
-          </button>
-        )}
-        {!program && (
-          <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
-            <ClipboardList size={26} style={{ color: C.faint }} className="mx-auto mb-3" />
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
-            <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
-              Start one and add their sessions and exercises here.
-            </p>
-            <div className="flex gap-2.5">
-              <Btn variant="secondary" className="flex-1" icon={ClipboardList} onClick={() => setImportOpen(true)}>Import</Btn>
-              <Btn className="flex-1" icon={Plus} disabled={building} onClick={buildProgram}>
-                {building ? "Creating…" : "Build one"}
-              </Btn>
+          {/* Weekly accountability tracker */}
+          {(() => {
+            const today = new Date(); const dow = today.getDay();
+            const weekDays = Array.from({length:7},(_,i)=>{const d=new Date(today);d.setDate(today.getDate()-dow+i);return d;});
+            const loggedDates = new Set(athleteLogs.map(l=>l.date));
+            const dayLabels=["S","M","T","W","T","F","S"];
+            const completed=weekDays.filter(d=>loggedDates.has(toLocalISO(d))).length;
+            return (
+              <div className="rounded-xl p-4 mb-5" style={{background:C.panel,border:`1px solid ${C.border}`}}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[15px] font-semibold" style={{color:C.text}}>This Week's Accountability</div>
+                  <div className="text-[12.5px] tabular-nums font-semibold" style={{color:completed>=3?C.olive:C.sub}}>{completed}/7</div>
+                </div>
+                <div className="flex gap-1.5 justify-between">
+                  {weekDays.map((d,i)=>{const done=loggedDates.has(toLocalISO(d));return(
+                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                      <div className="text-[11px]" style={{color:C.faint}}>{dayLabels[i]}</div>
+                      <div className="w-full aspect-square rounded-lg flex items-center justify-center" style={{background:done?C.olive:C.border}}>
+                        {done&&<CheckCircle2 size={12} style={{color:"#fff"}}/>}
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              </div>
+            );
+          })()}
+
+          {athlete.injuries?.length > 0 && (
+            <div className="rounded-lg p-3 mb-5 flex items-start gap-2" style={{ background: `${C.red}18`, border: `1px solid ${C.red}55` }}>
+              <AlertCircle size={15} style={{ color: C.red }} className="mt-0.5 shrink-0" />
+              <div className="text-[12.5px]" style={{ color: C.red }}>Injury flags: {injuryLines(athlete.intake) !== "None" ? injuryLines(athlete.intake) : athlete.injuries.join(", ")}</div>
             </div>
-          </div>
-        )}
-        {program && program.days.length > 0 && (
-          <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
-            <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-              How they train with you
-            </div>
-            <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
-            <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
-              {programSessionMode(program.days) === null
-                ? "Mixed — set per session below."
-                : "Applies to every session. Change any single one below."}
-            </p>
-          </div>
-        )}
-        {program && (
-          <div className="space-y-4">
-            {program.days.map(day => (
-              <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
+          )}
+
+          {/* Billing status */}
+          {FEATURES.payments && (() => {
+            const payments = state.payments || { rates: [], clientBilling: {}, methods: [] };
+            const billing = payments.clientBilling[athlete.id];
+            const rate = billing ? payments.rates.find(r => r.id === billing.rateId) : null;
+            return (
+              <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${rate ? C.olive + "88" : C.border}` }}>
                 <div className="flex items-center justify-between mb-1">
-                  <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                  <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+                  <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Billing</div>
+                  <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>Manage →</button>
                 </div>
-                <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
-
-                {/* How this session normally runs. Set once here; any single
-                    date can still be changed below without disturbing it. */}
-                <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                    How this session runs
+                {rate ? (
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-[15px] font-semibold" style={{ color: C.text }}>{rate.label}</div>
+                        <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{rate.cycle} · Next due {formatLogDate(billing.nextDue)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="tabular-nums font-bold text-xl" style={{ color: C.olive }}>${rate.amount}</div>
+                        <div className="text-[11px]" style={{ color: C.faint }}>{billing.paidCount || 0} paid</div>
+                      </div>
+                    </div>
+                    {(payments.methods || []).length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2.5">
+                        {payments.methods.map(m => <span key={m} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: `${C.blue}22`, color: C.blue }}>{m}</span>)}
+                      </div>
+                    )}
                   </div>
-                  <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
-                  <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
-                </div>
-
-                {/* Grouped into the same sections the athlete sees, so a
-                    coach deleting "Conditioning" is looking at the same thing
-                    the athlete is, and so a whole section can go in one action
-                    instead of one exercise at a time. */}
-                {/* Which block is being edited. Without this the screen only
-                    ever showed the base template, so every change was global
-                    whether the coach meant it or not. */}
-                {coachPlan.blocks.length > 1 && (
-                  <div className="mt-3">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
-                      <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
-                    </div>
-                    <div className="flex gap-1.5 overflow-x-auto pb-1">
-                      {coachPlan.blocks.map(b => {
-                        const on = b.startWeek === editBlock?.startWeek;
-                        return (
-                          <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
-                            className="shrink-0 rounded-lg px-3 py-2 text-left"
-                            style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
-                            <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
-                            <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
-                          </button>
-                        );
-                      })}
-                      <button onClick={() => setWeeksOpen(true)}
-                        className="shrink-0 rounded-lg px-3 py-2 text-left"
-                        style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
-                        <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
-                        <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
-                      </button>
-                      <button onClick={() => setDeleteProgOpen(true)}
-                        className="shrink-0 rounded-lg px-3 py-2 text-left"
-                        style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
-                        <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
-                        <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
-                      </button>
-                    </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[15px]" style={{ color: C.faint }}>No billing set up for this client</span>
+                    <button onClick={() => nav.go("coach-payments")} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-full" style={{ background: `${C.orange}18`, color: C.orange }}>Set Up</button>
                   </div>
                 )}
-                <div className="space-y-3 mt-3">
-                  {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
-                  <div key={b.key} className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
-                      <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
-                      <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                        aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
-                        <Plus size={14} style={{ color: b.accent }} />
-                      </button>
-                      <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
-                        aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
-                        <Trash2 size={13} style={{ color: C.faint }} />
-                      </button>
+              </div>
+            );
+          })()}
+
+          {state.coachProfile?.complianceAlerts !== false && (
+            <>
+              <ChalkDivider label="Session Length" />
+              <CompliancePanel logs={athleteLogs} />
+            </>
+          )}
+
+          {/* At the very bottom, on its own, the way a destructive action should
+              be: reachable when wanted, never beside something routine.
+              Deliberately OUTSIDE the `program &&` block above — a client with no
+              program assigned still needs to be removable. */}
+          <ChalkDivider label="End Coaching" />
+          <button onClick={() => setOffRosterOpen(true)}
+            className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
+            style={{ color: C.red, border: `1px solid ${C.red}44` }}>
+            Take {athlete.name.split(" ")[0]} off my roster
+          </button>
+          <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
+            Ends the coaching. Their account and training history stay with them.
+          </p>
+        </>)}
+
+        {tab === "program" && (<>
+          <ChalkDivider label="Assigned Program — Edit" />
+          {program && (
+            <button onClick={() => setImportOpen(true)}
+              className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
+              style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
+              <ClipboardList size={15} /> Import a program from a doc
+            </button>
+          )}
+          {!program && (
+            <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+              <ClipboardList size={26} style={{ color: C.faint }} className="mx-auto mb-3" />
+              <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+              <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+                Start one and add their sessions and exercises here.
+              </p>
+              {/* Three ways to start, stacked, each on its own full-width
+                  row. Measured at 320px rather than reasoned about: Btn sets
+                  `whitespace-nowrap` AND `shrink-0`, so a row of two beats
+                  flex-1 and refuses to shrink. "Import" next to "Build one"
+                  already spilled past the card's padding before this screen
+                  gained a third option, and "Build from Christopher's
+                  answers" pushed the whole page sideways. Stacked, the
+                  longest label needs 211px of 238px at 320 wide.
+                  The name lives in the sentence, where it can wrap. */}
+              <Btn className="w-full mb-2" icon={Sparkles}
+                   disabled={generating || !canBuildFromAnswers}
+                   onClick={() => setGenerateOpen(true)}>
+                {generating ? "Building…" : "Use their answers"}
+              </Btn>
+              <p className="text-[11px] mb-3 leading-snug" style={{ color: C.faint }}>
+                {canBuildFromAnswers
+                  ? `${firstName}'s goals, injuries, sport, schedule and equipment, straight from their signup. You can edit every part of it afterwards.`
+                  : `${firstName} hasn't finished the questionnaire, so there are no training days or equipment on file to build from yet.`}
+              </p>
+              <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building} onClick={buildProgram}>
+                {building ? "Creating…" : "Start blank"}
+              </Btn>
+              <Btn variant="secondary" className="w-full" icon={ClipboardList} onClick={() => setImportOpen(true)}>
+                Import a program
+              </Btn>
+            </div>
+          )}
+          {program && program.days.length > 0 && (
+            <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
+              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
+                How they train with you
+              </div>
+              <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
+              <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
+                {programSessionMode(program.days) === null
+                  ? "Mixed — set per session below."
+                  : "Applies to every session. Change any single one below."}
+              </p>
+            </div>
+          )}
+          {program && (
+            <div className="space-y-4">
+              {program.days.map(day => (
+                <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
+                    <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
+                  </div>
+                  <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
+
+                  {/* How this session normally runs. Set once here; any single
+                      date can still be changed below without disturbing it. */}
+                  <div className="mt-3">
+                    <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
+                      How this session runs
                     </div>
-                  {b.items.map(x => {
-                    const ex = exById(x.exerciseId);
-                    const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
+                    <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
+                    <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
+                  </div>
+
+                  {/* Grouped into the same sections the athlete sees, so a
+                      coach deleting "Conditioning" is looking at the same thing
+                      the athlete is, and so a whole section can go in one action
+                      instead of one exercise at a time. */}
+                  {/* Which block is being edited. Without this the screen only
+                      ever showed the base template, so every change was global
+                      whether the coach meant it or not. */}
+                  {coachPlan.blocks.length > 1 && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
+                        <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
+                      </div>
+                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                        {coachPlan.blocks.map(b => {
+                          const on = b.startWeek === editBlock?.startWeek;
+                          return (
+                            <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
+                              className="shrink-0 rounded-lg px-3 py-2 text-left"
+                              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
+                              <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
+                            </button>
+                          );
+                        })}
+                        <button onClick={() => setWeeksOpen(true)}
+                          className="shrink-0 rounded-lg px-3 py-2 text-left"
+                          style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
+                          <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
+                          <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
+                        </button>
+                        <button onClick={() => setDeleteProgOpen(true)}
+                          className="shrink-0 rounded-lg px-3 py-2 text-left"
+                          style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
+                          <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
+                          <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="space-y-3 mt-3">
+                    {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
+                    <div key={b.key} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
+                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
+                        <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                          aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
+                          <Plus size={14} style={{ color: b.accent }} />
+                        </button>
+                        <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
+                          aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
+                          <Trash2 size={13} style={{ color: C.faint }} />
+                        </button>
+                      </div>
+                    {b.items.map(x => {
+                      const ex = exById(x.exerciseId);
+                      const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
+                      return (
+                        <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
+                            <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
+                            <NoPhotoFlag name={ex?.name} size="xs" />
+                            <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
+                            <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {["sets", "reps", "rpe", "rest"].map(field => (
+                              <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
+                                className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5 mt-1">
+                            {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    </div>
+                    ))}
+                  </div>
+                  {(() => {
+                    const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
+                    const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
+                    if (!missing.length) return null;
                     return (
-                      <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                          <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
-                          <NoPhotoFlag name={ex?.name} size="xs" />
-                          <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
-                          <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
-                        </div>
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {["sets", "reps", "rpe", "rest"].map(field => (
-                            <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
-                              className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
+                      <div className="mt-3">
+                        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
+                        <div className="flex gap-2 flex-wrap">
+                          {missing.map(b => (
+                            <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
+                              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
+                              style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
+                              <Plus size={13} /> {b.label}
+                            </button>
                           ))}
-                        </div>
-                        <div className="grid grid-cols-4 gap-1.5 mt-1">
-                          {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
                         </div>
                       </div>
                     );
-                  })}
-                  </div>
-                  ))}
+                  })()}
+                  <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
+                    className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
+                    style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
+                    <BookOpen size={15} /> Add From Library
+                  </button>
                 </div>
-                {(() => {
-                  const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
-                  const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
-                  if (!missing.length) return null;
+              ))}
+              <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
+              <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+            </div>
+          )}
+        </>)}
+
+        {tab === "progress" && (<>
+          <ChalkDivider label="How they’ve been" />
+          <CheckinSummaryPanel entries={athleteProgress} athleteName={athlete.name} />
+
+          <ChalkDivider label="Progress History" />
+          <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
+            {athleteProgress.length === 0 ? (
+              <div className="text-center text-[12.5px] py-6" style={{ color: C.faint }}>No progress entries logged yet.</div>
+            ) : (
+            <div className="flex items-end gap-2 h-24">
+              {(() => {
+                // Only entries that carry a weight. A check-in about sleep alone
+                // has no bar to draw, and Math.max over its null is NaN.
+                const weighed = athleteProgress.filter(d => typeof d.weightKg === "number");
+                if (!weighed.length) {
+                  return <div className="w-full text-center text-[12.5px]" style={{ color: C.faint }}>No weight logged yet.</div>;
+                }
+                const vals = weighed.map(p => p.weightKg);
+                const max = Math.max(...vals), min = Math.min(...vals);
+                return weighed.map((d, i) => {
+                  const h = ((d.weightKg - min + 1) / (max - min + 2)) * 100;
                   return (
-                    <div className="mt-3">
-                      <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
-                      <div className="flex gap-2 flex-wrap">
-                        {missing.map(b => (
-                          <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                            className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
-                            style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
-                            <Plus size={13} /> {b.label}
-                          </button>
-                        ))}
-                      </div>
+                    <div key={d.date || i} className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full rounded-t-md" style={{ height: `${h}%`, background: i === weighed.length - 1 ? C.orange : C.steel }} />
+                      <span className="text-[8px]" style={{ color: C.faint }}>
+                        {formatSessionDate(d.date, { withWeekday: false }) || d.date}
+                      </span>
                     </div>
                   );
-                })()}
-                <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
-                  className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                  style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                  <BookOpen size={15} /> Add From Library
-                </button>
-              </div>
-            ))}
-            <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
-            <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+                });
+              })()}
+            </div>
+            )}
           </div>
-        )}
+        </>)}
 
-        {/* At the very bottom, on its own, the way a destructive action should
-            be: reachable when wanted, never beside something routine.
-            Deliberately OUTSIDE the `program &&` block above — a client with no
-            program assigned still needs to be removable. */}
-        <ChalkDivider label="End Coaching" />
-        <button onClick={() => setOffRosterOpen(true)}
-          className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
-          style={{ color: C.red, border: `1px solid ${C.red}44` }}>
-          Take {athlete.name.split(" ")[0]} off my roster
-        </button>
-        <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
-          Ends the coaching. Their account and training history stay with them.
-        </p>
+        {tab === "notes" && (<>
+          {/* The athlete's own words about each session. Collecting a note the
+              coach never sees would be worse than not asking. */}
+          <ChalkDivider label="Recent Sessions" />
+          {athleteLogs.length === 0 ? (
+            <div className="rounded-lg p-3.5 text-[15px]" style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.faint }}>
+              No sessions logged yet.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
+            </div>
+          )}
+        </>)}
       </div>
 
       <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
@@ -10774,6 +12622,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
       <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
         athlete={athlete} onImport={importProgram} saving={importing} />
+      {/* Fed this athlete's REAL answers, the same as the roster's Assign
+          sheet. An earlier version of that screen passed a hardcoded example
+          intake and so built a program for an imaginary MMA fighter whoever
+          the client was. */}
+      {generateOpen && (
+        <AIProgramGenerator
+          intake={athleteIntake}
+          onGenerated={buildFromAnswers}
+          onClose={() => setGenerateOpen(false)} />
+      )}
       <UndoBar undo={undo} onUndo={runUndo} onDismiss={clearUndo} />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
@@ -12246,6 +14104,150 @@ function useLongPress(onFire) {
   };
 }
 
+// A photo or clip inside a bubble.
+//
+// The URL is signed on demand and lasts an hour, so it cannot be rendered
+// from the row alone - which is the whole reason this is a component with
+// state rather than an <img src>. One definition, used by both threads.
+function MessageMedia({ path, kind }) {
+  const [url, setUrl] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (!path) return;
+    setUrl(null); setFailed(false);
+    signMessageMedia(path).then(signed => {
+      if (!alive) return;
+      if (signed) setUrl(signed); else setFailed(true);
+    });
+    return () => { alive = false; };
+  }, [path]);
+
+  if (!path) return null;
+
+  // Said plainly rather than left as a broken frame. The usual cause is
+  // being offline, and "it did not load" is a different thing from "they
+  // sent you nothing".
+  if (failed) {
+    return (
+      <div className="rounded-xl px-3 py-2.5 mb-1.5 text-[12.5px]"
+        style={{ background: `${C.steel}33`, border: `1px dashed ${C.border}`, color: C.sub }}>
+        Couldn't load this {kind === "video" ? "clip" : "photo"}. Check your connection.
+      </div>
+    );
+  }
+  if (!url) {
+    // A fixed box, so the thread does not jump as each one arrives.
+    return (
+      <div className="rounded-xl mb-1.5 grid place-items-center"
+        style={{ height: 150, background: `${C.steel}33`, border: `1px solid ${C.border}` }}>
+        <Loader2 size={16} className="animate-spin" style={{ color: C.sub }} />
+      </div>
+    );
+  }
+  return kind === "video" ? (
+    <video src={url} controls playsInline preload="metadata"
+      className="rounded-xl mb-1.5 w-full" style={{ maxHeight: 320, background: "#000" }} />
+  ) : (
+    // Natural proportions, capped in both directions. NOT object-fit:
+    // cover, which was the first version: it crops to fill the bubble, and
+    // the one thing you must not do to a photo of somebody's bar position
+    // is cut the edges off it. A letterboxed photo is ugly; a cropped one
+    // is wrong.
+    <img src={url} alt="" className="rounded-xl mb-1.5"
+      style={{ maxHeight: 320, maxWidth: "100%", width: "auto", display: "block" }} />
+  );
+}
+
+// The attach button, the chosen-file strip, and the send button.
+//
+// One composer for both threads. The coach's screen and the athlete's screen
+// were already two copies of the same row of controls, and adding a file
+// picker to each separately is how one of them ends up without the size
+// check, or without clearing the picked file after sending.
+function MessageComposer({ placeholder, disabled, sending, onSend, allowMedia = true }) {
+  const [draft, setDraft] = useState("");
+  const [file, setFile] = useState(null);
+  const [problem, setProblem] = useState(null);
+  const inputRef = useRef(null);
+
+  const pick = (chosen) => {
+    if (!chosen) return;
+    const bad = messageMediaError(chosen);
+    // Refused HERE, before the upload. A 90MB clip that is going to be
+    // rejected should be rejected now, not after a minute of uploading.
+    if (bad) { setProblem(bad); setFile(null); return; }
+    setProblem(null);
+    setFile(chosen);
+  };
+
+  const clear = () => {
+    setFile(null); setProblem(null);
+    // Without this, picking the same file twice in a row fires no change
+    // event and nothing happens.
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const submit = async () => {
+    const text = draft;
+    const chosen = file;
+    if (!text.trim() && !chosen) return;
+    setDraft(""); clear();
+    const ok = await onSend(text, chosen);
+    // Put it back rather than losing what they typed, and the file with it.
+    if (!ok) { setDraft(text); setFile(chosen); }
+  };
+
+  const ready = (draft.trim() || file) && !disabled && !sending;
+
+  return (
+    <div className="shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
+      {problem && (
+        <div className="px-4 pt-2 text-[12.5px]" style={{ color: C.red }}>{problem}</div>
+      )}
+      {file && (
+        <div className="px-4 pt-2.5 flex items-center gap-2">
+          <span className="rounded-lg px-2 py-1 text-[11px] font-semibold shrink-0"
+            style={{ background: `${C.blue}1F`, border: `1px solid ${C.blue}55`, color: C.blue }}>
+            {messageMediaKind(file) === "video" ? "Clip" : "Photo"}
+          </span>
+          <span className="flex-1 min-w-0 text-[12.5px] truncate" style={{ color: C.sub }}>{file.name}</span>
+          <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>
+            {Math.max(1, Math.round(file.size / 1048576))}MB
+          </span>
+          <button onClick={clear} aria-label="Remove attachment" className="shrink-0">
+            <X size={14} style={{ color: C.sub }} />
+          </button>
+        </div>
+      )}
+      <div className="flex items-center gap-2 px-4 py-3">
+        {allowMedia && (
+          <>
+            <input ref={inputRef} type="file" className="hidden"
+              accept={[...MESSAGE_IMAGE_TYPES, ...MESSAGE_VIDEO_TYPES].join(",")}
+              onChange={e => pick(e.target.files?.[0] || null)} />
+            <button onClick={() => inputRef.current?.click()} disabled={disabled || sending}
+              aria-label="Attach a photo or clip" className="rounded-full p-2 shrink-0"
+              style={{ border: `1px solid ${C.border}`, background: C.panel }}>
+              <Plus size={17} style={{ color: C.sub }} />
+            </button>
+          </>
+        )}
+        <input style={{ ...inputStyle, flex: 1 }} placeholder={placeholder} disabled={disabled}
+          value={draft} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && submit()} />
+        <button onClick={submit} disabled={!ready} className="rounded-full p-2.5 shrink-0"
+          style={{ background: ready ? C.orange : C.border }}>
+          {sending
+            ? <Loader2 size={18} className="animate-spin" style={{ color: "#fff" }} />
+            : <Send size={18} style={{ color: ready ? "#fff" : C.faint }} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // One bubble. A withdrawn message keeps its place as a tombstone rather than
 // vanishing, so the other person can see that something was said and removed.
 function MessageRow({ m, mine, onHold }) {
@@ -12268,8 +14270,14 @@ function MessageRow({ m, mine, onHold }) {
   return (
     <div className={`flex items-center gap-1 ${mine ? "justify-end" : "justify-start"}`}>
       {mine && <MessageMoreButton onOpen={onHold} />}
-      <div className="max-w-[75%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }} {...hold}>
-        <div className="text-[15px] whitespace-pre-wrap">{m.body}</div>
+      {/* Wider when it is carrying a photo or a clip. 75% of a 320px screen
+          leaves about 210px inside the padding, which turns a phone video
+          into a tall thin strip. Measured. */}
+      <div className={`${m.media_path ? "max-w-[86%]" : "max-w-[75%]"} rounded-2xl px-3.5 py-2.5`} style={{ background: mine ? C.orange : C.panel, color: mine ? "#fff" : C.text, border: mine ? "none" : `1px solid ${C.border}` }} {...hold}>
+        <MessageMedia path={m.media_path} kind={m.media_kind} />
+        {/* A photo sent with no caption has an empty body. Rendering the
+            empty div anyway leaves a blank line under every picture. */}
+        {m.body ? <div className="text-[15px] whitespace-pre-wrap">{m.body}</div> : null}
         <div className="text-[11px] mt-1 opacity-70">{timeAgo(m.created_at)}</div>
       </div>
       {!mine && <MessageMoreButton onOpen={onHold} />}
@@ -12279,7 +14287,8 @@ function MessageRow({ m, mine, onHold }) {
 
 function CoachMessages({ state, setState, nav, myUserId }) {
   const [activeId, setActiveId] = useState(state.athletes[0]?.id);
-  const [draft, setDraft] = useState("");
+  // The draft lives in MessageComposer now, with the attachment beside it,
+  // so the two cannot get out of step on a failed send.
   const active = state.athletes.find(a => a.id === activeId);
   const myId = myUserId;
   const { messages, loading, error, sending, send, deleteForEveryone, hideForMe } = useMessageThread(activeId, myId);
@@ -12293,13 +14302,6 @@ function CoachMessages({ state, setState, nav, myUserId }) {
   useEffect(() => {
     if (!activeId && state.athletes.length) setActiveId(state.athletes[0].id);
   }, [state.athletes.length, activeId]);
-
-  const submit = async () => {
-    const text = draft;
-    setDraft("");
-    const ok = await send(text);
-    if (!ok) setDraft(text); // keep what they typed so it isn't lost
-  };
 
   return (
     <div className="flex flex-col app-screen">
@@ -12339,14 +14341,13 @@ function CoachMessages({ state, setState, nav, myUserId }) {
             <div ref={endRef} />
           </div>
           {error && <div className="px-4 pb-2 text-[12.5px]" style={{ color: C.red }}>{error}</div>}
-          <div className="flex items-center gap-2 px-4 py-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
-            <input style={{ ...inputStyle, flex: 1 }} placeholder={`Message ${active?.name?.split(" ")[0] || ""}...`} value={draft}
-              onChange={e => setDraft(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
-            <button onClick={submit} disabled={!draft.trim() || sending} className="rounded-full p-2.5 shrink-0"
-              style={{ background: draft.trim() && !sending ? C.orange : C.border }}>
-              <Send size={18} style={{ color: draft.trim() && !sending ? "#fff" : C.faint }} />
-            </button>
-          </div>
+          <MessageComposer
+            placeholder={`Message ${active?.name?.split(" ")[0] || ""}...`}
+            sending={sending}
+            // No paperclip on a database that cannot store what it picks up.
+            allowMedia={messageMediaReady}
+            onSend={(text, file) => send(text, file)}
+          />
         </>
       )}
     </div>
@@ -13065,6 +15066,9 @@ function CoachProfile({ state, setState, nav }) {
   // Kept as a draft while being typed, so a half-deleted "2" isn't saved as a
   // two-hour policy on its way to becoming 24.
   const [cancelHoursDraft, setCancelHoursDraft] = useState(String(cancelHours));
+  const [businessNameDraft, setBusinessNameDraft] = useState(coach.businessName || "");
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef(null);
 
   // Both of these were local-state only. The headshot reverted to initials on
   // the next login (hydrate reads profiles.photo_url, which was never written),
@@ -13125,6 +15129,49 @@ function CoachProfile({ state, setState, nav }) {
     }
   };
 
+  // Direct column writes, not set_profile_setting — business_name and
+  // brand_color are real columns (the migration added them), unlike the
+  // settings above, which live inside intake jsonb.
+  const saveBusinessName = async (raw) => {
+    const trimmed = raw.trim();
+    const value = trimmed || null;
+    setBusinessNameDraft(trimmed);
+    if (value === (coach.businessName || null)) return;
+    setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), businessName: value } }));
+    if (!coach.id) return;
+    const { error } = await supabase.from("profiles").update({ business_name: value }).eq("id", coach.id);
+    if (error) {
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), businessName: coach.businessName || null } }));
+      setBusinessNameDraft(coach.businessName || "");
+      setSettingError("Couldn't save that setting. Check your connection and try again.");
+    }
+  };
+
+  const saveBrandColor = async (hex) => {
+    const prev = coach.brandColor || null;
+    if (hex === prev) return;
+    setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: hex } }));
+    if (!coach.id) return;
+    const { error } = await supabase.from("profiles").update({ brand_color: hex }).eq("id", coach.id);
+    if (error) {
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: prev } }));
+      setSettingError("Couldn't save that setting. Check your connection and try again.");
+    }
+  };
+
+  const uploadLogo = async (file) => {
+    if (!coach.id || !file) return;
+    if (!file.type.startsWith("image/")) { setSettingError("That file isn't an image we can use."); return; }
+    setLogoUploading(true);
+    try {
+      const { path } = await uploadCoachLogo(coach.id, file);
+      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), logoPath: path } }));
+    } catch (err) {
+      setSettingError(err.message || "Couldn't upload that logo.");
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   // Recomputed whenever a photo lands, because UPLOADED_EXERCISE_PHOTOS is a
   // plain module-level map - it changes without React knowing, so photoVersion
@@ -13174,6 +15221,82 @@ function CoachProfile({ state, setState, nav }) {
           <EditableAvatar initials={coach.avatar} size={84} photoUrl={coach.photoUrl} onChange={setPhoto} />
           <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{coach.name}</div>
           <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} athletes · {activePrograms} programs</div>
+        </div>
+
+        {/* Your branding */}
+        <div className="rounded-xl p-4 mb-5" style={card()}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Your branding</div>
+            <div className="text-[12.5px]" style={{ color: C.sub }}>Clients see this</div>
+          </div>
+
+          <div className="flex items-center gap-3 mb-4">
+            <div className="relative shrink-0">
+              <div className="rounded-xl overflow-hidden flex items-center justify-center"
+                style={{ width: 56, height: 56, background: coach.logoPath ? "transparent" : (coach.brandColor || C.orange) }}>
+                {coach.logoPath
+                  ? <img src={coachLogoUrl(coach.logoPath)} alt="" className="w-full h-full object-cover" />
+                  : <span style={{ color: "#fff", fontFamily: DISPLAY, fontWeight: 700, fontSize: 20 }}>{coach.avatar}</span>}
+              </div>
+              {logoUploading && (
+                <div className="absolute inset-0 rounded-xl flex items-center justify-center" style={{ background: "rgba(0,0,0,.45)" }}>
+                  <Loader2 size={18} className="animate-spin" style={{ color: "#fff" }} />
+                </div>
+              )}
+            </div>
+            <div className="min-w-0">
+              <button onClick={() => logoInputRef.current?.click()} disabled={logoUploading}
+                className="rounded-full font-semibold text-[13px]"
+                style={{ padding: "8px 16px", background: C.panel2, border: `1px solid ${C.border}`, color: C.text }}>
+                {coach.logoPath ? "Change logo" : "Upload logo"}
+              </button>
+              <div className="text-[11.5px] mt-1.5" style={{ color: C.faint }}>Square works best. PNG or JPG.</div>
+              <input ref={logoInputRef} type="file" accept="image/*" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) uploadLogo(f); }} />
+            </div>
+          </div>
+
+          <Field label="Business name">
+            <input
+              value={businessNameDraft}
+              onChange={e => setBusinessNameDraft(e.target.value)}
+              onBlur={e => saveBusinessName(e.target.value)}
+              placeholder="Your business name"
+              maxLength={60}
+              style={inputStyle}
+            />
+          </Field>
+
+          <div className="mb-4">
+            <label className="block text-[12.5px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>Colour</label>
+            <div className="flex gap-2">
+              {BRAND_COLORS.map(hex => (
+                <button key={hex} onClick={() => saveBrandColor(hex)} aria-label={`Use ${hex} as your brand colour`}
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%", background: hex,
+                    boxShadow: coach.brandColor === hex ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${hex}` : `0 0 0 1px ${C.border}`,
+                  }} />
+              ))}
+            </div>
+          </div>
+
+          {(coach.businessName || coach.logoPath) && (
+            <div className="pt-1">
+              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>What your clients see</div>
+              <div className="rounded-xl p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                <CoachBrandMark
+                  name={coach.businessName || coach.name}
+                  logoUrl={coachLogoUrl(coach.logoPath)}
+                  color={coach.brandColor}
+                  initials={coach.avatar}
+                  size={40}
+                />
+              </div>
+              <div className="text-[11.5px] mt-2" style={{ color: C.faint }}>
+                Their app header, sign-up screen and printed workouts show your name and logo. "by Trained.Best" stays small underneath.
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Accountability Toggle */}
@@ -13470,6 +15593,93 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const [checkinSaving, setCheckinSaving] = useState(false);
   const [checkinError, setCheckinError] = useState(null);
 
+  // ---- a workout that was stopped and kept ----
+  //
+  // Read straight from storage rather than held in state, because this
+  // component stays mounted while the athlete goes off to the workout screen
+  // and comes back - so a copy taken on mount would be stale the moment it
+  // mattered. The tick is what re-reads it after this screen itself changes
+  // something.
+  const [pausedTick, setPausedTick] = useState(0);
+  const [confirmDrop, setConfirmDrop] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
+  // Sessions that were due and did not happen, newest first, going back a
+  // fortnight. Further than that is noise: an offer to catch up on something
+  // from five weeks ago is not help, it is a reminder that you failed.
+  const missed = useMemo(
+    () => missedSessions({
+      program: myProgram,
+      logs: state.workoutLogs,
+      moves: state.sessionMoves,
+      pausedDayKey: pausedWorkoutToShow(state.me.id, today)?.dayKey || null,
+      today,
+    }),
+    [myProgram, state.workoutLogs, state.sessionMoves, state.me.id, today, pausedTick],
+  );
+  const pausedWorkout = useMemo(
+    () => pausedWorkoutToShow(state.me.id, today),
+    [state.me.id, today, pausedTick],
+  );
+  // Which day of the live program it belongs to. The stored key survives a
+  // reload and the day's own id does not, so this is the translation back.
+  // A program the coach has since replaced will not match, and the card
+  // stays hidden rather than offering a session that no longer exists.
+  const pausedDay = useMemo(() => {
+    if (!pausedWorkout) return null;
+    return (myProgram?.days || []).find(d => sessionIdentity(myProgram, d) === pausedWorkout.dayKey) || null;
+  }, [pausedWorkout, myProgram]);
+
+  // Hand it to the session draft under today's date and let the workout
+  // screen's own restore do the rest. One restore path rather than two: the
+  // screen already knows how to pick a session up, and teaching it a second
+  // way to do the same thing is how the two drift apart.
+  const resumePaused = () => {
+    if (!pausedWorkout || !pausedDay) return;
+    writeSessionDraft({
+      dayId: pausedWorkout.dayKey,
+      date: todayISO(),
+      exIdx: pausedWorkout.exIdx || 0,
+      notes: pausedWorkout.notes || "",
+      setChecks: pausedWorkout.setChecks || {},
+      setWeights: pausedWorkout.setWeights || {},
+      setReps: pausedWorkout.setReps || {},
+      handSet: pausedWorkout.handSet || {},
+      swappedMap: pausedWorkout.swappedMap || {},
+    }, state.me.id);
+    // The clock carries on from where it stopped rather than from zero. The
+    // anchor is backdated by the seconds already on it, because the timer is
+    // wall-clock based - handing it a start time of now would show a session
+    // that had taken no time at all.
+    const seconds = Math.max(0, Math.round(Number(pausedWorkout.seconds) || 0));
+    if (seconds > 0) {
+      writeSessionTimer({
+        dayId: pausedWorkout.dayKey, date: todayISO(), mode: "running",
+        startedAt: Date.now() - seconds * 1000, seconds,
+      });
+    }
+    // It is being finished now, so it is no longer waiting to be. From here
+    // the ordinary draft holds it, exactly as it would for any session the
+    // athlete walked away from without pressing Stop.
+    clearPausedWorkout(state.me.id);
+    setPausedTick(t => t + 1);
+    nav.go("athlete-workout", pausedDay.id);
+  };
+
+  const keepPausedForNow = () => {
+    snoozePausedWorkout(state.me.id, today);
+    setPausedTick(t => t + 1);
+  };
+
+  const dropPaused = () => {
+    // The draft goes with it. Leaving that behind would have the workout
+    // screen offer to restore the same half-session the athlete has just
+    // thrown away.
+    if (pausedWorkout?.dayKey) clearSessionDraft(pausedWorkout.dayKey, state.me.id);
+    clearPausedWorkout(state.me.id);
+    setConfirmDrop(false);
+    setPausedTick(t => t + 1);
+  };
+
   // Persists to session_checkins. This used to write to an in-memory object
   // only, so the athlete confirmed, refreshed, and the "check-in required"
   // banner was back — while the coach, reading their own copy of that object,
@@ -13583,6 +15793,101 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
+
+        {/* Above today's workout, and on every day including rest days,
+            because a session somebody stopped half way through is the most
+            urgent thing on this screen until they decide what to do with it.
+            Silence is how an hour of work gets lost. */}
+        {pausedWorkout && pausedDay && (
+          <div className="rounded-2xl p-4 mb-5" style={{ ...card(), border: `1px solid ${C.blue}` }}>
+            <div className="flex items-start gap-2.5">
+              <Pause size={16} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  Do you want to finish your {sessionLabel(pausedWorkout.dayName)} workout?
+                </div>
+                <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
+                  You stopped at exercise {(Number(pausedWorkout.exIdx) || 0) + 1}
+                  {pausedWhenLabel(pausedWorkout.date, today) ? ` ${pausedWhenLabel(pausedWorkout.date, today)}` : ""}.
+                  {" "}Your sets are saved.
+                </p>
+                {confirmDrop ? (
+                  <>
+                    {/* Two steps, because this is the one button here that
+                        destroys something and a mis-tap on a phone in a gym
+                        bag is a real way to lose a session. */}
+                    <p className="text-[12.5px] mt-3" style={{ color: C.red }}>
+                      Drop it? The sets you logged in that session are deleted.
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <Btn size="sm" variant="confirm" onClick={dropPaused}>Yes, drop it</Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>Keep it</Btn>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <Btn size="sm" variant="primary" onClick={resumePaused}>Yes, finish it</Btn>
+                    <Btn size="sm" variant="ghost" onClick={keepPausedForNow}>No, save it as is</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => setConfirmDrop(true)}>Drop it</Btn>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* What did not happen, and the three things that can be done about
+            it. Above today's workout, because an athlete with a missed
+            Wednesday is deciding between catching it up and carrying on, and
+            that decision belongs before the card that assumes carrying on.
+
+            Capped at two. The whole list is on the Plan; a home screen that
+            leads with five red cards is a home screen people stop opening. */}
+        {missed.slice(0, 2).map(item => (
+          <div key={`${item.date}-${item.day.name}`} className="rounded-2xl p-4 mb-4"
+            style={{ ...card(), border: `1px solid ${C.red}66` }}>
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: C.red }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  You missed {sessionLabel(item.day.name)}
+                </div>
+                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>
+                  It was due {pausedWhenLabel(item.date, today) || "earlier"}. Catch it up, move it, or let it go.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Btn size="sm" variant="primary"
+                    onClick={() => {
+                      // A pull, not a move: if they start it and stop part
+                      // way, it goes back to the day it was due rather than
+                      // quietly rewriting the week.
+                      saveSessionMove(setState, state.me.id, {
+                        programDay: item.day.name, fromDate: item.date, toDate: today, kind: "pull",
+                      });
+                      const target = (myProgram?.days || []).find(d => d.name === item.day.name);
+                      if (target) nav.go("athlete-workout", target.id);
+                    }}>Do it today</Btn>
+                  {/* The wording from the design, with the real weekday in
+                      it. "Log it" on its own invites the question "log what,
+                      when" - naming the day answers both. */}
+                  <Btn size="sm" variant="secondary"
+                    onClick={() => logSessionAsDone({
+                      setState, userId: state.me.id, day: item.day, program: myProgram,
+                      date: item.date, week: programWeekFor(myProgram, item.date) || 1,
+                    })}>
+                    I did it on {new Date(`${item.date}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })}, log it
+                  </Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => nav.go("athlete-program")}>Move it</Btn>
+                  <Btn size="sm" variant="danger"
+                    onClick={() => saveSessionMove(setState, state.me.id, {
+                      programDay: item.day.name, fromDate: item.date, toDate: null, kind: "skip",
+                    })}>Let it go</Btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
         {todayDay ? (
           (() => {
             // The first movement with a photo, shown as a tilted tile in the
@@ -13627,6 +15932,15 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
                       boxShadow: `0 8px 26px ${GLOW}, inset 0 1px 0 rgba(255,255,255,.25)`,
                     }}>
                     <Play size={16} fill="#fff" /> Start Workout
+                  </button>
+                  <button onClick={() => setPrintOpen(true)}
+                    style={{
+                      width: "100%", marginTop: 8, height: 42, borderRadius: 999,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7,
+                      fontWeight: 700, fontSize: 13, color: HERO.text,
+                      background: "transparent", border: `1px solid ${HERO.line}`,
+                    }}>
+                    <Printer size={14} /> Print it for the gym
                   </button>
                 </div>
                 {leadPhoto && (
@@ -13731,6 +16045,15 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 
         <div style={wideHome ? { minWidth: 0, display: "flex", flexDirection: "column", gap: 20 } : undefined}>
         <CheckinRings progress={state.progress} onOpen={() => nav.go("athlete-progress")} />
+        {printOpen && todayDay && (
+          <PrintSheet
+            day={todayDay}
+            exercises={printableExercises(todayDay.exercises, state.exercises)}
+            programName={myProgram?.name}
+            week={myProgram ? programWeekFor(myProgram, today) : null}
+            athleteName={state.me.name}
+            onClose={() => setPrintOpen(false)} />
+        )}
 
         <div className="text-[19px] mt-6 mb-3" style={{ fontFamily: DISPLAY, fontWeight: 700, letterSpacing: "-.02em", color: C.text }}>Quick Access</div>
         <div className="grid grid-cols-2 gap-3 mb-6">
@@ -14362,9 +16685,239 @@ function ProgramTimeline({ program }) {
   );
 }
 
+// What each status looks like. Colour alone is never the whole signal - the
+// word is always there too, because a row of coloured squares means nothing
+// to someone seeing it for the first time, and nothing at all to someone who
+// cannot tell the green from the amber.
+const PLAN_TONE = {
+  done:          { fg: () => C.olive, bg: () => `${C.olive}1a`, line: () => C.olive },
+  missed:        { fg: () => C.red,   bg: () => `${C.red}14`,   line: () => `${C.red}66` },
+  paused:        { fg: () => C.blue,  bg: () => `${C.blue}14`,  line: () => `${C.blue}66` },
+  skipped:       { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+  "moved-away":  { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+  extra:         { fg: () => C.olive, bg: () => `${C.olive}14`, line: () => `${C.olive}66` },
+  today:         { fg: () => C.orange, bg: () => `${C.orange}1a`, line: () => C.orange },
+  upcoming:      { fg: () => C.sub,   bg: () => C.panel,        line: () => C.border },
+  rest:          { fg: () => C.faint, bg: () => "transparent",  line: () => C.border },
+};
+
+function planLabel(session) {
+  if (session.status === "moved-away") {
+    // An arrow rather than "Moved to", measured: at 320px the longer form is
+    // a 120px pill, and the session's name - which shares the row - gets
+    // truncated down to "Day 4 ...". The arrow keeps the destination, which
+    // is the useful half, and gives the name back its width.
+    const to = formatSessionDate(session.movedTo, { withWeekday: false });
+    return to ? `Moved → ${to}` : "Moved";
+  }
+  if (session.status === "extra") return "Extra";
+  // Done, but with nothing in it. Saying only "Done" next to no numbers at
+  // all reads as a bug, and hides the difference a coach needs to see.
+  if (session.status === "done" && isTickedOffLog(session.log)) return "Done, not logged";
+  return PLAN_STATUS[session.status] || "";
+}
+
+// The week, as a ring, a strip and a list.
+//
+// Three readings of the same seven days on purpose. The ring answers "am I on
+// track" without being read; the strip answers "which days" at a glance; the
+// list answers "what exactly, and what do I do about it". An athlete opening
+// this on a Tuesday wants the first, on a Sunday the third.
+function WeekPlanPanel({ rows, progress, onPickDay, today }) {
+  const R = 26;
+  const CIRC = 2 * Math.PI * R;
+  const pct = Math.round(progress.ratio * 100);
+  return (
+    <div className="rounded-2xl p-4 mb-4" style={card()}>
+      <div className="flex items-center gap-4">
+        <div className="relative shrink-0" style={{ width: 68, height: 68 }}>
+          <svg width="68" height="68" viewBox="0 0 68 68" aria-hidden="true">
+            <circle cx="34" cy="34" r={R} fill="none" stroke={C.border} strokeWidth="7" />
+            <circle cx="34" cy="34" r={R} fill="none" stroke={C.olive} strokeWidth="7"
+              strokeLinecap="round" strokeDasharray={CIRC}
+              strokeDashoffset={CIRC * (1 - progress.ratio)}
+              transform="rotate(-90 34 34)" />
+          </svg>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-[15px] tabular-nums font-bold" style={{ color: C.text }}>{pct}%</span>
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>This week</div>
+          <div className="text-[15px] mt-0.5" style={{ color: C.text }}>
+            {progress.planned === 0
+              ? "Nothing scheduled this week"
+              : `${progress.done} of ${progress.planned} sessions done`}
+          </div>
+        </div>
+      </div>
+
+      {/* The strip: seven cells, Monday first, each a weekday letter and a
+          dot. Deliberately NOT labelled with the status word - at 320px a
+          seventh of the card is thirty pixels, and "Upcoming" at nine point
+          does not fit in thirty pixels. Measured, not guessed.
+
+          So the strip carries position and the list below carries meaning.
+          Between them nothing is left to colour alone, which matters: a row
+          of coloured squares says nothing to someone seeing it for the first
+          time and nothing at all to someone who cannot tell the green from
+          the amber. Every cell also names its status to a screen reader. */}
+      <div className="grid grid-cols-7 gap-1.5 mt-4">
+        {rows.map(row => {
+          const session = row.sessions[0] || null;
+          const status = session?.status || "rest";
+          const tone = PLAN_TONE[status] || PLAN_TONE.rest;
+          return (
+            <button key={row.date} onClick={() => onPickDay(row)}
+              aria-label={`${row.weekday}: ${session ? planLabel(session) : "Rest day"}`}
+              className="rounded-xl py-2 flex flex-col items-center gap-1.5"
+              style={{
+                background: tone.bg(),
+                border: `1px solid ${row.isToday ? C.orange : tone.line()}`,
+              }}>
+              <span className="text-[11px] font-bold leading-none" style={{ color: row.isToday ? C.orange : C.sub }}>
+                {WEEKDAY_SHORT[row.weekday]}
+              </span>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: session ? tone.fg() : "transparent",
+                border: session ? "none" : `1px solid ${C.steel}`,
+              }} />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The list: one row per day with something on it, in words. This is
+          the part an athlete reads on a Sunday when they are working out what
+          happened, and the part they tap to change something. */}
+      <div className="mt-3">
+        {rows.filter(r => r.sessions.length).map(row => {
+          const session = row.sessions[0];
+          const tone = PLAN_TONE[session.status] || PLAN_TONE.rest;
+          return (
+            <button key={row.date} onClick={() => onPickDay(row)}
+              className="w-full flex items-center gap-2.5 py-2 text-left"
+              style={{ borderTop: `1px solid ${C.border}` }}>
+              <span className="text-[11px] font-bold shrink-0" style={{ width: 30, color: row.isToday ? C.orange : C.faint }}>
+                {row.weekday.slice(0, 3)}
+              </span>
+              <span className="text-[12.5px] font-semibold flex-1 min-w-0 truncate" style={{ color: C.text }}>
+                {session.day.name}
+              </span>
+              <span className="text-[11px] font-semibold shrink-0 rounded-full px-2 py-0.5"
+                style={{ color: tone.fg(), background: tone.bg(), border: `1px solid ${tone.line()}` }}>
+                {planLabel(session)}
+              </span>
+            </button>
+          );
+        })}
+        {!rows.some(r => r.sessions.length) && (
+          <div className="text-[12.5px] py-2" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
+            No sessions scheduled this week. Tap a day to train anyway.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Tapping a day. Move it, skip it, do it today, or - on an empty day - add
+// something.
+//
+// Deliberately a sheet rather than a long press or a drag. A drag is the
+// obvious design for moving a session and it is the wrong one here: this is
+// used one-handed, in a gym, on a phone that is often on a bench, and a
+// mis-drag silently rewrites the week.
+function DayActionSheet({ open, row, program, today, onClose, onMove, onSkip, onUnskip, onPullForward, onAddDay, onStart }) {
+  const [moving, setMoving] = useState(false);
+  useEffect(() => { if (!open) setMoving(false); }, [open]);
+  const session = row?.sessions?.[0] || null;
+  const weekStart = row ? weekStartFor(row.date) : null;
+
+  return (
+    <Modal open={open} onClose={onClose} title={row ? formatSessionDate(row.date) || row.weekday : ""}>
+      {!session && (
+        <>
+          <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+            Nothing scheduled. You can train anyway and it gets logged on this day.
+          </p>
+          <Btn variant="primary" className="w-full" onClick={onAddDay}>Train anyway</Btn>
+          <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Close</Btn>
+        </>
+      )}
+
+      {session && !moving && (
+        <>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>{session.day.name}</div>
+          <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+            {planLabel(session)}
+            {session.movedFrom ? ` · moved from ${formatSessionDate(session.movedFrom, { withWeekday: false })}` : ""}
+          </p>
+
+          {session.status === "skipped" ? (
+            <Btn variant="primary" className="w-full" onClick={onUnskip}>Put it back</Btn>
+          ) : session.status === "done" ? (
+            <p className="text-[12.5px]" style={{ color: C.olive }}>Already done. Nothing to change.</p>
+          ) : (
+            <>
+              {row.date !== today && (
+                <Btn variant="primary" className="w-full" onClick={onPullForward}>Do it today instead</Btn>
+              )}
+              {row.date === today && (
+                <Btn variant="primary" className="w-full" onClick={onStart}>Start it</Btn>
+              )}
+              <Btn variant="secondary" className="w-full mt-2" onClick={() => setMoving(true)}>Move it to another day</Btn>
+              <Btn variant="danger" className="w-full mt-2" onClick={onSkip}>Skip it this week</Btn>
+            </>
+          )}
+          <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Close</Btn>
+        </>
+      )}
+
+      {session && moving && (
+        <>
+          <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+            Which day? This moves {session.day.name} for this week only.
+          </p>
+          <div className="grid grid-cols-7 gap-1.5">
+            {WEEKDAY_ORDER.map((weekday, i) => {
+              const date = shiftDays(weekStart, i);
+              const isHere = date === row.date;
+              return (
+                <button key={weekday} disabled={isHere}
+                  onClick={() => onMove(date)}
+                  aria-label={`Move to ${weekday}`}
+                  className="rounded-xl py-2 text-[12.5px] font-bold"
+                  style={{
+                    background: isHere ? C.panel : C.bg,
+                    border: `1px solid ${isHere ? C.border : C.steel}`,
+                    color: isHere ? C.faint : C.text,
+                    opacity: isHere ? 0.5 : 1,
+                  }}>
+                  {WEEKDAY_SHORT[weekday]}
+                </button>
+              );
+            })}
+          </div>
+          <Btn variant="ghost" className="w-full mt-3" onClick={() => setMoving(false)}>Back</Btn>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function AthleteProgram({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const [activeDayIdx, setActiveDayIdx] = useState(0);
+  // Up here with the other hooks, not down beside the day it prints. React
+  // counts hooks per render; this screen returns early when there is no
+  // programme yet, and a useState below that point runs on some renders and
+  // not others - the "Rendered fewer hooks than expected" crash.
+  const [printOpen, setPrintOpen] = useState(false);
+  // Which day of the week strip is open in the action sheet. A row, not an
+  // index, so it survives the week being changed underneath it.
+  const [dayAction, setDayAction] = useState(null);
   // Which block and which week of it are on screen. Opens on wherever the
   // athlete actually is, so the page answers "what am I doing now" before it
   // offers "what does the rest of the program look like".
@@ -14448,6 +17001,24 @@ function AthleteProgram({ state, setState, nav }) {
   }
 
   const day = myProgram.days[activeDayIdx];
+  // A session the athlete stopped part-way through. Read here as well as on
+  // the home screen, because the card there can be dismissed for the day and
+  // this is the screen that lists sessions - a half-finished workout that
+  // appears nowhere on it is a workout nobody finds again.
+  const pausedWorkout = readPausedWorkout(state.me.id);
+  const pausedHere = day && pausedWorkout && sessionIdentity(myProgram, day) === pausedWorkout.dayKey
+    ? pausedWorkout
+    : null;
+
+  // Moving, skipping and pulling forward all write the same kind of row, so
+  // they are one call with a different kind rather than three paths that can
+  // drift apart.
+  const changeDay = (session, fromDate, toDate, kind) => {
+    saveSessionMove(setState, state.me.id, {
+      programDay: session.day.name, fromDate, toDate, kind,
+    });
+    setDayAction(null);
+  };
   // Order is set once at generation/build time (phase sequence) and persists here —
   // NOT re-sorted on every render — so a manual reorder below actually sticks.
   const sortedExercises = day ? day.exercises : [];
@@ -14478,6 +17049,28 @@ function AthleteProgram({ state, setState, nav }) {
   const shownWeek = Math.min(plan.weeks, Math.max(1, viewWeek || liveWeek));
   const activeBlock = plan.blocks.find(b => shownWeek >= b.startWeek && shownWeek <= b.endWeek) || plan.blocks[0];
   const shownIsDeload = plan.deloadWeeks.includes(shownWeek);
+
+  // The week on screen, not necessarily the week it is. An athlete looking
+  // ahead at week 6 should see week 6's plan, and nothing in it should be
+  // marked missed - which falls out of planForWeek for free, because every
+  // date in it is in the future.
+  //
+  // This MUST stay below shownWeek. It used to sit about fifty lines higher,
+  // where it read shownWeek before the line that creates it, and the whole
+  // Program tab threw "Cannot access 've' before initialization" the moment
+  // anybody opened it. A const is not hoisted the way a function is: the name
+  // exists from the top of the block but touching it before its own line is
+  // an error, so this was a crash on every render and not an undefined value.
+  const planWeekStart = programWeekStart(myProgram, shownWeek) || weekStartFor(todayISO());
+  const planRows = planForWeek({
+    program: myProgram,
+    weekStart: planWeekStart,
+    logs: state.workoutLogs,
+    moves: state.sessionMoves,
+    pausedDayKey: pausedWorkout?.dayKey || null,
+    today: todayISO(),
+  });
+  const planProgress = weekProgress(planRows);
 
   // Every exercise as prescribed for the week being viewed — so selecting the
   // deload week shows the deload, rather than describing one somewhere else.
@@ -14949,6 +17542,36 @@ function AthleteProgram({ state, setState, nav }) {
           );
         })()}
 
+        {/* The week before the sessions in it. An athlete opening this wants
+            to know where they are before they want to know what is in Day 2. */}
+        <WeekPlanPanel rows={planRows} progress={planProgress} today={todayISO()}
+          onPickDay={(row) => setDayAction(row)} />
+
+        <DayActionSheet
+          open={!!dayAction}
+          row={dayAction}
+          program={myProgram}
+          today={todayISO()}
+          onClose={() => setDayAction(null)}
+          onMove={(toDate) => changeDay(dayAction.sessions[0], dayAction.date, toDate, "move")}
+          onSkip={() => changeDay(dayAction.sessions[0], dayAction.date, null, "skip")}
+          onUnskip={() => {
+            clearSessionMove(setState, state.me.id, dayAction.sessions[0].day.name, dayAction.date);
+            setDayAction(null);
+          }}
+          onPullForward={() => changeDay(dayAction.sessions[0], dayAction.date, todayISO(), "pull")}
+          onStart={() => {
+            const target = (myProgram.days || []).find(x => x.name === dayAction.sessions[0].day.name);
+            setDayAction(null);
+            if (target) nav.go("athlete-workout", target.id);
+          }}
+          onAddDay={() => {
+            // Nothing scheduled, so there is nothing to move - the athlete
+            // picks a session on the next screen and it logs against today.
+            setDayAction(null);
+            nav.go("athlete-workout");
+          }} />
+
         {/* ---- sub tabs: the days inside the block ---- */}
         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>
           Sessions in {plan.blocks.length > 1 ? `Phase ${activeBlock?.index}` : "this program"}
@@ -14997,11 +17620,25 @@ function AthleteProgram({ state, setState, nav }) {
                 <div className="text-[15px] mt-0.5" style={{ color: C.orange }}>
                   {weekExercises.length} exercises · ~{dayMinutes} min
                 </div>
+                {pausedHere && (
+                  <div className="text-[12.5px] mt-1 font-semibold" style={{ color: C.blue }}>
+                    Paused {pausedWhenLabel(pausedHere.date) || ""} at exercise {(Number(pausedHere.exIdx) || 0) + 1}.
+                    Your sets are saved.
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {canEdit && (
                   <button onClick={() => setDeleteTarget(day)} aria-label="Delete session" className="p-1.5"><Trash2 size={16} style={{ color: C.sub }} /></button>
                 )}
+                {/* A phone in a chalked-up hand, in a gym with no signal, is
+                    a phone that does not get used. The sheet keeps the
+                    session recoverable: write it down, type it in after. */}
+                <button onClick={() => setPrintOpen(true)} aria-label="Print this session"
+                  className="inline-flex items-center gap-1.5 rounded-full px-3 py-2.5 font-semibold text-[12.5px]"
+                  style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.sub }}>
+                  <Printer size={14} /> Print
+                </button>
                 <button onClick={() => nav.go("athlete-workout", day.id)} className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 font-semibold text-[15px]" style={{ background: C.orange, color: "#fff" }}>
                   <Play size={14} fill="#fff" /> Start
                 </button>
@@ -15119,6 +17756,19 @@ function AthleteProgram({ state, setState, nav }) {
         }} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDayFromMyProgram(deleteTarget.id); setDeleteTarget(null); }} />
+
+      {printOpen && day && (
+        <PrintSheet
+          day={day}
+          /* This week's prescription, not the programme's baseline. A deload
+             week printed at full load is a sheet that tells the athlete to
+             ignore the week they are in. */
+          exercises={printableExercises(weekExercises, state.exercises)}
+          programName={myProgram?.name}
+          week={shownWeek}
+          athleteName={state.me.name}
+          onClose={() => setPrintOpen(false)} />
+      )}
       <DeleteSegmentModal
         open={!!segmentTarget}
         onClose={() => setSegmentTarget(null)}
@@ -15253,7 +17903,335 @@ function RestTimer({ seconds, restKey, onDone, alertSound }) {
 // real duration, sets completed out of prescribed, effort — and then takes the
 // athlete back to their program rather than dead-ending on a screen whose only
 // button went somewhere else entirely.
-function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, onDone }) {
+// A number climbing to its total, which is most of what makes a score feel
+// earned rather than announced. Returns the target immediately when `run` is
+// false, which is how reduced motion and a re-render mid-count both land on
+// the right number instead of a frozen partial one.
+function useCountUp(target, run, ms = 800) {
+  const [shown, setShown] = useState(run ? 0 : target);
+  useEffect(() => {
+    if (!run) { setShown(target); return; }
+    let frame = 0;
+    let started = null;
+    const tick = (now) => {
+      if (started == null) started = now;
+      const through = Math.min(1, (now - started) / ms);
+      setShown(Math.round(target * through));
+      if (through < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target, run, ms]);
+  return shown;
+}
+
+// What the session earned, before the summary of what it was.
+//
+// The order is deliberate and it is the order in the design: the medal, then
+// the points, then the week, then the level, then anything new. Each arrives
+// on its own so there is a moment to read it - a screen where six things
+// appear at once is a screen nobody reads any of.
+//
+// Sections with nothing in them are left out rather than shown empty. An
+// athlete who earned no badges should not be shown a heading that says "New
+// badges" above a gap, and should not wait a second for it either.
+//
+// Someone who has asked their device for less movement gets the whole thing
+// at once, still. That is both halves of the promise: the stylesheet stops
+// the animation, and this stops the waiting.
+function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, onDone }) {
+  const [still] = useState(prefersReducedMotion);
+  const sections = useMemo(() => ([
+    "medal",
+    points > 0 ? "points" : null,
+    perfect && perfect.planned > 0 ? "perfect" : null,
+    "level",
+    badges?.length ? "badges" : null,
+    bests?.length ? "bests" : null,
+  ].filter(Boolean)), [points, perfect, badges, bests]);
+
+  const [shown, setShown] = useState(still ? sections.length : 1);
+  useEffect(() => {
+    if (still || shown >= sections.length) return;
+    const t = setTimeout(() => setShown(n => n + 1), 850);
+    return () => clearTimeout(t);
+  }, [shown, sections.length, still]);
+
+  const at = (key) => sections.indexOf(key);
+  const seen = (key) => at(key) >= 0 && at(key) < shown;
+  const finished = shown >= sections.length;
+  const climbing = useCountUp(points, !still && seen("points"));
+  // The bar animates from where it was to where it is. Rendering it at its
+  // final width on the first frame means the transition has nothing to move.
+  const barWidth = seen("level") ? Math.round((level?.progress ?? 0) * 100) : 0;
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10 relative" style={{ background: C.bg }}>
+      {/* The confetti gets its own fixed layer, with the clipping on THAT
+          rather than on the column. Clipping the column is the obvious way to
+          write this and it silently breaks the screen: a session with three
+          badges and two new bests is taller than a phone, and
+          `overflow: hidden` on the thing that is too tall means the athlete
+          cannot reach the button at the bottom of it.
+
+          Not rendered at all under reduced motion, rather than rendered and
+          frozen - a still frame of eighteen rectangles stuck along the top
+          edge is not a quieter version of confetti. */}
+      {!still && (
+        <div aria-hidden="true" className="fixed inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 0 }}>
+          {Array.from({ length: 18 }).map((_, i) => (
+            <span key={i} className="rw-fall" style={{
+              position: "absolute", top: 0, left: `${(i * 53) % 100}%`,
+              width: 7, height: 12, borderRadius: 2,
+              background: BRAND_COLORS[i % BRAND_COLORS.length],
+              "--rw-delay": `${(i % 6) * 0.17}s`,
+              "--rw-dur": `${2.2 + (i % 5) * 0.34}s`,
+            }} />
+          ))}
+        </div>
+      )}
+
+      <div className="relative flex items-center justify-center rw-pop" style={{ width: 128, height: 128, zIndex: 1 }}>
+        {/* Rays, not a smudge. The first version faded each spoke to a
+            transparent amber, which over a near-black background renders as
+            a dark grey blur rather than light - the colour channels go to
+            amber as the alpha goes to zero, and the result reads as dirt on
+            the screen. Fading to white at low alpha is what actually looks
+            like light. */}
+        <div className="rw-rays absolute inset-0" aria-hidden="true" style={{
+          background: `conic-gradient(from 0deg, rgba(255,255,255,0) 0deg, ${C.amber}aa 14deg, rgba(255,255,255,0) 30deg, rgba(255,255,255,0) 90deg, ${C.amber}aa 104deg, rgba(255,255,255,0) 120deg, rgba(255,255,255,0) 180deg, ${C.amber}aa 194deg, rgba(255,255,255,0) 210deg, rgba(255,255,255,0) 270deg, ${C.amber}aa 284deg, rgba(255,255,255,0) 300deg)`,
+          borderRadius: "50%",
+          // Fades the spokes out at the rim instead of cutting them off at a
+          // hard circular edge.
+          WebkitMaskImage: "radial-gradient(circle, #000 34%, rgba(0,0,0,.55) 62%, transparent 78%)",
+          maskImage: "radial-gradient(circle, #000 34%, rgba(0,0,0,.55) 62%, transparent 78%)",
+        }} />
+        <div className="relative flex items-center justify-center" style={{
+          width: 84, height: 84, borderRadius: "50%",
+          background: `radial-gradient(circle at 35% 30%, ${C.amber}, ${C.orange})`,
+          boxShadow: `0 10px 30px ${C.amber}55`,
+        }}>
+          <Trophy size={38} style={{ color: "#fff" }} />
+        </div>
+      </div>
+
+      <h2 className="text-2xl font-bold mt-5 text-center rw-pop" style={{ fontFamily: DISPLAY, color: C.text }}>
+        SESSION DONE
+      </h2>
+
+      {seen("points") && (
+        <div className="rw-rise mt-5 rounded-2xl px-5 py-3 text-center" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+          <div className="text-3xl tabular-nums font-bold" style={{ fontFamily: DISPLAY, color: C.amber }}>
+            +{climbing}
+          </div>
+          <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>points this session</div>
+        </div>
+      )}
+
+      {seen("perfect") && (
+        <div className="rw-rise mt-5 text-center">
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>This week</div>
+          <div className="flex items-center justify-center gap-2">
+            {Array.from({ length: perfect.planned }).map((_, i) => (
+              <span key={i} style={{
+                width: 13, height: 13, borderRadius: "50%",
+                background: i < perfect.done ? C.olive : "transparent",
+                border: `2px solid ${i < perfect.done ? C.olive : C.steel}`,
+              }} />
+            ))}
+          </div>
+          <div className="text-[12.5px] mt-2" style={{ color: perfect.done >= perfect.planned ? C.olive : C.sub }}>
+            {perfect.done >= perfect.planned
+              ? "Perfect week"
+              : `${perfect.done} of ${perfect.planned} sessions done`}
+          </div>
+        </div>
+      )}
+
+      {seen("level") && (
+        <div className="rw-rise mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="text-[12.5px] font-semibold" style={{ color: C.text }}>Level {level?.level ?? 1}</span>
+            {levelUp
+              ? <span className="text-[11px] font-bold uppercase tracking-[.14em] rw-pop" style={{ color: C.amber }}>Level up</span>
+              : <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>
+                  {level?.toNext} more to level {(level?.level ?? 1) + 1}
+                </span>}
+          </div>
+          <div className="rw-bar" style={{ height: 8, borderRadius: 4, background: C.panel, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <i style={{ width: `${barWidth}%`, background: `linear-gradient(90deg, ${C.orange}, ${C.amber})` }} />
+          </div>
+        </div>
+      )}
+
+      {seen("badges") && (
+        <div className="mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2 text-center" style={{ color: C.sub }}>
+            {badges.length === 1 ? "New badge" : "New badges"}
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {badges.map((b, i) => (
+              <span key={b.key} className="rw-flip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5"
+                style={{
+                  background: `${C.olive}18`, border: `1px solid ${C.olive}`,
+                  animationDelay: still ? undefined : `${i * 140}ms`,
+                }}>
+                <Award size={13} style={{ color: C.olive }} />
+                <span className="text-[12.5px] font-semibold" style={{ color: C.olive }}>{b.name}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {seen("bests") && (
+        <div className="rw-rise mt-6 w-full" style={{ maxWidth: 320 }}>
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2 text-center" style={{ color: C.sub }}>
+            {bests.length === 1 ? "New best" : "New bests"}
+          </div>
+          {bests.map((b, i) => (
+            <div key={`${b.name}-${i}`} className="flex items-center justify-between rounded-xl px-3 py-2 mb-1.5"
+              style={{ background: `${C.amber}10`, border: `1px solid ${C.amber}55` }}>
+              <span className="text-[12.5px] font-semibold min-w-0 truncate" style={{ color: C.text }}>{b.name}</span>
+              <span className="text-[12.5px] tabular-nums font-bold shrink-0 ml-2" style={{ color: C.amber }}>
+                {displayWeight(b.weightLb, "lb", unit)} {unit}{b.reps ? ` × ${b.reps}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Always there, from the first frame. A sequence an athlete cannot get
+          out of is a sequence they resent by the third session. */}
+      <Btn className="mt-8" variant={finished ? "primary" : "ghost"} onClick={onDone}>
+        {finished ? "See summary" : "Skip"}
+      </Btn>
+    </div>
+  );
+}
+
+// The session on paper.
+//
+// Not a nicety. A phone in a chalked-up hand, in a gym with no signal, is a
+// phone that does not get used - and an athlete who cannot log a session is
+// an athlete the coach cannot see. A sheet costs nothing and keeps the
+// session recoverable: write it down, type it in afterwards.
+//
+// Printed black on white rather than in the app's colours. A dark theme sent
+// to a printer is either an empty page or a cartridge.
+// The session as a flat list of printable rows. Resolved here rather than
+// inside the sheet, because the two screens that offer one hold their
+// exercises in different shapes - the home screen has the day straight off
+// the programme, the Plan has this week's prescription - and the sheet
+// should not have to know which it was handed.
+function printableExercises(entries, allExercises) {
+  return (entries || []).map((x, i) => ({
+    id: x?.id || `x${i}`,
+    name: (allExercises || []).find(e => e.id === x?.exerciseId)?.name || x?.name || "Exercise",
+    sets: x?.sets,
+    reps: x?.reps,
+    rest: x?.rest,
+  }));
+}
+
+function PrintSheet({ day, exercises, programName, week, athleteName, onClose }) {
+  const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const line = { borderBottom: "1px solid #000", display: "inline-block", minWidth: 120 };
+  const box = { border: "1px solid #666", width: 46, height: 22, display: "inline-block", marginRight: 6, borderRadius: 3 };
+
+  return (
+    <div className="fixed inset-0 overflow-auto" style={{ background: "#fff", zIndex: 90 }}>
+      <div className="tb-print-hide sticky top-0 flex items-center gap-2 px-4 py-3"
+        style={{ background: "#fff", borderBottom: "1px solid #ddd" }}>
+        <Btn size="sm" variant="primary" icon={Printer} onClick={() => window.print()}>Print</Btn>
+        <Btn size="sm" variant="ghost" onClick={onClose}>Close</Btn>
+        <span className="text-[12.5px] ml-auto" style={{ color: "#666" }}>One page, black and white</span>
+      </div>
+
+      <div className="tb-print" style={{ color: "#000", padding: "18px 20px", fontSize: 12, lineHeight: 1.35 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "2px solid #000", paddingBottom: 6 }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{day?.name || "Session"}</div>
+            <div style={{ fontSize: 11, color: "#444" }}>
+              {athleteName ? `${athleteName} · ` : ""}{programName || "Training"}{week ? ` · Week ${week}` : ""}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, textAlign: "right" }}>
+            <div>{dateLabel}</div>
+            <div style={{ marginTop: 4 }}>Start <span style={{ ...line, minWidth: 54 }} /> Finish <span style={{ ...line, minWidth: 54 }} /></div>
+          </div>
+        </div>
+
+        {/* The check-in, to circle. Four scales, the same four the app asks
+            for, so what gets typed in afterwards lines up with what was
+            written down. */}
+        <div className="tb-print-break" style={{ marginTop: 10, border: "1px solid #999", borderRadius: 4, padding: "6px 8px" }}>
+          <div style={{ fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>Before you start, circle one</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 16px", marginTop: 4 }}>
+            {CHECKIN_SCALES.map(scale => (
+              <div key={scale.key} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{ width: 86, fontSize: 11 }}>{scale.label}</span>
+                <span style={{ fontSize: 11, letterSpacing: 3 }}>
+                  {Array.from({ length: CHECKIN_SCALE_MAX }, (_, i) => i + 1).join("  ")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {(exercises || []).map((x, i) => (
+          <div key={x.id || i} className="tb-print-break"
+            style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderBottom: "1px solid #ddd" }}>
+            {/* Grayscale, and small. A colour photo costs ink and tells the
+                athlete nothing a black and white one does not. */}
+            <div style={{ width: 46, height: 46, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden", flexShrink: 0, background: "#f4f4f4" }}>
+              {exerciseImage(x.name) && (
+                <img src={exerciseImage(x.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(1) contrast(1.1)" }} />
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{x.name}</div>
+              <div style={{ fontSize: 10, color: "#555" }}>
+                {x.sets} {x.sets === 1 ? "set" : "sets"} · target {x.reps} reps{x.rest ? ` · rest ${x.rest}` : ""}
+              </div>
+              <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
+                {Array.from({ length: Math.max(0, Number(x.sets) || 0) }).map((_, n) => (
+                  <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, color: "#555" }}>
+                    <span style={{ width: 12 }}>{n + 1}</span>
+                    <span style={box} /><span style={{ marginRight: 8 }}>reps</span>
+                    <span style={box} /><span>weight</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <div className="tb-print-break" style={{ marginTop: 10, display: "flex", gap: 18, alignItems: "baseline" }}>
+          <span style={{ fontWeight: 700, fontSize: 11 }}>How hard was it?</span>
+          {/* Separate spans with a gap, not one string padded with spaces.
+              HTML collapses runs of whitespace, so the padded version prints
+              as "Hard Moderate Easy" with nothing to circle between them. */}
+          <span style={{ display: "inline-flex", gap: 20, fontSize: 11 }}>
+            {EFFORT_LEVELS.map(e => <span key={e.key}>{e.label}</span>)}
+          </span>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 11 }}>
+          Notes
+          <div style={{ borderBottom: "1px solid #999", height: 16, marginTop: 2 }} />
+          <div style={{ borderBottom: "1px solid #999", height: 16 }} />
+        </div>
+
+        <div style={{ marginTop: 12, paddingTop: 6, borderTop: "1px solid #000", fontSize: 10, color: "#444" }}>
+          Type it in later: open the app, start this session, and put each set's reps and weight
+          into the boxes. Tick each set as you enter it so the totals match what you wrote here.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, counts, onDone }) {
   // A queued session gets longer on screen. It is the one case where the
   // athlete has something to read: their work is safe, but it is safe HERE,
   // and they should know that before the screen moves on.
@@ -15279,7 +18257,21 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
           <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Saved on this phone</div>
           <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
             No connection right now, so this session is stored here and will send itself the
-            moment you are back online. Nothing is lost — you don’t need to do anything.
+            moment you are back online. Nothing is lost, and you don’t need to do anything.
+          </p>
+        </div>
+      )}
+
+      {/* Saved either way. An athlete who managed two sets of a hard session
+          has not failed at using the app, and a screen that behaves as if
+          nothing happened is how someone decides not to open it next time.
+          What is withheld is the score, and the reason is stated. */}
+      {counts === false && (
+        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Logged as a part session</div>
+          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
+            You ticked {setsCompleted} of {setsPrescribed} sets, which is under half, so this one is recorded as a
+            part session rather than a full one. It is saved either way, and your coach can see it.
           </p>
         </div>
       )}
@@ -15314,7 +18306,7 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
 
       {adherence !== null && adherence < 100 && (
         <p className="text-[12.5px] mt-4 text-center" style={{ color: C.sub }}>
-          {adherence}% of the prescribed sets — your coach sees this too.
+          {adherence}% of the prescribed sets. Your coach sees this too.
         </p>
       )}
 
@@ -15646,6 +18638,16 @@ async function flushPendingLogs(userId) {
     }
     if (!landed) break;
 
+    // The per-set rows go with it. Upserted rather than inserted because a
+    // queued session can reach here twice - a duplicate key on the log counts
+    // as landed, and the sets behind it must not then fail the whole flush.
+    if (entry.setRows?.length) {
+      try {
+        await supabase.from("workout_sets")
+          .upsert(entry.setRows, { onConflict: "log_id,exercise_name,set_number" });
+      } catch { /* the log's own jsonb still holds every number */ }
+    }
+
     dropPendingLog(entry.row.id);
     sent++;
     // The coach hears about it now rather than never. Deliberately after the
@@ -15653,6 +18655,77 @@ async function flushPendingLogs(userId) {
     if (entry.meta) notifyCoachOfSession(entry.meta);
   }
   return sent;
+}
+
+// ---- 3. a workout stopped part-way through ----
+//
+// The session draft above is a safety net. It exists so that a phone killing
+// a backgrounded tab does not cost an athlete their session, and it expires
+// after fourteen hours because a draft older than that is yesterday's
+// accident rather than today's intention.
+//
+// A PAUSED workout is the opposite thing. The athlete pressed Stop and chose
+// to keep it, so it has to survive the night, the weekend and a phone
+// restart: its own key, no expiry, and the home screen asks about it every
+// day - rest days included - until it is finished or dropped.
+//
+// One per athlete. Two half-finished sessions is a mess nobody asked for,
+// and the card that offers to resume one has room for a single answer.
+const PAUSED_WORKOUT_KEY = "tb_paused_workout";
+
+function readAllPaused() {
+  const v = storageGet(PAUSED_WORKOUT_KEY);
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+function readPausedWorkout(userId) {
+  const paused = readAllPaused()[userId || "anon"];
+  return paused && paused.dayKey ? paused : null;
+}
+
+function writePausedWorkout(paused, userId) {
+  // Without a durable key there is nothing to match it back to a session, so
+  // storing it would only produce a card that cannot be acted on.
+  if (!paused?.dayKey) return;
+  storageSet(PAUSED_WORKOUT_KEY, {
+    ...readAllPaused(),
+    [userId || "anon"]: { ...paused, savedAt: paused.savedAt || Date.now() },
+  });
+}
+
+function clearPausedWorkout(userId) {
+  const all = readAllPaused();
+  delete all[userId || "anon"];
+  storageSet(PAUSED_WORKOUT_KEY, all);
+}
+
+// "Not today." Keeps the workout exactly as it is and stops the card asking
+// again until tomorrow, so an athlete who has already decided is not asked
+// the same question on every visit to the home screen.
+function snoozePausedWorkout(userId, dateStr) {
+  const paused = readPausedWorkout(userId);
+  if (!paused) return;
+  writePausedWorkout({ ...paused, snoozedOn: dateStr }, userId);
+}
+
+function pausedWorkoutToShow(userId, dateStr) {
+  const paused = readPausedWorkout(userId);
+  if (!paused) return null;
+  return paused.snoozedOn === dateStr ? null : paused;
+}
+
+// When it was put down, in words. A weekday on its own for the first week,
+// and a date after that - a card that has been sitting there a fortnight
+// saying "on Tuesday" implies a Tuesday that has since come round again.
+function pausedWhenLabel(dateStr, today = todayISO()) {
+  if (!dateStr) return null;
+  const then = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(then.getTime())) return null;
+  const days = Math.round((new Date(`${today}T00:00:00`) - then) / 86400000);
+  if (days <= 0) return "earlier today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `on ${then.toLocaleDateString("en-US", { weekday: "long" })}`;
+  return `on ${then.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}`;
 }
 
 // How much room the scrolling column above a FIXED bottom bar has to leave.
@@ -16050,6 +19123,12 @@ function Workout({ state, setState, nav, dayId }) {
   // what was asked for, this is what was done, and conflating them is how a
   // log ends up recording a session nobody had.
   const [setReps, setSetReps] = useState({});
+  // Which weight boxes the athlete typed into themselves, as opposed to boxes
+  // filled down from the set above. A hand-set box is never overwritten
+  // again - that is the whole contract of the fill - and it is the same flag
+  // workout_sets.manually_set records, so a coach reading the history can
+  // tell a deliberate drop set from a copied number.
+  const [handSet, setHandSet] = useState({});
   // (checksRef is re-synced from committed state on every render, below.)
   // The date this session belongs to, fixed when the session opens rather than
   // read fresh on every render. An athlete training across midnight into a new
@@ -16077,6 +19156,11 @@ function Workout({ state, setState, nav, dayId }) {
   const [swapItem, setSwapItem] = useState(null);
   const [formCheckOpen, setFormCheckOpen] = useState(false);
   const [swappedMap, setSwappedMap] = useState({});
+  // null, or { replaces } - the name of another paused workout this one
+  // would take the place of, worked out when the sheet is opened rather than
+  // read out of storage on every render.
+  const [stopOpen, setStopOpen] = useState(null);
+  const [showRewards, setShowRewards] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -16129,6 +19213,7 @@ function Workout({ state, setState, nav, dayId }) {
     setSetChecks(remapExerciseKeys(draft?.setChecks, toCurrent));
     setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
     setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
+    setHandSet(remapExerciseKeys(draft?.handSet, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
     setSwappedMap(remapExerciseKeys(draft?.swappedMap, toCurrent));
@@ -16136,6 +19221,7 @@ function Workout({ state, setState, nav, dayId }) {
     setRestDone(false);
     setPendingDay(null);
     setFinished(false);
+    setShowRewards(false);
     setMood(null);
     setNotes(draft?.notes || "");
     setSaveError(null);
@@ -16207,11 +19293,15 @@ function Workout({ state, setState, nav, dayId }) {
       setChecks: remapExerciseKeys(setChecks, toStable),
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
+      // Saved with the rest of the draft, or a reload mid-session turns every
+      // deliberately different set back into a box the next fill will stamp
+      // over.
+      handSet: remapExerciseKeys(handSet, toStable),
       swappedMap: remapExerciseKeys(swappedMap, toStable),
     };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
-  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, swappedMap, notes, finished]);
+  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, handSet, swappedMap, notes, finished]);
 
   // "Last time" is memoised because it sorts the athlete's entire log history,
   // and without it that ran on every keystroke into a weight field.
@@ -16262,6 +19352,15 @@ function Workout({ state, setState, nav, dayId }) {
   // and the clamped version collapses everything past the program's end into
   // one number. Null when the program has no start date at all.
   const thisWeek = absoluteProgramWeek(myProgram, sessionDay);
+  // The unit the BAR is read in, which is not the unit the athlete gave their
+  // bodyweight in at signup. Those were one setting until now, so anyone who
+  // weighs themselves in kilos and loads plates in pounds - which around here
+  // is most people - had no way to say so.
+  //
+  // Up here with the hooks rather than down with the rest of the
+  // prescription, because the memo below depends on it and a hook cannot sit
+  // after an early return.
+  const weightUnit = state.me.unitPref === "kg" ? "kg" : "lb";
   const lastSets = useMemo(
     () => lastPerformance({
       exerciseName: memoExName,
@@ -16272,6 +19371,16 @@ function Workout({ state, setState, nav, dayId }) {
     }),
     [memoExName, myProgram, state.workoutLogs, day?.name, thisWeek]
   );
+  // Their best ever on this movement, in the unit on screen. It is the weight
+  // box's placeholder, so an empty box says what they are capable of rather
+  // than showing a dash. Memoised beside lastSets and for the same reason: it
+  // walks the entire log history, and un-memoised it did that on every
+  // keystroke into a weight field.
+  const bestSoFar = useMemo(
+    () => bestLoggedWeight(memoExName, state.workoutLogs, weightUnit),
+    [memoExName, state.workoutLogs, weightUnit],
+  );
+
   // Last microcycle's version of this whole session, so the athlete walks in
   // knowing what they are chasing instead of discovering it one exercise at a
   // time.
@@ -16392,10 +19501,16 @@ function Workout({ state, setState, nav, dayId }) {
   const totalSets = x?.sets || 0;
   const doneSets = setChecks[x?.id]?.length || 0;
   const phaseLabel = PHASES.find(p => p.key === x?.phase)?.label;
-  // Whatever the athlete chose at signup. Weights are stored in this unit
-  // rather than converted, so nothing drifts on the way back out.
-  const weightUnit = state.me.intake?.weightUnit === "kg" ? "kg" : "lb";
   const alertSound = state.me.intake?.restAlert || DEFAULT_ALERT;
+
+  // The stopwatch as it stands at this instant, including the second React
+  // has not re-rendered yet. Reading timerSeconds alone loses up to a second
+  // of a session every time it is put down and picked back up.
+  const liveTimerSeconds = () => (
+    timerMode === "running"
+      ? Math.round((Date.now() - (timerStartRef.current || Date.now())) / 1000)
+      : Math.max(0, Math.round(timerSeconds || 0))
+  );
 
   // Switching sessions from inside the workout.
   //
@@ -16420,7 +19535,7 @@ function Workout({ state, setState, nav, dayId }) {
     // The stored timer belongs to the session being left. Clearing it here
     // stops it being restored onto the new day by the reset effect below.
     writeSessionTimer(null);
-    clearSessionDraft(day.id, state.me.id);
+    clearSessionDraft(dayKey, state.me.id);
     setDayOverride(id);
     setPendingDay(null);
   };
@@ -16429,15 +19544,59 @@ function Workout({ state, setState, nav, dayId }) {
     if (hasProgress) setPendingDay(id);
     else goToDay(id);
   };
-  // Wraps at both ends, so four taps of "next" on a four-day program brings
-  // you back where you started rather than dead-ending on the last one.
-  const requestDaySwitch = (step) => {
-    if (allDays.length < 2) return;
-    const next = allDays[(dayIdx + step + allDays.length) % allDays.length];
-    requestDaySwitchTo(next?.id);
-  };
   // `item` so a grouped block can tick any of its movements; it defaults to
   // the block's first, which is the only one a straight set has.
+  // Typing or stepping a weight. One path, so the fill-down rule cannot be
+  // true of the keyboard and false of the buttons.
+  const writeWeight = (item, i, value, byHand = true) => {
+    if (!item) return;
+    if (byHand) {
+      setHandSet(h => {
+        const forExercise = [...(h[item.id] || [])];
+        forExercise[i] = true;
+        return { ...h, [item.id]: forExercise };
+      });
+    }
+    setSetWeights(w => ({
+      ...w,
+      [item.id]: fillWeightDown({
+        weights: w[item.id] || [],
+        // The fill reads the hand-set flags as they were BEFORE this edit, on
+        // purpose: the box being typed into is excluded from its own rule, and
+        // marking it first would make no difference to the sets below it.
+        handSet: handSet[item.id] || [],
+        checks: checksRef.current[item.id] || [],
+        index: i, value, total: Number(item.sets) || 0,
+      }),
+    }));
+  };
+
+  // Changing the unit changes what is on the SCREEN, not what is on the bar,
+  // so anything already typed is converted rather than relabelled. Leaving the
+  // numbers alone would turn a typed 135 into 135 kg - a three-hundred-pound
+  // bench press, logged and sent to the coach.
+  const changeLiftUnit = async (next) => {
+    const to = next === "kg" ? "kg" : "lb";
+    if (to === weightUnit) return;
+    setSetWeights(all => {
+      const out = {};
+      for (const [exId, list] of Object.entries(all || {})) {
+        out[exId] = (list || []).map(v => {
+          const converted = displayWeight(normalizeWeight(v), weightUnit, to);
+          // A half-typed "13." has no number in it yet and is left exactly as
+          // it is, rather than being blanked out from under the cursor.
+          return converted == null ? v : String(converted);
+        });
+      }
+      return out;
+    });
+    // Stored so the choice survives the next login. A failed write leaves the
+    // screen in the new unit for this session and reverts on reload, which is
+    // the mild end of wrong: the numbers on screen are right either way,
+    // because they were converted above.
+    await saveLiftUnit(setState, state.me.id, to);
+  };
+
   const toggleSet = (setNum, item = x) => {
     if (!item) return;
     const current = checksRef.current[item.id] || [];
@@ -16480,7 +19639,12 @@ function Workout({ state, setState, nav, dayId }) {
   // they're actually ready to begin, which is rarely the moment they open the
   // app. getAudioContext() rides along on this tap because browsers only let
   // audio start from a real gesture, and the rest-timer alert needs it later.
-  const rememberTimer = (patch) => writeSessionTimer({ dayId: day.id, date: todayISO(), ...patch });
+  // dayKey, not day.id. Every read of the stored timer goes through
+  // restoreSessionTimer(dayKey, ...), and day.id is a fresh random string on
+  // every launch - so a stopwatch stopped mid-session was written under a key
+  // nothing ever looked for, and came back as the "shall I time this?" prompt
+  // with the elapsed time gone.
+  const rememberTimer = (patch) => writeSessionTimer({ dayId: dayKey, date: todayISO(), ...patch });
   const armTimer = () => { getAudioContext(); setTimerMode("ready"); rememberTimer({ mode: "ready" }); };
   const declineTimer = () => { setTimerMode("off"); rememberTimer({ mode: "off" }); };
   const startTimer = () => { getAudioContext(); setCountdownN(3); setTimerMode("counting"); };
@@ -16529,6 +19693,10 @@ function Workout({ state, setState, nav, dayId }) {
       const checked = setChecks[item.id] || [];
       const typed = setWeights[item.id] || [];
       const typedReps = setReps[item.id] || [];
+      // Which of these weights the athlete typed themselves, as opposed to
+      // ones the fill copied down. Carried into the log so it survives the
+      // session that produced it.
+      const typedByHand = handSet[item.id] || [];
       // One entry per prescribed set, so set 3 stays set 3 even when set 2 was
       // skipped — the position is what makes "last time" line up next session.
       const sets = Array.from({ length: item.sets || 0 }, (_, i) => {
@@ -16538,7 +19706,11 @@ function Workout({ state, setState, nav, dayId }) {
         // could only ever repeat the number that was on the bar - which is
         // the smaller half of the progress made inside a block.
         const reps = normalizeReps(typedReps[i]);
-        return { set: i + 1, done: checked.includes(i), weight, unit: weight == null ? null : weightUnit, reps };
+        return {
+          set: i + 1, done: checked.includes(i), weight,
+          unit: weight == null ? null : weightUnit, reps,
+          manual: typedByHand[i] === true,
+        };
       });
       // A warm-up or cool-down is recorded as done or not, and nothing more:
       // it is left out of the set counts so adherence measures the real work,
@@ -16595,6 +19767,12 @@ function Workout({ state, setState, nav, dayId }) {
       mood,
       sets_completed: setsCompleted,
       sets_prescribed: setsPrescribed,
+      // Half the prescribed sets or it does not feed the streak, the level,
+      // the points or the badges. Worked out here and stored, rather than
+      // recomputed wherever it is read: the prescription can change under a
+      // past session when a coach edits the program, and a session that
+      // counted in October must not stop counting in November.
+      counts: sessionCounts(setsCompleted, setsPrescribed),
       exercises: exerciseDetail,
       notes: notes.trim() || null,
     };
@@ -16610,6 +19788,17 @@ function Workout({ state, setState, nav, dayId }) {
       setSaveError("You're signed out, so this can't be saved yet. Sign back in and finish the session again \u2014 everything you've entered is still here.");
       return;
     }
+
+    // One row per set, in pounds. Built before anything is sent so a session
+    // that has to be queued carries them into the queue with it.
+    const priorBests = {};
+    for (const entry of exerciseDetail) {
+      const key = String(entry.name || "").toLowerCase();
+      if (!(key in priorBests)) priorBests[key] = priorBest(entry.name, state.workoutLogs);
+    }
+    const setRows = workoutSetRows({
+      logId: rowId, userId: state.me.id, exercises: exerciseDetail, bests: priorBests,
+    });
 
     if (state.me.id) {
       // This insert was previously never awaited. A supabase-js query builder is
@@ -16629,7 +19818,7 @@ function Workout({ state, setState, nav, dayId }) {
         // refusing the save would throw the session away. Keep it on the
         // device and send it when there is a connection; only a rejection
         // that will never succeed is worth stopping for.
-        if (isTransientError(error) && queuePendingLog({ row, meta: notice })) {
+        if (isTransientError(error) && queuePendingLog({ row, meta: notice, setRows })) {
           queued = true;
         } else {
           setSaving(false);
@@ -16639,6 +19828,16 @@ function Workout({ state, setState, nav, dayId }) {
       }
 
       if (!queued) {
+        // The per-set rows, after the log they hang off. A failure here is
+        // not worth stopping a saved session for: the same numbers are in the
+        // log's own jsonb, so nothing is lost that cannot be rebuilt.
+        if (setRows.length) {
+          try {
+            await supabase.from("workout_sets")
+              .upsert(setRows, { onConflict: "log_id,exercise_name,set_number" });
+          } catch { /* the jsonb copy is still the record */ }
+        }
+
         // The coach hears about it the moment it happens. Deliberately after the
         // insert and deliberately not awaited for success: the session is on the
         // record either way, and a failed notification must never turn a logged
@@ -16648,7 +19847,7 @@ function Workout({ state, setState, nav, dayId }) {
         // Streak was displayed everywhere and incremented nowhere. Recomputing it
         // from the log history is self-correcting: a wrong stored value repairs
         // itself on the next session rather than compounding.
-        const nextStreak = computeStreak(state.workoutLogs, dateStr);
+        const nextStreak = computeStreak(state.workoutLogs, dateStr, row.counts);
         if (nextStreak !== state.me.streak) {
           try {
             await supabase.from("profiles").update({ streak: nextStreak }).eq("id", state.me.id);
@@ -16658,25 +19857,142 @@ function Workout({ state, setState, nav, dayId }) {
       }
     }
 
-    setState(s => ({
-      ...s,
-      workoutLogs: [
-        // The server's id, not a throwaway, so the row the athlete can already
-        // see is the same row that arrives when the queue drains.
-        { id: rowId, date: dateStr, programDay: day.name, duration: durationMin, timedSeconds, mood, setsCompleted, setsPrescribed, notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued },
-        ...s.workoutLogs,
-      ],
-    }));
+    // The server's id, not a throwaway, so the row the athlete can already
+    // see is the same row that arrives when the queue drains. Built once
+    // here because the rewards screen needs to ask what the athlete's history
+    // looks like WITH this session in it, and a second hand-written copy of
+    // the same shape is how the two end up disagreeing.
+    const loggedRow = {
+      id: rowId, date: dateStr, programDay: day.name, duration: durationMin,
+      timedSeconds, mood, setsCompleted, setsPrescribed, counts: row.counts,
+      notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued,
+    };
+
+    // What this session earned. Worked out by asking the same functions the
+    // badge wall asks, once without this session and once with it, so a badge
+    // cannot be announced here and be missing from the wall a minute later.
+    const logsBefore = state.workoutLogs || [];
+    const logsAfter = [loggedRow, ...logsBefore];
+    const perWeek = (myProgram?.days || []).length;
+    const badgeOpts = { sessionsPerWeek: perWeek, program: myProgram, todayIso: dateStr };
+    const weekStart = weekStartFor(dateStr);
+    const rewards = {
+      points: sessionPoints(loggedRow),
+      level: levelFor(logsAfter),
+      levelUp: leveledUp(logsBefore.filter(logCounts).length, logsAfter.filter(logCounts).length),
+      badges: newlyEarnedBadges(logsBefore, logsAfter, badgeOpts),
+      // From the rows that were just written, so the medal and the database
+      // agree about which set was the best one.
+      bests: setRows.filter(r => r.is_pr).map(r => ({
+        name: r.exercise_name, weightLb: r.weight_lb, reps: r.reps,
+      })),
+      perfect: {
+        planned: perWeek,
+        done: logsAfter.filter(l => logCounts(l) && weekStartFor(l.date) === weekStart).length,
+      },
+    };
+
+    setState(s => ({ ...s, workoutLogs: [loggedRow, ...s.workoutLogs] }));
     // The session is on the record now — here, on the server, or in the
     // queue. Leaving the stored timer behind would hand the next workout a
     // stopwatch that had already been stopped, and leaving the draft behind
     // would offer to restore a session that has already been logged.
     writeSessionTimer(null);
-    clearSessionDraft(day.id, state.me.id);
-    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, queued });
+    // dayKey, not day.id - the draft is written under the durable key, so
+    // clearing it under this launch's random id cleared nothing. A finished
+    // session sat in the draft for fourteen hours, and reopening the same day
+    // offered to restore a workout that was already in the database.
+    clearSessionDraft(dayKey, state.me.id);
+    // It is logged, so it is no longer waiting to be finished.
+    clearPausedWorkout(state.me.id);
+    setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued, rewards });
+    // The rewards sequence first, then the summary - but only when there is
+    // something to celebrate. A session that scored nothing and earned
+    // nothing gets a medal and six seconds of waiting for a blank screen,
+    // which is worse than no sequence at all.
+    setShowRewards(
+      rewards.points > 0 || rewards.levelUp || rewards.badges.length > 0 || rewards.bests.length > 0
+    );
     setSaving(false);
     setFinished(true);
   };
+
+  // ---- stopping part-way through ----
+  //
+  // Leaving a workout used to mean navigating away and hoping. The session
+  // survived in a draft for fourteen hours, which nothing on screen said, so
+  // an athlete who had to leave the gym after three exercises had no way to
+  // know whether their sets were safe - and after a night's sleep they were
+  // not.
+
+  // Everything this session is, in a shape that survives being put down for a
+  // week. Keyed the durable way, exactly like the draft, because the ids the
+  // UI hangs its sets on are minted fresh on every launch.
+  const pauseSnapshot = () => {
+    const { toStable } = stableExerciseKeys(day, nameOfEntry);
+    return {
+      dayKey, dayName: day.name, date: todayISO(), exIdx, notes,
+      setChecks: remapExerciseKeys(setChecks, toStable),
+      setWeights: remapExerciseKeys(setWeights, toStable),
+      setReps: remapExerciseKeys(setReps, toStable),
+      handSet: remapExerciseKeys(handSet, toStable),
+      swappedMap: remapExerciseKeys(swappedMap, toStable),
+      seconds: timerIsLive ? liveTimerSeconds() : 0,
+    };
+  };
+
+  const openStop = () => {
+    const existing = readPausedWorkout(state.me.id);
+    setStopOpen({
+      replaces: existing && existing.dayKey !== dayKey ? existing.dayName : null,
+    });
+  };
+
+  // Stop and keep it. Nothing is logged: as far as the record is concerned
+  // this session has not happened, and half a workout sitting in the history
+  // with no way to add to it is worse than no row at all.
+  const stopAndSave = () => {
+    writePausedWorkout(pauseSnapshot(), state.me.id);
+    // Both belong to a session that has just been put away. A stopwatch left
+    // behind would still be running tomorrow; a draft left behind would offer
+    // to restore the same session a second way.
+    writeSessionTimer(null);
+    clearSessionDraft(dayKey, state.me.id);
+    // A session pulled forward to today and then stopped goes back to its
+    // own day, still paused. "Do it today instead" is a decision about
+    // today, and stopping part-way through unmakes it. One moved there with
+    // Move stays put, because that was a decision about the week.
+    //
+    // The paused record is keyed by the session rather than by a date, so it
+    // follows the session home without being touched.
+    const pulled = pullToUndo(state.sessionMoves, day.name, todayISO());
+    if (pulled) clearSessionMove(setState, state.me.id, pulled.programDay, pulled.fromDate);
+    setStopOpen(null);
+    nav.go("athlete-home");
+  };
+
+  // Done for good. Logs what was actually ticked; the 50% rule in the save
+  // path decides whether it counts toward the streak and the rest.
+  const stopAndLog = () => {
+    setStopOpen(null);
+    finishWorkout();
+  };
+
+  if (finished && showRewards && loggedSummary?.rewards) {
+    const r = loggedSummary.rewards;
+    return (
+      <RewardsScreen
+        points={r.points}
+        level={r.level}
+        levelUp={r.levelUp}
+        perfect={r.perfect}
+        badges={r.badges}
+        bests={r.bests}
+        unit={weightUnit}
+        onDone={() => setShowRewards(false)}
+      />
+    );
+  }
 
   if (finished) {
     return (
@@ -16688,6 +20004,7 @@ function Workout({ state, setState, nav, dayId }) {
         setsPrescribed={loggedSummary?.setsPrescribed}
         effort={mood}
         queued={loggedSummary?.queued}
+        counts={loggedSummary?.counts}
         onDone={() => nav.go("athlete-program")}
       />
     );
@@ -16697,26 +20014,26 @@ function Workout({ state, setState, nav, dayId }) {
     <div className="pb-36">
       {timerIsLive && <SessionTimerBadge seconds={timerSeconds} running={timerMode === "running"} onStop={stopTimer} />}
       {timerMode === "counting" && countdownN > 0 && <SessionTimerCountdown n={countdownN} />}
-      {/* The "1/23" exercise counter that used to sit here is gone. It was the
-          number nobody needed — the athlete is on whichever exercise is on
-          screen — and next to a bare pair of arrows it read as if the arrows
-          stepped through exercises rather than whole sessions.
-          The arrows are labelled now, so what they do is stated rather than
-          guessed at. */}
+      {/* Stop, and the name of the session. Nothing else.
+          Two things used to live here as well and no longer do. The "1/23"
+          exercise counter went first: the athlete is on whichever exercise is
+          on screen, so the number answered a question nobody had. The
+          labelled Back / Next Day arrows went when Stop arrived — three
+          controls and a 25px title do not fit across a 320px phone, and what
+          was being squeezed out was the title, which is the only thing up
+          here that says which session this is. The day strip directly below
+          does the same job better: it shows every day at once, says which one
+          is scheduled for today, and jumps straight to any of them instead of
+          stepping. */}
       <TopBar title={day.name} right={
-        allDays.length > 1 ? (
-          <div className="flex items-center rounded-full shrink-0 overflow-hidden" style={{ border: `1px solid ${C.border}`, background: C.panel }}>
-            <button onClick={() => requestDaySwitch(-1)} aria-label="Previous training day" className="px-2 py-1.5">
-              <ChevronLeft size={15} style={{ color: C.sub }} />
-            </button>
-            <button onClick={() => requestDaySwitch(1)} aria-label="Next training day"
-              className="flex items-center gap-1 pl-2 pr-2.5 py-1.5"
-              style={{ borderLeft: `1px solid ${C.border}` }}>
-              <span className="text-[12.5px] font-semibold whitespace-nowrap" style={{ color: C.text }}>Next Day</span>
-              <ChevronRight size={14} style={{ color: C.text }} />
-            </button>
-          </div>
-        ) : null
+        /* Red, because stopping is the one thing an athlete does mid-session
+           that the app had no answer for. The old way out was the back
+           gesture, which said nothing about what happened to the sets. */
+        <button onClick={openStop} aria-label="Stop this workout"
+          className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
+          style={{ background: `${C.red}1f`, border: `1px solid ${C.red}`, color: C.red }}>
+          Stop
+        </button>
       } />
       <div className="px-5 pt-5">
 
@@ -16962,7 +20279,7 @@ function Workout({ state, setState, nav, dayId }) {
                 <span className="font-semibold" style={{ color: accent }}>
                   {heading}{lastSets.week != null ? ` · Week ${lastSets.week}` : ""} ({when}):{" "}
                 </span>
-                <span className="tabular-nums">{formatSetHistory(lastSets.sets)}</span>
+                <span className="tabular-nums">{formatSetHistory(lastSets.sets.map(entry => setInUnit(entry, weightUnit)))}</span>
                 {lastSets.repsTarget != null && (
                   <span style={{ color: C.faint }}>{" "}· target was {lastSets.repsTarget} reps</span>
                 )}
@@ -16970,9 +20287,9 @@ function Workout({ state, setState, nav, dayId }) {
                     what to put on the bar; the total tells you whether the
                     session as a whole was more work than last time, which is
                     the number that actually moves over a block. */}
-                {formatVolume(setsVolume(lastSets.sets, weightUnit)) && (
+                {formatVolume(setsVolume(lastSets.sets.map(entry => setInUnit(entry, weightUnit)), weightUnit)) && (
                   <span className="block mt-1 tabular-nums font-semibold" style={{ color: accent }}>
-                    {formatVolume(setsVolume(lastSets.sets, weightUnit))}
+                    {formatVolume(setsVolume(lastSets.sets.map(entry => setInUnit(entry, weightUnit)), weightUnit))}
                   </span>
                 )}
                 {caveat && (
@@ -16983,13 +20300,63 @@ function Workout({ state, setState, nav, dayId }) {
           );
         })()}
 
-        <div className="space-y-2 mb-5">
+        {/* SET · REPS · WEIGHT · DONE, in that order, as one table.
+            It used to be a stack of cards: a full-width "Press here when you
+            finish Set 3" button with the weight box floated off its right
+            edge and the reps box on a line of its own underneath. Five sets
+            of that is a screen and a half of scrolling to read four numbers,
+            and nothing lined up vertically, so there was no way to glance
+            down the column and see that set 4 was lighter than set 3.
+
+            One row per set, four columns, headings at the top. The unit
+            switch lives in the WEIGHT heading because that is the only place
+            it applies - it is not a global setting an athlete should have to
+            go to their profile to change with a bar loaded. */}
+        <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${C.border}` }}>
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] uppercase tracking-[.08em] font-semibold"
+            style={{ background: C.panelAlt, color: C.faint }}>
+            <span className="shrink-0" style={{ width: 24 }}>Set</span>
+            <span className="shrink-0 text-center" style={{ width: 46 }}>Reps</span>
+            {/* The unit switch is the weight column's own heading, and it
+                has to be small. At 320px the header has about sixty pixels
+                left over once SET, REPS, WEIGHT and DONE have had their
+                share, and the shared UnitToggle is wide enough that "kg" sat
+                directly on top of "DONE". The label truncates rather than
+                pushing anything, so the worst case is an ellipsis and never
+                two words on top of each other. */}
+            <span className="flex-1 flex items-center justify-between gap-1.5 min-w-0">
+              <span className="truncate">Weight</span>
+              <span className="flex shrink-0 gap-0.5"
+                style={{ padding: 2, borderRadius: 9, background: C.bg, border: `1px solid ${C.border}` }}>
+                {["lb", "kg"].map(option => (
+                  <button key={option} onClick={() => changeLiftUnit(option)}
+                    aria-pressed={weightUnit === option}
+                    aria-label={option === "lb" ? "Show weights in pounds" : "Show weights in kilograms"}
+                    style={{
+                      padding: "3px 7px", borderRadius: 7, fontSize: 10, fontWeight: 700,
+                      // The header is uppercase and letter-spaced; the switch
+                      // inherits both and reads as "L B / K G" without this.
+                      letterSpacing: 0, textTransform: "none",
+                      background: weightUnit === option ? `${C.orange}29` : "transparent",
+                      color: weightUnit === option ? C.blue : C.sub,
+                      boxShadow: weightUnit === option ? `inset 0 0 0 1.5px ${C.orange}` : "none",
+                    }}>
+                    {option}
+                  </button>
+                ))}
+              </span>
+            </span>
+            <span className="shrink-0 text-right" style={{ width: 44 }}>Done</span>
+          </div>
           {Array.from({ length: totalSets }).map((_, i) => {
             const checked = (setChecks[x.id] || []).includes(i);
-            const previous = lastWeightForSet(lastSets, i + 1);
-            // What to put on the bar, from their own logged history. Offered,
-            // never filled in for them: a number the app typed would get
-            // logged as what they lifted whether they lifted it or not.
+            // What this set number came back as last time, converted into the
+            // unit on screen. Printing it in whichever unit it happened to be
+            // typed in is how a 60 becomes a 60 lb.
+            const previous = setInUnit(lastWeightForSet(lastSets, i + 1), weightUnit);
+            // What to put on the bar, worked out from their own logged sets.
+            // Offered, never filled in for them: a number the app typed would
+            // be logged as what they lifted whether they lifted it or not.
             const suggestion = suggestLoad({
               lastSets, setNumber: i + 1, prescribedSets: totalSets, unit: weightUnit,
               layoff: lastSets?.scope === "earlier-block",
@@ -16997,41 +20364,17 @@ function Workout({ state, setState, nav, dayId }) {
             const typed = setWeights[x.id]?.[i];
             const showSuggestion = !checked && suggestion && (typed === "" || typed == null);
             return (
-              <div key={i} className="rounded-lg p-3" style={{ background: checked ? `${C.olive}18` : C.panel, border: `1px solid ${checked ? C.olive : C.border}` }}>
-                <div className="flex items-center gap-3">
-                  {/* The tick and the weight field are SIBLINGS, not nested.
-                      Putting an input inside the button would make typing a
-                      weight also toggle the set — and a button inside a button
-                      isn't valid markup either. */}
-                  <button onClick={() => toggleSet(i)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                    {checked
-                      ? <CheckCircle2 size={20} style={{ color: C.olive }} className="shrink-0" />
-                      : <Circle size={20} style={{ color: C.faint }} className="shrink-0" />}
-                    <span className="text-[15px] font-medium min-w-0" style={{ color: checked ? C.olive : C.text }}>
-                      {checked ? `Set ${i + 1} — done` : `Press here when you finish Set ${i + 1}`}
-                    </span>
-                  </button>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <input
-                      type="number" inputMode="decimal" min="0" step="any"
-                      placeholder={previous?.weight != null ? String(previous.weight) : "—"}
-                      value={setWeights[x.id]?.[i] ?? ""}
-                      onChange={e => setSetWeights(w => {
-                        const forExercise = [...(w[x.id] || [])];
-                        forExercise[i] = e.target.value;
-                        return { ...w, [x.id]: forExercise };
-                      })}
-                      aria-label={`Weight for set ${i + 1}`}
-                      className="tabular-nums text-[15px] text-right rounded py-1.5 px-2"
-                      style={{ width: 72, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[12.5px] tabular-nums" style={{ color: C.sub }}>{weightUnit}</span>
-                  </div>
-                </div>
-                {/* Reps done, beside the target rather than in place of it.
-                    Optional on purpose: a blank field logs as "not recorded"
-                    and never as zero, so an athlete who only tracks weight
-                    loses nothing by ignoring it. */}
-                <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mt-1.5 pl-8 tabular-nums text-[11px]" style={{ color: C.sub }}>
+              <div key={i} className="px-3 py-2"
+                style={{
+                  background: checked ? `${C.olive}14` : "transparent",
+                  borderTop: `1px solid ${C.border}`,
+                }}>
+                <div className="flex items-center gap-2">
+                  <span className="tabular-nums text-[15px] font-semibold shrink-0"
+                    style={{ width: 24, color: checked ? C.olive : C.sub }}>{i + 1}</span>
+                  {/* Reps done, not reps asked for. Blank logs as "not
+                      recorded" and never as zero, so an athlete who only
+                      tracks weight loses nothing by ignoring this column. */}
                   <input
                     type="number" inputMode="numeric" min="1" step="1"
                     placeholder={previous?.reps != null ? String(previous.reps) : ""}
@@ -17042,30 +20385,69 @@ function Workout({ state, setState, nav, dayId }) {
                       return { ...r, [x.id]: forExercise };
                     })}
                     aria-label={`Reps completed for set ${i + 1}`}
-                    className="tabular-nums text-[11px] text-center rounded py-0.5 px-1"
-                    style={{ width: 42, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                  <span>reps done</span>
-                  <span>·</span>
-                  <span>target {x.reps}</span>
-                  <span>·</span>
-                  <span>{DIFFICULTY_SHORT} {x.rpe}/10</span>
-                  {formatSetResult(previous) && (
-                    <><span>·</span><span style={{ color: C.faint }}>last {formatSetResult(previous)}</span></>
-                  )}
+                    className="tabular-nums text-[15px] text-center rounded py-1.5 shrink-0"
+                    style={{ width: 46, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+                  {/* Minus and plus either side of the box, because the
+                      number keypad is a bad tool for "same as last set but
+                      five pounds more" and that is most of what gets typed in
+                      a gym. One press is 5 lb or 2.5 kg - the smallest pair of
+                      plates in each unit, not a converted version of the
+                      other. The placeholder is their best so far. */}
+                  <div className="flex-1 flex items-center gap-1 min-w-0">
+                    <button
+                      onClick={() => writeWeight(x, i, String(stepWeight(typed, -1, weightUnit, bestSoFar)))}
+                      aria-label={`Take weight off set ${i + 1}`}
+                      className="shrink-0 flex items-center justify-center rounded"
+                      style={{ width: 30, height: 32, background: C.bg, border: `1px solid ${C.border}`, color: C.sub }}>
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="number" inputMode="decimal" min="0" step="any"
+                      placeholder={bestSoFar != null ? String(bestSoFar) : "\u2014"}
+                      value={typed ?? ""}
+                      onChange={e => writeWeight(x, i, e.target.value)}
+                      aria-label={`Weight for set ${i + 1} in ${weightUnit}`}
+                      className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1"
+                      style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+                    <button
+                      onClick={() => writeWeight(x, i, String(stepWeight(typed, 1, weightUnit, bestSoFar)))}
+                      aria-label={`Add weight to set ${i + 1}`}
+                      className="shrink-0 flex items-center justify-center rounded"
+                      style={{ width: 30, height: 32, background: C.bg, border: `1px solid ${C.border}`, color: C.sub }}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  {/* The tick is its own control, never a wrapper around the
+                      inputs: typing a weight must not also mark the set done,
+                      and a button inside a button is not valid markup. */}
+                  <button onClick={() => toggleSet(i)}
+                    aria-label={checked ? `Set ${i + 1} is done. Press to undo it.` : `Mark set ${i + 1} done`}
+                    aria-pressed={checked}
+                    className="shrink-0 flex items-center justify-end"
+                    style={{ width: 44, height: 40 }}>
+                    {checked
+                      ? <CheckCircle2 size={22} style={{ color: C.olive }} />
+                      : <Circle size={22} style={{ color: C.faint }} />}
+                  </button>
                 </div>
-
-                {/* What to load, worked out from their own logged sets. One tap
-                    fills the field; it is never filled automatically, because
-                    a number the app typed would be saved as what they lifted
-                    whether they lifted it or not. */}
+                {/* Asked, not blocked. One heavy single among lighter work is
+                    a real thing an athlete does; 1350 where 135 was meant is
+                    more common, and it is the one that wrecks their history. */}
+                {looksLikeTypo(normalizeWeight(typed), (setWeights[x.id] || [])
+                  .filter((_, other) => other !== i).map(normalizeWeight)) && (
+                  <div className="text-[11px] mt-1 font-semibold" style={{ color: C.amber, paddingLeft: 26 }}>
+                    More than double your other sets. Typo?
+                  </div>
+                )}
+                {formatSetResult(previous) && (
+                  <div className="text-[11px] tabular-nums mt-1" style={{ color: C.faint, paddingLeft: 26 }}>
+                    last {formatSetResult(previous)}
+                  </div>
+                )}
                 {showSuggestion && (
                   <button
-                    onClick={() => setSetWeights(w => {
-                      const forExercise = [...(w[x.id] || [])];
-                      forExercise[i] = String(suggestion.weight);
-                      return { ...w, [x.id]: forExercise };
-                    })}
-                    className="mt-2 ml-8 w-[calc(100%-2rem)] rounded-lg px-2.5 py-2 flex items-center gap-2 text-left"
+                    onClick={() => writeWeight(x, i, String(suggestion.weight))}
+                    className="mt-2 w-full rounded-lg px-2.5 py-2 flex items-center gap-2 text-left"
                     style={{
                       background: suggestion.change === "up" ? `${C.olive}12` : `${C.blue}0d`,
                       border: `1px dashed ${suggestion.change === "up" ? C.olive : C.blue}66`,
@@ -17077,7 +20459,7 @@ function Workout({ state, setState, nav, dayId }) {
                       <span className="tabular-nums font-bold" style={{ color: suggestion.change === "up" ? C.olive : C.blue }}>
                         {formatWeight({ weight: suggestion.weight, unit: suggestion.unit })}
                       </span>
-                      {" — "}{suggestion.why}
+                      {" · "}{suggestion.why}
                     </span>
                     <span className="text-[11px] font-semibold shrink-0" style={{ color: suggestion.change === "up" ? C.olive : C.blue }}>Use</span>
                   </button>
@@ -17187,6 +20569,21 @@ function Workout({ state, setState, nav, dayId }) {
             </Btn>
           : <Btn className="flex-1" disabled={!dayIsScheduled} onClick={() => setFinishOpen(true)}>Finish Workout</Btn>}
       </div>
+
+      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Stop for today?">
+        <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+          {stopOpen?.replaces
+            ? `Your sets, where you are in the session and the time so far are all kept. You already have a paused ${sessionLabel(stopOpen.replaces)} workout, and saving this one replaces it.`
+            : "Your sets, where you are in the session and the time so far are all kept. Nothing is logged until you finish."}
+        </p>
+        <Btn variant="primary" className="w-full" onClick={stopAndSave}>Stop and save my progress</Btn>
+        <Btn variant="ghost" className="w-full mt-2" onClick={() => setStopOpen(null)}>Keep going</Btn>
+        {/* Separate from the two above, because this one writes a session to
+            the record and the other two do not. */}
+        <Btn variant="secondary" className="w-full mt-2" onClick={stopAndLog} disabled={saving}>
+          {saving ? "Saving\u2026" : "I'm done for good, count what I did"}
+        </Btn>
+      </Modal>
 
       <Modal open={!!pendingDay} onClose={() => setPendingDay(null)} title="Switch session?">
         <p className="text-[15px] mb-5" style={{ color: C.text }}>
@@ -17811,6 +21208,14 @@ function SegmentedTabs({ value, onChange, options }) {
 // The athlete side renders coach messages and AI replies through one shape, so
 // this takes the normalised row. Only coach messages carry `raw`, and only
 // those can be held to open the action sheet.
+// The colour behind one message bubble. Module scope on purpose: this is
+// read by AthleteMessageRow below, and it used to be declared inside the
+// Messages screen, a hundred lines further down and in a different function
+// entirely. Written at column 0 there, it looked module level to everybody
+// who read it, and the Coach tab threw "Can't find variable: bubbleBg" the
+// moment a message rendered. Same mistake as SIGNUP_V2_SECTIONS on 20 Oct.
+const bubbleBg = (kind) => (kind === "me" ? C.orange : kind === "ai" ? `${C.steel}55` : C.panel);
+
 function AthleteMessageRow({ m, coachName, onHold }) {
   const hold = useLongPress(onHold || (() => {}));
   const handlers = onHold ? hold : {};
@@ -17830,14 +21235,17 @@ function AthleteMessageRow({ m, coachName, onHold }) {
   return (
     <div className={`flex items-center gap-1 ${m.mine ? "justify-end" : "justify-start"}`}>
       {onHold && m.mine && <MessageMoreButton onOpen={onHold} />}
-      <div className="max-w-[80%] rounded-2xl px-3.5 py-2.5" style={{
+      <div className={`${m.mediaPath ? "max-w-[86%]" : "max-w-[80%]"} rounded-2xl px-3.5 py-2.5`} style={{
         background: bubbleBg(m.kind),
         color: m.mine ? "#fff" : C.text,
         border: m.mine ? "none" : `1px solid ${C.border}`
       }} {...handlers}>
         {m.kind === "ai" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.blue }}><Bot size={11} /> AI Assistant</div>}
         {m.kind === "coach" && <div className="flex items-center gap-1 text-[11px] font-semibold mb-1" style={{ color: C.orange }}>{coachName}</div>}
-        <div className="text-[15px] whitespace-pre-wrap">{m.text}</div>
+        <MessageMedia path={m.mediaPath} kind={m.mediaKind} />
+        {/* A photo sent with no caption has an empty body, and rendering the
+            empty div anyway leaves a blank line under every picture. */}
+        {m.text ? <div className="text-[15px] whitespace-pre-wrap">{m.text}</div> : null}
         {m.time && <div className="text-[11px] mt-1 opacity-70">{m.time}</div>}
       </div>
       {onHold && !m.mine && <MessageMoreButton onOpen={onHold} />}
@@ -17852,7 +21260,10 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   // assistant parked, "coach" is the only thread there is — landing on "ai"
   // would show an input wired to a screen that no longer exists.
   const [tab, setTab] = useState(hasCoach || !FEATURES.aiAssistant ? "coach" : "ai");
-  const [draft, setDraft] = useState("");
+  // The draft lives in MessageComposer, keyed by tab, with the attachment
+  // beside it - so the two cannot get out of step on a failed send, and a
+  // half-typed question to the AI is not sitting in the box when you switch
+  // to your coach.
   // The athlete owns the thread, so the thread id is their own id.
   const { messages: coachThread, loading: coachLoading, error: coachError, sending: coachSending, send: sendToCoach,
           deleteForEveryone, hideForMe } =
@@ -17868,19 +21279,16 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   // Persists and reaches the coach live. This used to write into an in-memory
   // object with no table behind it, so an athlete's question about a nagging
   // shoulder went nowhere and disappeared on refresh.
-  const sendCoach = async () => {
-    const text = draft;
-    setDraft("");
-    const ok = await sendToCoach(text);
-    if (!ok) setDraft(text); // put it back rather than losing what they typed
-  };
-
-  const sendAI = async () => {
-    if (!draft.trim()) return;
-    const userMsg = { id: "m" + Date.now(), from: "athlete", text: draft, time: "Now" };
+  // Takes its text rather than reading a draft out of this component's
+  // state: MessageComposer owns the draft now, and putting it back on a
+  // failure is its job too.
+  const sendAIText = async (body) => {
+    const text = (body || "").trim();
+    if (!text) return false;
+    const userMsg = { id: "m" + Date.now(), from: "athlete", text, time: "Now" };
     const nextThread = [...aiThread, userMsg];
     setAiThread(nextThread);
-    setDraft(""); setAiLoading(true);
+    setAiLoading(true);
     try {
       // Send the recent thread, not just the newest line, so the assistant can
       // follow a conversation instead of answering each message cold.
@@ -17911,6 +21319,9 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
     } finally {
       setAiLoading(false);
     }
+    // True whichever way it went: the question is already in the thread, so
+    // restoring the draft would put a second copy of it in the box.
+    return true;
   };
 
   // The two tabs hold different shapes now: coach messages are database rows
@@ -17923,6 +21334,11 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         kind: m.sender_id === myId ? "me" : "coach",
         text: m.body,
         time: timeAgo(m.created_at),
+        // Carried through the normalised shape, not read off `raw`, so the
+        // AI branch below cannot accidentally grow a media field and so the
+        // bubble has one place to look.
+        mediaPath: m.media_path,
+        mediaKind: m.media_kind,
         // Kept so the bubble can render a tombstone and the sheet knows which
         // row it is acting on.
         raw: m,
@@ -17935,8 +21351,6 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
         text: m.text,
         time: m.time,
       }));
-
-  const bubbleBg = (kind) => (kind === "me" ? C.orange : kind === "ai" ? `${C.steel}55` : C.panel);
 
   return (
     <div className="flex flex-col app-screen">
@@ -17990,24 +21404,21 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
 
       {tab === "coach" && coachError && <div className="px-4 pb-2 text-[12.5px]" style={{ color: C.red }}>{coachError}</div>}
 
-      <div className="flex items-center gap-2 px-4 py-3 shrink-0" style={{ borderTop: `1px solid ${C.border}` }}>
-        <input
-          style={{ ...inputStyle, flex: 1 }}
-          placeholder={tab === "coach" ? (hasCoach ? "Message your coach..." : "No coach linked yet") : "Ask the AI assistant..."}
-          disabled={tab === "coach" && !hasCoach}
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && (tab === "coach" ? sendCoach() : sendAI())}
-        />
-        <button
-          onClick={tab === "coach" ? sendCoach : sendAI}
-          disabled={!draft.trim() || (tab === "coach" && (!hasCoach || coachSending)) || (tab === "ai" && aiLoading)}
-          className="rounded-full p-2.5 shrink-0"
-          style={{ background: draft.trim() ? C.orange : C.border }}
-        >
-          <Send size={18} style={{ color: draft.trim() ? "#fff" : C.faint }} />
-        </button>
-      </div>
+      {/* Keyed by tab, so switching tabs starts a fresh box. The two shared
+          one draft before, which meant a half-typed question to the AI was
+          still sitting there when you switched to your coach - one tap from
+          being sent to a person.
+
+          The AI takes no attachments: it is a text model and a photo would
+          upload, cost storage and then be ignored. */}
+      <MessageComposer
+        key={tab}
+        placeholder={tab === "coach" ? (hasCoach ? "Message your coach..." : "No coach linked yet") : "Ask the AI assistant..."}
+        disabled={tab === "coach" && !hasCoach}
+        sending={tab === "coach" ? coachSending : aiLoading}
+        allowMedia={tab === "coach" && hasCoach && messageMediaReady}
+        onSend={(text, file) => (tab === "coach" ? sendToCoach(text, file) : sendAIText(text))}
+      />
     </div>
   );
 }
@@ -18081,7 +21492,13 @@ function JoinCoachModal({ open, onClose, athleteId, onJoined }) {
 
       <div className="min-h-[52px] mt-3">
         {checking && <p className="text-[12.5px] text-center" style={{ color: C.sub }}>Checking…</p>}
-        {coach && (
+        {coach && coach.businessName && (
+          <div className="rounded-xl p-3.5" style={{ background: `${C.olive}0F`, border: `1px solid ${C.olive}55` }}>
+            <CoachBrandMark name={coach.businessName} logoUrl={coachLogoUrl(coach.logoPath)} color={coach.brandColor} initials={coach.avatar} size={40} />
+            <div className="text-[12.5px] mt-2" style={{ color: C.olive }}>Joining {coach.name}'s roster</div>
+          </div>
+        )}
+        {coach && !coach.businessName && (
           <div className="rounded-lg p-3 text-center text-[15px]" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55`, color: C.olive }}>
             Joining <strong>{coach.name}</strong>'s roster
           </div>
@@ -18134,6 +21551,31 @@ function LeaveCoachModal({ open, onClose, coachName, onConfirm, leaving, error }
 // Saves one key of the signed-in user's intake blob, locally and on the server.
 // Server-side jsonb_set on that key alone: a read-modify-write of the whole
 // blob can wipe every other answer if the read fails.
+// The athlete's lifting unit, changed in one place so the switch in the set
+// table's header and the one in My Info cannot drift apart. A column rather
+// than another key inside the intake blob, because it is read on nearly every
+// screen and a jsonb lookup per render is a lot of work to avoid one
+// migration.
+async function saveLiftUnit(setState, userId, next) {
+  const to = next === "kg" ? "kg" : "lb";
+  setState(s => ({ ...s, me: { ...s.me, unitPref: to } }));
+  if (!userId) return to;
+  try { await supabase.from("profiles").update({ unit_pref: to }).eq("id", userId); }
+  catch { /* the screen is already in the new unit; it stores on the next change */ }
+  return to;
+}
+
+// Appearance. The column is the record; intake.theme is written too because
+// it is what the pre-mount loader reads, and a light-mode user who had to
+// wait for the profile to arrive would get a black flash on every launch.
+async function saveThemePref(userId, mode) {
+  const to = mode === "light" || mode === "dark" ? mode : "system";
+  if (!userId) return to;
+  try { await supabase.from("profiles").update({ theme_pref: to }).eq("id", userId); }
+  catch { /* intake.theme still carries it */ }
+  return to;
+}
+
 async function saveProfileSetting(setState, userId, key, value) {
   setState(s => ({ ...s, me: { ...s.me, intake: { ...(s.me.intake || {}), [key]: value } } }));
   if (!userId) return null;
@@ -18473,7 +21915,9 @@ function ThemePicker({ state, setState }) {
     // Nothing re-renders on its own — `C` was mutated in place, so the tree has
     // to be told to paint again.
     setState(s => ({ ...s, themeTick: (s.themeTick || 0) + 1 }));
-    saveProfileSetting(setState, state.me.id || state.coachProfile?.id, "theme", mode);
+    const who = state.me.id || state.coachProfile?.id;
+    saveProfileSetting(setState, who, "theme", mode);
+    saveThemePref(who, mode);
   };
 
   const themeOptions = [
@@ -18519,12 +21963,32 @@ function AthletePreferences({ state, setState }) {
   };
 
   const timerOn = state.me.intake?.workoutTimer !== false;
+  // The unit the BAR is read in - not the one their bodyweight is in, which
+  // lives in the profile details card above and is a separate question.
+  const liftUnit = state.me.unitPref === "kg" ? "kg" : "lb";
 
   return (
     <>
       <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
       <ChangePasswordCard />
+
+      {/* Also in the set table's header, which is where it is actually
+          needed with a bar loaded. This copy is for someone setting the app
+          up rather than someone mid-set, so it has room to say the thing
+          that stops people worrying about switching. */}
+      <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Weights</div>
+      <div className="rounded-2xl p-3.5 mb-5 flex items-center gap-3" style={card()}>
+        <div className="flex-1 min-w-0">
+          <div className="text-[15px] font-semibold" style={{ color: C.text }}>Show weights in</div>
+          <div className="text-[11px] mt-0.5 leading-relaxed" style={{ color: C.sub }}>
+            Everything is stored in pounds and converted for the screen, so switching never changes
+            a weight you have already logged.
+          </div>
+        </div>
+        <UnitToggle value={liftUnit} options={["lb", "kg"]}
+          onChange={v => saveLiftUnit(setState, state.me.id, v)} />
+      </div>
 
       {/* The athlete's own switch. Turning it off means no prompt, no badge,
           and every session logged as "not timed" — which is what the coach
@@ -18625,6 +22089,99 @@ function PointsPanel({ logs, sessionsPerWeek }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// Level, perfect-week streak and the shields that kept it alive.
+//
+// Deliberately above the badge wall: the level is the number that moves most
+// often, and a wall of thirteen squares with nothing moving on it is a
+// scoreboard for somebody else's season.
+function LevelPanel({ logs, sessionsPerWeek, todayIso }) {
+  const level = levelFor(logs);
+  const { weeks, shieldsUsed } = perfectWeekStreak(logs, sessionsPerWeek, todayIso);
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Level</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>
+          {level.counted} {level.counted === 1 ? "session" : "sessions"} counted
+        </span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-3xl tabular-nums" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{level.level}</span>
+        <span className="text-[12.5px]" style={{ color: C.sub }}>
+          {level.toNext} more {level.toNext === 1 ? "session" : "sessions"} to level {level.level + 1}
+        </span>
+      </div>
+      <div className="rw-bar mt-2.5" style={{ height: 8, borderRadius: 4, background: C.bg, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <i style={{ width: `${Math.round(level.progress * 100)}%`, background: `linear-gradient(90deg, ${C.orange}, ${C.amber})` }} />
+      </div>
+
+      <div className="flex items-center gap-2 mt-4 pt-3 flex-wrap" style={{ borderTop: `1px solid ${C.border}` }}>
+        <Zap size={14} style={{ color: C.olive }} />
+        <span className="text-[12.5px] font-semibold" style={{ color: C.text }}>
+          {weeks === 0 ? "No perfect weeks in a row yet" : `${weeks} perfect ${weeks === 1 ? "week" : "weeks"} in a row`}
+        </span>
+        {/* Named, not just counted. "One shield used" tells an athlete
+            nothing; the week it covered tells them why the run did not
+            break, which is the only reason the shield exists. */}
+        {shieldsUsed.map(week => (
+          <span key={week} className="inline-flex items-center gap-1 rounded-full px-2 py-0.5"
+            style={{ background: `${C.blue}18`, border: `1px solid ${C.blue}66` }}>
+            <Shield size={11} style={{ color: C.blue }} />
+            <span className="text-[11px] font-semibold" style={{ color: C.blue }}>
+              week of {formatSessionDate(week, { withWeekday: false }) || week}
+            </span>
+          </span>
+        ))}
+      </div>
+      <p className="text-[12.5px] mt-2 leading-relaxed" style={{ color: C.sub }}>
+        A level every {WORKOUTS_PER_LEVEL} sessions that counted. A perfect week is every session your
+        programme schedules, done. One week a month can be covered by a shield so a holiday
+        does not cost you the run.
+      </p>
+    </div>
+  );
+}
+
+// The thirteen. Shown in full, locked ones included, because a wall that
+// only shows what has been earned says nothing about what there is to earn -
+// and the hint under a locked badge is the only place the rules are written
+// down where an athlete will actually read them.
+function BadgeWall({ logs, sessionsPerWeek, program, todayIso }) {
+  const earned = badgesEarned(logs, { sessionsPerWeek, program, todayIso });
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={card()}>
+      <div className="flex items-baseline justify-between mb-3">
+        <span className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Badges</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>{earned.size} of {BADGES.length}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        {BADGES.map(badge => {
+          const has = earned.has(badge.key);
+          return (
+            <div key={badge.key} className="rounded-xl px-3 py-2.5"
+              style={{
+                background: has ? `${C.olive}14` : C.bg,
+                border: `1px solid ${has ? C.olive : C.border}`,
+                // Locked badges are dimmed rather than hidden or greyed to
+                // nothing: they have to stay readable, because the hint is
+                // the instruction.
+                opacity: has ? 1 : 0.72,
+              }}>
+              <div className="flex items-center gap-1.5">
+                <Award size={13} className="shrink-0" style={{ color: has ? C.olive : C.faint }} />
+                <span className="text-[12.5px] font-semibold min-w-0 truncate" style={{ color: has ? C.olive : C.sub }}>
+                  {badge.name}
+                </span>
+              </div>
+              <div className="text-[11px] mt-1 leading-snug" style={{ color: C.faint }}>{badge.hint}</div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -18812,6 +22369,9 @@ function AthleteProfile({ state, setState, nav }) {
         // default of `true` until their next login, so someone joining a coach
         // who has session check-ins switched off gets check-in prompts anyway.
         accountabilityEnabled: row.accountabilityEnabled ?? true,
+        businessName: row.businessName || null,
+        brandColor: row.brandColor || null,
+        logoPath: row.logoPath || null,
       },
     }));
   };
@@ -18835,7 +22395,7 @@ function AthleteProfile({ state, setState, nav }) {
       // Reset the ex-coach out of local state. Left behind, their name and
       // photo kept rendering and their accountability setting kept driving
       // this athlete's check-in prompts for the rest of the session.
-      coachProfile: { ...s.coachProfile, id: null, name: null, avatar: null, photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS },
+      coachProfile: { ...s.coachProfile, id: null, name: null, avatar: null, photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS, businessName: null, brandColor: null, logoPath: null },
     }));
     setLeaveOpen(false);
   };
@@ -18890,11 +22450,18 @@ function AthleteProfile({ state, setState, nav }) {
             records — so it read as "you have never set a PR" to every athlete
             forever. It comes back with the achievements switch, once something
             real is behind it. */}
-        <div className={`grid gap-2.5 mb-5 ${FEATURES.achievements ? "grid-cols-3" : "grid-cols-2"}`}>
+        {/* The PRs tile that used to sit here behind FEATURES.achievements
+            read a hard-coded zero. It is a real number now - the badge wall
+            below says how many of the thirteen are earned, and the level
+            panel says how the next one is reached - so the flag is gone
+            rather than switched on over a stub. */}
+        <div className="grid gap-2.5 mb-5 grid-cols-2">
           <StatCard icon={Flame} label="Streak" value={m.streak} sub="days" accent={C.amber} />
           <StatCard icon={Dumbbell} label="Logged" value={state.workoutLogs.length} sub="sessions" accent={C.blue} />
-          {FEATURES.achievements && <StatCard icon={Award} label="PRs" value={0} accent={C.olive} />}
         </div>
+        <LevelPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} todayIso={todayISO()} />
+        <BadgeWall logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget}
+          program={pointsProgram} todayIso={todayISO()} />
         <TimeTrainedPanel logs={state.workoutLogs} />
         <TrainingTotalsPanel logs={state.workoutLogs} />
         <PointsPanel logs={state.workoutLogs} sessionsPerWeek={pointsPerWeekTarget} />
@@ -20154,6 +23721,11 @@ function CoachBooking({ state, setState, nav, myUserId }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [notice, setNotice] = useState(null);
+  // The month being looked at, as an offset from this one, and the day
+  // picked out of it. Offset rather than a date so "today" is always the
+  // month you come back to.
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [pickedDay, setPickedDay] = useState(null);
 
   const booking = state.booking || EMPTY_BOOKING;
   const types = booking.sessionTypes.filter(t => t.active);
@@ -20247,6 +23819,32 @@ function CoachBooking({ state, setState, nav, myUserId }) {
     return null;
   });
 
+  const addAthlete = (slotId, athleteId) => run(async () => {
+    const message = await bookAthleteIntoSlot(slotId, athleteId, setState);
+    if (message) return message;
+    const who = state.athletes.find(a => a.id === athleteId)?.name?.split(" ")[0] || "They";
+    setNotice(`${who} is booked in, and has been told.`);
+    return null;
+  });
+
+  // The notice names what was recorded rather than saying "saved", because
+  // the two answers are a tap apart and the one that costs the athlete a
+  // session should say so.
+  const mark = (bookingId, noShow) => run(async () => {
+    const message = await markNoShow(bookingId, noShow, setState);
+    if (message) return message;
+    setNotice(noShow
+      ? "Marked as a no-show. The session has been used and they have been told."
+      : "Marked as attended.");
+    return null;
+  });
+
+  // Sessions left, for this slot's type. Named per slot rather than per
+  // athlete because a pack can be tied to one session type, so "how many
+  // has Dana got" has no answer until you say what for.
+  const creditsFor = (athleteId, slot) =>
+    creditsRemaining(booking.packs, booking.bookings, booking.slots, athleteId, myUserId, slot?.sessionTypeId || null);
+
   const forgive = (bookingId) => run(async () => {
     const message = await forgiveLateCancellation(bookingId, setState);
     if (message) return message;
@@ -20278,6 +23876,28 @@ function CoachBooking({ state, setState, nav, myUserId }) {
     .filter(r => r.slot)
     .sort((a, b) => new Date(b.slot.startsAt) - new Date(a.slot.startsAt))
     .slice(0, 6);
+
+  // Sessions that have happened with nobody marked either way. Until this
+  // list is answered, those athletes' balances are wrong.
+  const toMark = sessionsToMark(booking);
+
+  // The month on screen, as an offset from this one, so coming back always
+  // lands on today rather than wherever the coach last paged to.
+  const nowMonth = new Date();
+  const shownMonth = new Date(nowMonth.getFullYear(), nowMonth.getMonth() + monthOffset, 1);
+
+  // The list under the grid: the whole of a picked day, past times
+  // included, or everything coming up when no day is picked. A picked day
+  // has to include the past, or tapping a day earlier in the month shows an
+  // empty list for a day that visibly has dots on it.
+  const dayList = pickedDay
+    ? [{
+        dateIso: pickedDay,
+        slots: booking.slots
+          .filter(s => !s.cancelledAt && toLocalISO(new Date(s.startsAt)) === pickedDay)
+          .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt)),
+      }].filter(g => g.slots.length)
+    : days;
 
   const tabs = [
     { key: "schedule", label: "Schedule" },
@@ -20363,17 +23983,59 @@ function CoachBooking({ state, setState, nav, myUserId }) {
                   </>
                 )}
 
+                {/* Who did and did not turn up, before anything else on
+                    this screen except a request that is waiting. A session
+                    that has happened and is still unmarked is the only
+                    thing here with a deadline on it - the athlete's balance
+                    is wrong until it is answered, and the longer it is left
+                    the less the coach remembers.
+
+                    It was impossible to answer at all before: the schedule
+                    showed the future only, so a session needing marking had
+                    already dropped off the one screen that listed it. */}
+                {toMark.length > 0 && (
+                  <>
+                    <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>
+                      Did they turn up
+                    </div>
+                    <div className="space-y-2 mb-5">
+                      {toMark.map(row => (
+                        <AttendanceRow key={row.slot.id} row={row} type={typeById[row.slot.sessionTypeId]}
+                          athletesById={athletesById} busy={busy} onMark={mark} />
+                      ))}
+                    </div>
+                  </>
+                )}
+
                 <NewSlotForm types={types} onAdd={addSlot} busy={busy} />
                 <RepeatingTimesForm types={types} onAdd={addRepeating} busy={busy} />
 
-                <ChalkDivider label="Coming Up" />
-                {days.length === 0 ? (
+                {/* The month above the list. The list answers "what is
+                    next"; only the grid answers "how full is the back half
+                    of the month", which is the question that decides
+                    whether to open more times. */}
+                <ChalkDivider label="The Month" />
+                <ScheduleMonth slots={booking.slots} bookings={booking.bookings}
+                  openings={booking.openings} typeById={typeById}
+                  year={shownMonth.getFullYear()} month={shownMonth.getMonth()}
+                  selected={pickedDay}
+                  onPage={(d) => { setMonthOffset(o => o + d); setPickedDay(null); }}
+                  onPickDay={(iso) => setPickedDay(cur => (cur === iso ? null : iso))} />
+
+                <ChalkDivider label={pickedDay ? formatSessionDate(pickedDay) : "Coming Up"} />
+                {pickedDay && (
+                  <button onClick={() => setPickedDay(null)}
+                    className="text-[12.5px] font-semibold mb-2" style={{ color: C.blue }}>
+                    Show everything coming up
+                  </button>
+                )}
+                {dayList.length === 0 ? (
                   <div className="rounded-xl p-4 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
-                    No times open. Add one above and your clients can book it.
+                    {pickedDay ? "Nothing on that day." : "No times open. Add one above and your clients can book it."}
                   </div>
                 ) : (
                   <div className="stack">
-                    {days.map(({ dateIso, slots }) => (
+                    {dayList.map(({ dateIso, slots }) => (
                       <div key={dateIso}>
                         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.faint }}>
                           {formatSessionDate(dateIso)}
@@ -20389,6 +24051,15 @@ function CoachBooking({ state, setState, nav, myUserId }) {
                                     <X size={15} style={{ color: C.sub }} />
                                   </button>
                                 } />
+                              {/* Filling a time the coach already agreed in
+                                  person. Without it the coach has to ask the
+                                  client to go and tap it in, everyone
+                                  forgets, and the schedule stops matching
+                                  the gym. */}
+                              <AddToSlotRow slot={slot} type={typeById[slot.sessionTypeId]}
+                                athletes={state.athletes} bookings={booking.bookings}
+                                openings={booking.openings} creditsFor={creditsFor}
+                                busy={busy} onAdd={addAthlete} />
                               {/* Moving someone without waiting to be asked.
                                   A client cannot do this; the coach can. */}
                               {heldBookings(booking.bookings, slot.id).map(b => (
@@ -20687,6 +24358,175 @@ function ChangeRequestCard({ row, slots, typeById, bookings, openings, busy, onD
 // Moving one person out of a slot, on the coach's own initiative. Collapsed to
 // a single line until it is wanted, because a schedule screen listing four
 // clients should not be four dropdowns.
+// One session that has happened, with everybody who was booked into it.
+//
+// Two buttons, not one. "Mark no-show" on its own would be a one-way door,
+// and this is a tap next to somebody's name whose cost is a session they
+// paid for plus a line on their record saying they did not show up. Both
+// answers are reversible from the same place.
+function AttendanceRow({ row, type, athletesById, busy, onMark }) {
+  return (
+    <div className="rounded-xl p-3.5" style={card({ borderRadius: 16 })}>
+      <div className="flex items-baseline gap-2 mb-2.5">
+        <span className="text-[15px] font-semibold" style={{ color: C.text }}>{type?.name || "Session"}</span>
+        <span className="text-[11px]" style={{ color: C.faint }}>
+          {formatSessionDate(toLocalISO(new Date(row.slot.startsAt)))}, {formatSlotTime(row.slot.startsAt)}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {row.bookings.map(b => (
+          <div key={b.id} className="flex items-center gap-2.5">
+            <Avatar initials={athletesById[b.athleteId]?.avatar || "??"} size={28}
+              photoUrl={athletesById[b.athleteId]?.photoUrl} />
+            <span className="flex-1 min-w-0 text-[15px] truncate" style={{ color: C.text }}>
+              {athletesById[b.athleteId]?.name || "Someone"}
+            </span>
+            <button onClick={() => onMark(b.id, false)} disabled={busy}
+              className="shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: `${C.olive}18`, border: `1px solid ${C.olive}66`, color: C.olive }}>
+              Turned up
+            </button>
+            <button onClick={() => onMark(b.id, true)} disabled={busy}
+              className="shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+              No-show
+            </button>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] mt-2.5" style={{ color: C.faint }}>
+        A no-show uses the session. You can change either answer here afterwards.
+      </p>
+    </div>
+  );
+}
+
+// The coach filling one of their own times.
+//
+// Shows the athlete's remaining sessions beside their name, and says so out
+// loud when there are none left, because booking somebody in on zero is a
+// decision rather than an accident. The server allows it deliberately; this
+// makes sure the coach knows they are making it.
+function AddToSlotRow({ slot, type, athletes, bookings, openings, creditsFor, busy, onAdd }) {
+  const [open, setOpen] = useState(false);
+  const left = spotsLeft(slot, type, bookings, openings);
+  const already = new Set(heldBookings(bookings, slot.id).map(b => b.athleteId));
+  const free = athletes.filter(a => !already.has(a.id));
+
+  if (left === 0 || free.length === 0) return null;
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} disabled={busy}
+        className="w-full mt-1.5 rounded-lg py-2 text-[12.5px] font-semibold flex items-center justify-center gap-1.5"
+        style={{ background: C.panel, border: `1px dashed ${C.blue}66`, color: C.blue }}>
+        <Plus size={14} /> Put someone in this one
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 rounded-lg p-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>
+          Who is coming
+        </span>
+        <button onClick={() => setOpen(false)} aria-label="Close"><X size={14} style={{ color: C.sub }} /></button>
+      </div>
+      <div className="space-y-1.5" style={{ maxHeight: 240, overflowY: "auto" }}>
+        {free.map(a => {
+          const credits = creditsFor(a.id, slot);
+          const none = credits <= 0;
+          return (
+            <button key={a.id} onClick={() => { setOpen(false); onAdd(slot.id, a.id); }} disabled={busy}
+              className="w-full rounded-lg px-2.5 py-2 flex items-center gap-2.5 text-left"
+              style={{ background: C.panel2, border: `1px solid ${C.border}` }}>
+              <Avatar initials={a.avatar} size={26} photoUrl={a.photoUrl} />
+              <span className="flex-1 min-w-0 text-[14px] truncate" style={{ color: C.text }}>{a.name}</span>
+              <span className="shrink-0 text-[11px] tabular-nums font-semibold"
+                style={{ color: none ? C.red : C.faint }}>
+                {none ? "none left" : `${credits} left`}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: C.faint }}>
+        Booking someone with none left still uses a session, so their balance goes negative. They are told either way.
+      </p>
+    </div>
+  );
+}
+
+// The month, as a grid. The list below it answers "what is next"; this
+// answers "how full is the back half of November", which a list of the next
+// fifteen times cannot.
+function ScheduleMonth({ slots, bookings, openings, typeById, year, month, onPage, onPickDay, selected }) {
+  const weeks = calendarMonth({ slots, year, month });
+  const label = new Date(year, month, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center justify-between mb-2.5">
+        <button onClick={() => onPage(-1)} aria-label="Previous month"
+          className="rounded-lg p-1.5" style={{ border: `1px solid ${C.border}` }}>
+          <ChevronLeft size={16} style={{ color: C.sub }} />
+        </button>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>{label}</div>
+        <button onClick={() => onPage(1)} aria-label="Next month"
+          className="rounded-lg p-1.5" style={{ border: `1px solid ${C.border}` }}>
+          <ChevronRight size={16} style={{ color: C.sub }} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 mb-1">
+        {WEEKDAY_ORDER.map(d => (
+          <div key={d} className="text-center text-[10px] font-semibold uppercase" style={{ color: C.faint }}>
+            {d.slice(0, 1)}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {weeks.flat().map(cell => {
+          const n = cell.slots.length;
+          // Full is worth seeing at a glance: it is the difference between a
+          // day with room and a day that only looks busy.
+          const anyOpen = cell.slots.some(s => spotsLeft(s, typeById[s.sessionTypeId], bookings, openings) > 0);
+          const on = selected === cell.dateIso;
+          return (
+            <button key={cell.dateIso} onClick={() => onPickDay(n ? cell.dateIso : null)}
+              aria-label={`${cell.dateIso}, ${n} ${n === 1 ? "time" : "times"}`}
+              aria-current={cell.isToday ? "date" : undefined}
+              className="rounded-lg flex flex-col items-center justify-center"
+              style={{
+                aspectRatio: "1 / 1",
+                background: on ? `${C.orange}1F` : cell.inMonth ? C.panel : "transparent",
+                border: `1px solid ${on ? C.orange : cell.isToday ? C.blue : cell.inMonth ? C.border : "transparent"}`,
+                opacity: cell.inMonth ? 1 : 0.35,
+              }}>
+              <span className="text-[12px] tabular-nums" style={{ color: cell.isToday ? C.blue : C.text, fontWeight: cell.isToday ? 700 : 400 }}>
+                {cell.day}
+              </span>
+              {/* A dot per time, up to three, then a count. Three dots is
+                  already "a busy day" and a row of eight is unreadable at
+                  this size. */}
+              <span className="flex items-center gap-0.5" style={{ height: 6, marginTop: 2 }}>
+                {n > 0 && n <= 3 && cell.slots.map((s, i) => (
+                  <i key={i} style={{ display: "block", width: 4, height: 4, borderRadius: 999,
+                    background: anyOpen ? C.orange : C.faint }} />
+                ))}
+                {n > 3 && (
+                  <i className="text-[9px] tabular-nums not-italic font-bold"
+                    style={{ color: anyOpen ? C.orange : C.faint }}>{n}</i>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MoveBookingRow({ booking, athlete, slots, typeById, bookings, openings, currentSlotId, busy, onMove }) {
   const [open, setOpen] = useState(false);
 
@@ -21804,12 +25644,16 @@ const initialState = () => ({
   // truthy — so `if (state.me.id)` guards passed before anyone was signed in,
   // and on a coach account (where `me` is never populated) that literal "a1"
   // was being sent to Postgres as a uuid and rejected.
-  me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, trainingDays: [] },
+  me: { id: null, name: "You", sex: "male", sport: "General Fitness", streak: 0, avatar: "ME", program: null, customProgram: null, injuries: [], goals: [], isFighter: false, weightKg: 79.4, heightCm: 178, unitPref: "lb", themePref: "system", trainingDays: [] },
+  // One-off changes to where a session sits in the week: moved, skipped, or
+  // pulled forward to today. Empty is the normal state - most weeks happen
+  // as written.
+  sessionMoves: [],
   // Bumped after a photo upload. exerciseImage() reads a module-level map that
   // React cannot see, so without this the picture appears only on the next
   // navigation.
   photoVersion: 0,
-  coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS },
+  coachProfile: { name: "Coach", avatar: "CO", photoUrl: null, accountabilityEnabled: true, complianceAlerts: true, cancellationHours: DEFAULT_CANCELLATION_HOURS, businessName: null, brandColor: null, logoPath: null },
   payments: { rates: [], clientBilling: {}, methods: [] },
   groups: [], // coach's roster groups (pro team / amateur / youth / gen-pop)
   communityPosts: [],
@@ -21984,16 +25828,22 @@ function wantsPhoneFrame() {
 // The desktop sidebar. Same nav items, same conditions, same order as the
 // bottom bar - it is handed the identical list, so a tab that appears on a
 // phone appears here and one behind a feature flag stays behind it.
-function SideNav({ items, active, onChange, me, roleLabel, modeSwitch }) {
+function SideNav({ items, active, onChange, me, roleLabel, modeSwitch, brand }) {
   return (
     <aside style={{
       width: SIDEBAR_W, flexShrink: 0, borderRight: `1px solid ${C.border}`, background: C.panelAlt,
       padding: "30px 20px", display: "flex", flexDirection: "column", gap: 26,
       height: "100dvh", position: "sticky", top: 0, overflowY: "auto",
     }}>
-      <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontStyle: "italic", fontSize: 24, letterSpacing: "-.03em", color: C.text, paddingLeft: 4 }}>
-        TRAINED<span style={{ color: C.orange }}>.BEST</span>
-      </div>
+      {brand ? (
+        <div style={{ paddingLeft: 4 }}>
+          <CoachBrandMark name={brand.name} logoUrl={brand.logoUrl} color={brand.color} initials={brand.initials} size={34} />
+        </div>
+      ) : (
+        <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontStyle: "italic", fontSize: 24, letterSpacing: "-.03em", color: C.text, paddingLeft: 4 }}>
+          TRAINED<span style={{ color: C.orange }}>.BEST</span>
+        </div>
+      )}
 
       {modeSwitch}
 
@@ -22200,9 +26050,12 @@ function AppInner() {
 
     // Follows the user across devices. localStorage only knows what THIS
     // browser last chose; the profile is the record that travels.
-    if (profile.intake?.theme) {
-      applyTheme(profile.intake.theme);
-      try { localStorage.setItem(THEME_KEY, profile.intake.theme); } catch { /* storage blocked */ }
+    // The column first, then the older copy inside the intake blob, so an
+    // account that predates the column keeps the appearance it already had.
+    const storedTheme = profile.theme_pref || profile.intake?.theme;
+    if (storedTheme) {
+      applyTheme(storedTheme);
+      try { localStorage.setItem(THEME_KEY, storedTheme); } catch { /* storage blocked */ }
       setState(s => ({ ...s, themeTick: (s.themeTick || 0) + 1 }));
     }
 
@@ -22219,6 +26072,9 @@ function AppInner() {
           accountabilityEnabled: profile.intake?.accountabilityEnabled ?? true,
           complianceAlerts: profile.intake?.complianceAlerts ?? true,
           cancellationHours: profile.intake?.cancellationHours ?? DEFAULT_CANCELLATION_HOURS,
+          businessName: profile.business_name || null,
+          brandColor: profile.brand_color || null,
+          logoPath: profile.logo_path || null,
         },
       }));
 
@@ -22236,13 +26092,27 @@ function AppInner() {
       let logsByAthlete = {};
       let progressByAthlete = {};
       let checkinsByAthlete = {};
+      let movesByAthlete = {};
       if (ids.length) {
         // The RLS policies already grant a coach SELECT on their athletes' rows.
-        const [{ data: logRows }, { data: progressRows }, { data: checkinRows }] = await Promise.all([
+        //
+        // session_moves is in here because of what "missed" means. Without an
+        // athlete's moves, a session they deliberately shifted from Tuesday to
+        // Thursday reads as missed on Tuesday and unplanned on Thursday - so
+        // the coach's screen accuses them of skipping a session they actually
+        // did. Migration 003 already gave coaches SELECT on this table; it was
+        // simply never asked for.
+        const [{ data: logRows }, { data: progressRows }, { data: checkinRows }, { data: moveRows }] = await Promise.all([
           supabase.from("workout_logs").select("*").in("user_id", ids).order("date", { ascending: false }),
           supabase.from("progress_entries").select("*").in("user_id", ids).order("created_at", { ascending: true }),
           supabase.from("session_checkins").select("*").in("user_id", ids).order("date", { ascending: false }),
+          supabase.from("session_moves").select("*").in("user_id", ids),
         ]);
+        (moveRows || []).forEach(m => {
+          (movesByAthlete[m.user_id] ||= []).push({
+            programDay: m.program_day, fromDate: m.from_date, toDate: m.to_date, kind: m.kind,
+          });
+        });
         (logRows || []).forEach(l => { (logsByAthlete[l.user_id] ||= []).push(l); });
         (progressRows || []).forEach(p => { (progressByAthlete[p.user_id] ||= []).push(p); });
         (checkinRows || []).forEach(c => {
@@ -22352,8 +26222,12 @@ function AppInner() {
             groupId: a.group_id || null,
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
-            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [] })),
+            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })),
             checkins: checkinsByAthlete[a.id] || {},
+            // Same shape as state.sessionMoves, so planForWeek and
+            // missedSessions read an athlete exactly as they read the
+            // signed-in user. One function, one definition of "missed".
+            sessionMoves: movesByAthlete[a.id] || [],
             // mapCheckin, not a hand-written subset: the fields a check-in
             // carries are listed in exactly one place, so adding one does not
             // mean remembering two loaders and a writer.
@@ -22379,11 +26253,38 @@ function AppInner() {
       // getting session check-in prompts long after their coach switched them
       // off, and the coach's name and photo never appeared.
       if (profile.coach_id) {
-        const { data: coachRow } = await supabase
-          .from("profiles")
-          .select("id, name, avatar, photo_url, intake")
-          .eq("id", profile.coach_id)
-          .maybeSingle();
+        // The RPC, not a select on profiles.
+        //
+        // Row level security is row level: it cannot hide a column. Reading
+        // the coach's row to get their name and logo also hands over their
+        // intake blob, which holds their email and birthday. coach_card
+        // returns the eight fields this screen uses and nothing else, to
+        // the athletes on that coach's roster and nobody else.
+        //
+        // See supabase/migrations/004_lock_down_profiles.sql. Until that
+        // migration is applied the function does not exist, so this falls
+        // back to the old read and the app keeps working either way - which
+        // is what lets the code ship before the migration does.
+        let coachRow = null;
+        const { data: card, error: cardError } = await supabase
+          .rpc("coach_card", { p_id: profile.coach_id });
+        const cardRow = Array.isArray(card) ? card[0] : card;
+        if (!cardError && cardRow) {
+          coachRow = {
+            ...cardRow,
+            intake: {
+              accountabilityEnabled: cardRow.accountability_enabled,
+              cancellationHours: cardRow.cancellation_hours,
+            },
+          };
+        } else {
+          const { data: legacy } = await supabase
+            .from("profiles")
+            .select("id, name, avatar, photo_url, intake, business_name, brand_color, logo_path")
+            .eq("id", profile.coach_id)
+            .maybeSingle();
+          coachRow = legacy;
+        }
         if (coachRow) {
           setState(s => ({
             ...s,
@@ -22398,6 +26299,9 @@ function AppInner() {
               // and in the confirmation before a late cancel, so it has to be
               // the COACH's real setting, not this device's default.
               cancellationHours: coachRow.intake?.cancellationHours ?? DEFAULT_CANCELLATION_HOURS,
+              businessName: coachRow.business_name || null,
+              brandColor: coachRow.brand_color || null,
+              logoPath: coachRow.logo_path || null,
             },
           }));
         }
@@ -22411,19 +26315,26 @@ function AppInner() {
           sport: profile.sport, sex: profile.sex, isFighter: profile.is_fighter,
           injuries: profile.injuries || [], goals: profile.goals || [],
           weightKg: profile.weight_kg, heightCm: profile.height_cm, streak: profile.streak || 0,
+          // The unit LIFTED weight is shown in, and the appearance setting.
+          // Columns rather than another key inside the intake blob, because
+          // both are read on nearly every screen and a jsonb lookup per render
+          // is a lot of work to avoid one migration.
+          unitPref: profile.unit_pref === "kg" ? "kg" : "lb",
+          themePref: profile.theme_pref === "light" || profile.theme_pref === "dark" ? profile.theme_pref : "system",
           selfGuided: profile.role === "athlete", hasCoach: profile.role === "athlete_coached",
           intake: profile.intake || {}, trainingDays: profile.intake?.trainingDays || [], program: null,
         }
       }));
 
       // Restore this athlete's real program, workout history, and progress from the database.
-      const [{ data: programRow }, { data: logRows }, { data: progressRows }, { data: checkinRows }] = await Promise.all([
+      const [{ data: programRow }, { data: logRows }, { data: progressRows }, { data: checkinRows }, { data: moveRows }] = await Promise.all([
         profile.active_program_id
           ? supabase.from("programs").select("*").eq("id", profile.active_program_id).single()
           : Promise.resolve({ data: null }),
         supabase.from("workout_logs").select("*").eq("user_id", profile.id).order("created_at", { ascending: false }),
         supabase.from("progress_entries").select("*").eq("user_id", profile.id).order("created_at", { ascending: true }),
         supabase.from("session_checkins").select("*").eq("user_id", profile.id).order("date", { ascending: false }),
+        supabase.from("session_moves").select("*").eq("user_id", profile.id),
       ]);
 
       setState(s => {
@@ -22433,8 +26344,17 @@ function AppInner() {
           const program = { id: programRow.id, name: programRow.name, weeks: programRow.weeks, assignedCount: 1, sport: programRow.sport, rationale: programRow.rationale || null, startedOn: programRow.started_on || null, days };
           next = { ...next, programs: [...next.programs, program], exercises: [...next.exercises, ...newExercises], me: { ...next.me, program: program.id } };
         }
+        // camelCase on the way in, like every other row this app holds, so
+        // the plan logic never has to know which half of the app it came
+        // from.
+        next = {
+          ...next,
+          sessionMoves: (moveRows || []).map(m => ({
+            programDay: m.program_day, fromDate: m.from_date, toDate: m.to_date, kind: m.kind,
+          })),
+        };
         if (logRows?.length) {
-          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [] })) };
+          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -22483,6 +26403,11 @@ function AppInner() {
   }, []);
 
   const [generatingProgram, setGeneratingProgram] = useState(false);
+  // Set only when a programme was actually generated and saved. A failed
+  // generation leaves it null, so the athlete lands on the dashboard with the
+  // retry the Program tab already offers, rather than on a screen announcing
+  // a plan that does not exist.
+  const [planReady, setPlanReady] = useState(null);
   const [recoveringPassword, setRecoveringPassword] = useState(false);
 
   // Unread messages addressed to me, for the nav badge. RLS already limits what
@@ -22585,7 +26510,7 @@ function AppInner() {
           workoutLogs: list.map(l => ({
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
-            setsPrescribed: l.sets_prescribed, notes: l.notes, exercises: l.exercises || [],
+            setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
           })),
         };
       }),
@@ -22673,8 +26598,13 @@ function AppInner() {
   // Writes the profile row and takes the user into the app. Called straight
   // after signup when a session already exists, and from handleLogin once a
   // confirmed user returns with setup still unfinished.
-  const writeProfileAndContinue = async (authData, role, data) => {
+  const writeProfileAndContinue = async (authData, role, rawData) => {
     try {
+      // The split the programme is built on. Worked out from the training days
+      // rather than asked for - see deriveSplit. Done here, at the single point
+      // where the answers become a profile, so the stored intake and the prompt
+      // cannot disagree about it.
+      const data = withDerivedSplit(rawData);
       // Never persist the raw password (or UI-only noise) outside Supabase's own
       // hashed auth storage — this is what gets saved as "intake" for later reuse.
       // photoUrl is stripped too: it's a multi-megabyte base64 data URL that
@@ -22699,7 +26629,11 @@ function AppInner() {
 
       if (userId) {
         const profileRow = role === "coach"
-          ? { id: userId, role, name, avatar, photo_url: data.photoUrl || null, intake: safeIntake }
+          // business_name is its own column rather than only an intake key,
+          // because coach_card reads it and the athlete's screen shows it.
+          // Blank means "use my own name", which is null here, not "".
+          ? { id: userId, role, name, avatar, photo_url: data.photoUrl || null, intake: safeIntake,
+              business_name: (data.businessName || "").trim() || null }
           : {
               id: userId, role, name, avatar, photo_url: data.photoUrl || null,
               sport: data["🥊 Sport / Focus"] || "General Fitness", sex: data.sex === "Female" ? "female" : "male",
@@ -22767,6 +26701,9 @@ function AppInner() {
           // A note left behind from an earlier failed attempt would otherwise
           // keep showing the athlete an error over a program that now exists.
           await clearProgramFailure(userId);
+          // Inside the try, after the save: nothing announces a plan that was
+          // not written down.
+          setPlanReady({ intake: data, splitStyle: data.splitStyle, days: parsed.days, programName: parsed.programName, weeks });
         } catch (err) {
           // This catch used to be empty. A failed generation dropped the athlete
           // on a dashboard with no program and no error, staring at a "your
@@ -22795,6 +26732,12 @@ function AppInner() {
             // Read back from the row the trigger just populated.
             inviteCode: savedProfile?.invite_code || null,
             accountabilityEnabled: true,
+            // Was hard-coded null, so a coach who had just typed their
+            // business name saw their own name on their card until the next
+            // login re-read the row.
+            businessName: (data.businessName || "").trim() || null,
+            brandColor: null,
+            logoPath: null,
           },
         }));
         setAuthed(role);
@@ -22970,6 +26913,17 @@ function AppInner() {
     return <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}><Onboarding onComplete={handleOnboardComplete} onSwitchToLogin={() => setAuthMode("login")} /></div>;
   }
 
+  // The last screen of signup. Rendered after the view has already been set
+  // to the dashboard, so dismissing it is one setState and the athlete is
+  // where they would have been anyway.
+  if (planReady) {
+    return (
+      <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}>
+        <PlanReadyScreen {...planReady} onStart={() => setPlanReady(null)} />
+      </div>
+    );
+  }
+
   // Every tab here is part of the core loop; parked features add their own tab
   // back automatically when their FEATURES switch is flipped on.
   //
@@ -23076,6 +27030,20 @@ function AppInner() {
 
   const font = "DM Sans, system-ui, sans-serif";
 
+  // Shows wherever the plain wordmark would otherwise sit: this sidebar, the
+  // phone header below, the signup card, and (once phase 1 builds it) the
+  // print sheet. `coachProfile` already holds the right row either way - a
+  // coach's own data when signed in as a coach, their linked coach's data
+  // when signed in as an athlete - so one check covers both.
+  const coachBrand = (state.coachProfile?.id && state.coachProfile?.businessName)
+    ? {
+        name: state.coachProfile.businessName,
+        color: state.coachProfile.brandColor,
+        logoUrl: coachLogoUrl(state.coachProfile.logoPath),
+        initials: state.coachProfile.avatar,
+      }
+    : null;
+
   // Two shells, one set of pages. Everything inside `screen` is identical
   // either way: the desktop version changes what surrounds the page, not the
   // page. That is the whole reason the nav items are passed to both.
@@ -23090,6 +27058,7 @@ function AppInner() {
               me={coaching ? { ...state.coachProfile, avatar: state.coachProfile?.avatar || "CO" } : state.me}
               roleLabel={coaching ? "Coach" : "Athlete"}
               modeSwitch={authed === "coach" ? <ModeSwitch training={trainingMode} onChange={setTrainingMode} className="" /> : null}
+              brand={coachBrand}
             />
             <div style={{ flex: 1, minWidth: 0, height: "100dvh", overflowY: "auto" }}>
               <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
@@ -23099,6 +27068,16 @@ function AppInner() {
         ) : (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100vh" }}>
             <ConnectionBanner online={online} pending={pendingSessions} blocked={blockedSessions} />
+            {coachBrand && (
+              <div className="sticky top-0 z-30 flex items-center px-4 safe-top"
+                style={{
+                  paddingTop: 10, paddingBottom: 10,
+                  background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+                  borderBottom: `1px solid ${C.border}`,
+                }}>
+                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={26} />
+              </div>
+            )}
             {screen}
             <BottomNav items={navItems} active={activeNavKey} onChange={(key) => nav.go(key)} />
           </div>

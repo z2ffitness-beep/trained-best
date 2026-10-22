@@ -174,3 +174,77 @@ html.tb-framed [class*="max-h-[88"] { max-height: 742px !important; }
 @media (prefers-reduced-motion: reduce) {
   .hc-slide, .hc-slide video, .hc-slide img { transition: none !important; transform: none !important; }
 }
+
+/* ---------- the end-of-workout rewards sequence ---------- */
+/*
+   Written here rather than inline because every one of these needs a
+   @keyframes, and because the reduced-motion rule below has to be able to
+   switch the whole lot off in one place. The component ALSO checks
+   prefers-reduced-motion in JavaScript and skips the staging entirely. The
+   two are not redundant: the media query stops the movement, the JavaScript
+   stops the waiting, and someone who asked for less motion should not have
+   to sit through six still frames arriving a second apart.
+
+   NOTE: this file - src/index.css - is the one that is built. There is a
+   byte-identical index.css at the repo root that nothing imports or links.
+   Editing that one changes nothing, which costs an afternoon to work out.
+*/
+.rw-pop  { animation: rw-pop 420ms cubic-bezier(.2,.9,.3,1.3) both; }
+.rw-rise { animation: rw-rise 380ms ease-out both; }
+.rw-flip { animation: rw-flip 460ms ease-out both; }
+.rw-rays { animation: rw-spin 9s linear infinite; transform-origin: 50% 50%; }
+.rw-fall { animation: rw-fall var(--rw-dur, 2.6s) linear var(--rw-delay, 0s) forwards; }
+
+@keyframes rw-pop  { from { transform: scale(.4); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes rw-rise { from { transform: translateY(14px); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes rw-flip { from { transform: rotateY(90deg); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes rw-spin { to { transform: rotate(360deg) } }
+@keyframes rw-fall {
+  from { transform: translateY(-12vh) rotate(0deg); opacity: 1 }
+  to   { transform: translateY(104vh) rotate(680deg); opacity: .85 }
+}
+
+.rw-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 700ms cubic-bezier(.25,.8,.3,1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rw-pop, .rw-rise, .rw-flip, .rw-rays, .rw-fall {
+    animation: none !important; opacity: 1 !important; transform: none !important;
+  }
+  .rw-bar > i { transition: none !important; }
+}
+
+/* ---------- the printed session sheet ---------- */
+/*
+   Everything on the page is hidden and the sheet is made visible again,
+   rather than the sheet being moved into a print-only container. The app is
+   one deeply nested tree and the sheet is rendered where it belongs in it;
+   walking up that tree to hide each ancestor's siblings is the version of
+   this that breaks the first time a wrapper is added.
+
+   `visibility`, not `display`. Hiding by display collapses the layout and
+   takes the sheet's own ancestors with it, so the sheet lands wherever the
+   collapse leaves it - usually a third of the way down page two.
+*/
+@media print {
+  html, body { background: #fff !important; }
+  body * { visibility: hidden !important; }
+  .tb-print, .tb-print * { visibility: visible !important; }
+  .tb-print {
+    position: absolute !important;
+    left: 0 !important; top: 0 !important; right: 0 !important;
+    width: 100% !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  /* The preview's own furniture - the Print and Close buttons - is on screen
+     only. Printing a sheet with a Print button drawn on it is the detail
+     that makes the whole thing look unfinished. */
+  .tb-print-hide { display: none !important; }
+  .tb-print-break { break-inside: avoid; page-break-inside: avoid; }
+  @page { margin: 12mm; }
+}
