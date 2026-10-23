@@ -2168,6 +2168,43 @@ const SESSION_BLOCKS = [
 // continuous and short; a heavy compound set is slower to set up and perform.
 const SET_SECONDS = { warmup: 30, power: 20, strength: 45, accessory: 40, conditioning: 60, cooldown: 30 };
 
+// What an exercise is logged in. Lifts are reps and weight. Aerobic work is
+// how long you went for. Intervals (battle ropes, assault bike, HIIT) are
+// rounds, each with its work and rest time. Decided by the phase the program
+// gives the movement; anything unrecognised stays reps and weight.
+const TIME_PHASES = new Set(["aerobic", "zone2", "steady_state"]);
+const INTERVAL_PHASES = new Set(["lactic", "intervals", "interval", "hiit", "alactic", "anaerobic"]);
+function metricModeFor(item) {
+  const p = String(item?.phase || "").toLowerCase();
+  if (TIME_PHASES.has(p)) return "time";
+  if (INTERVAL_PHASES.has(p)) return "intervals";
+  return "load";
+}
+
+// The first number in a prescription, read as minutes or seconds.
+// "25min" -> 25 min, "15–20 min easy" -> 15 min, "30s" -> 30 s, "30s on/30s off" -> 30 s.
+function prescribedMinutes(text) {
+  const m = /(\d+(?:\.\d+)?)\s*(?:[–-]\s*\d+\s*)?(min|m\b|minutes?)/i.exec(String(text || ""));
+  return m ? Number(m[1]) : null;
+}
+function prescribedSeconds(text) {
+  const t = String(text || "");
+  const sec = /(\d+(?:\.\d+)?)\s*(?:[–-]\s*\d+\s*)?(s|sec|secs|seconds?)\b/i.exec(t);
+  if (sec) return Number(sec[1]);
+  const min = /(\d+(?:\.\d+)?)\s*(min|minutes?)\b/i.exec(t);
+  return min ? Number(min[1]) * 60 : null;
+}
+function intervalRestSeconds(item) {
+  const off = /(\d+)\s*s(?:ec)?\s*off/i.exec(String(item?.reps || ""));
+  if (off) return Number(off[1]);
+  return prescribedSeconds(item?.rest);
+}
+function metricNumber(v) {
+  if (v === "" || v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 // Warm-ups and cool-downs are done, not measured.
 //
 // Nobody needs the weight and reps of a hip 90/90 recorded, and asking for them
@@ -16538,7 +16575,7 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
           </span>
           {open ? <ChevronUp size={15} style={{ color: C.faint }} /> : <ChevronDown size={15} style={{ color: C.faint }} />}
         </div>
-        <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: C.sub }}>{block.why}</p>
+        {open && <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: C.sub }}>{block.why}</p>}
       </button>
       {onRemoveBlock && (
         <button onClick={() => onRemoveBlock(block)} className="shrink-0 px-3 py-4" aria-label={`Delete the ${block.label} section`}>
@@ -17665,21 +17702,8 @@ function AthleteProgram({ state, setState, nav }) {
               colorOf={(id) => (id ? dayColor(id) : activeDayColor)} />
             <div className="mb-4" />
 
-            {overrunning && (
-              <div className="rounded-xl p-3 mb-3 flex items-start gap-2" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}55` }}>
-                <AlertCircle size={14} style={{ color: C.amber }} className="mt-0.5 shrink-0" />
-                <div className="text-[12.5px] leading-relaxed" style={{ color: C.amber }}>
-                  {tooMany
-                    ? `${sortedExercises.length} exercises is a lot for a ${targetMinutes}-minute session — about ${budget.total} is realistic once rest is counted.`
-                    : `This session runs about ${dayMinutes} minutes — longer than the ${targetMinutes} you said you had.`}
-                  {" "}If you're short on time, cut Secondary Movements first, then Conditioning. The warm-up and the Primary Movements are what the session is for.
-                </div>
-              </div>
-            )}
-
-            {/* Blocks, not a flat list. Warm-up and cool-down start collapsed:
-                they're the same every session and never the reason you opened
-                this screen. */}
+            {/* Blocks, not a flat list. Every block starts collapsed and only
+                opens when tapped (Isaiah, 23 Oct). */}
             {canEdit && (() => {
               // A section only exists while something is in it, so "add a
               // section" is really "add the first exercise to an empty one".
@@ -17710,7 +17734,7 @@ function AthleteProgram({ state, setState, nav }) {
                 <SessionBlock
                   key={b.key}
                   block={b}
-                  defaultOpen={b.key !== "warmup" && b.key !== "cooldown"}
+                  defaultOpen={false}
                   exById={exById}
                   onExerciseClick={setDetailExercise}
                   onSwap={(x) => setSwapTarget({ dayId: day.id, x })}
@@ -19057,61 +19081,6 @@ function SessionTimerStrip({ seconds, running, onPause, onResume }) {
   );
 }
 
-// Last microcycle's session, in full, at the top of this one.
-//
-// The per-exercise line further down answers "what do I load this set with".
-// This answers the question before that one: what did this session look like
-// last week. Open by default, because an athlete who has to go looking for it
-// is back to guessing; collapsed state survives moving between exercises, so
-// closing it once closes it for the session.
-function LastSessionRecap({ session }) {
-  const [open, setOpen] = useState(true);
-  if (!session) return null;
-  const when = formatSessionDate(session.date) || session.date;
-  const ago = session.weeksAgo;
-  const heading = ago === 1 ? "Last week" : ago > 1 ? `${ago} weeks ago` : "Last time";
-  const count = session.exercises.length;
-  return (
-    <div className="rounded-xl mb-4" style={{ background: `${C.blue}0d`, border: `1px solid ${C.blue}44` }}>
-      <button onClick={() => setOpen(o => !o)} className="w-full px-3.5 py-3 flex items-center gap-2.5 text-left">
-        <RotateCcw size={15} className="shrink-0" style={{ color: C.blue }} />
-        <div className="min-w-0 flex-1">
-          <div className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
-            {heading} on this session{session.week != null ? ` \u00b7 Week ${session.week}` : ""}
-          </div>
-          <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>
-            {when} · {count} movement{count === 1 ? "" : "s"} logged
-          </div>
-        </div>
-        {open
-          ? <ChevronUp size={16} className="shrink-0" style={{ color: C.sub }} />
-          : <ChevronDown size={16} className="shrink-0" style={{ color: C.sub }} />}
-      </button>
-      {open && (
-        <div className="px-3.5 pb-3 space-y-1.5">
-          {session.exercises.map((e, i) => (
-            <div key={i} className="rounded-lg px-2.5 py-2" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-              <div className="flex items-baseline gap-2">
-                <span className="text-[11px] font-semibold min-w-0 flex-1 truncate" style={{ color: C.text }}>{e.name}</span>
-                <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.sub }}>
-                  {e.setsCompleted}/{e.setsPrescribed} sets
-                </span>
-              </div>
-              <div className="text-[11px] tabular-nums mt-0.5 leading-relaxed break-words"
-                style={{ color: e.sets.length ? C.blue : C.faint }}>
-                {formatSetHistory(e.sets) || "nothing recorded"}
-              </div>
-            </div>
-          ))}
-          <p className="text-[11px] leading-relaxed pt-1" style={{ color: C.faint }}>
-            What you actually logged, not what was prescribed. Beat it where it felt beatable.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Workout({ state, setState, nav, dayId }) {
   const wideWorkout = useIsWide();
   // Measured, not assumed — see useBarClearance.
@@ -19165,6 +19134,8 @@ function Workout({ state, setState, nav, dayId }) {
   // what was asked for, this is what was done, and conflating them is how a
   // log ends up recording a session nobody had.
   const [setReps, setSetReps] = useState({});
+  // Time and interval entries, per set: { minutes } or { work, rest } (seconds).
+  const [setMetrics, setSetMetrics] = useState({});
   // Which weight boxes the athlete typed into themselves, as opposed to boxes
   // filled down from the set above. A hand-set box is never overwritten
   // again - that is the whole contract of the fill - and it is the same flag
@@ -19255,6 +19226,7 @@ function Workout({ state, setState, nav, dayId }) {
     setSetChecks(remapExerciseKeys(draft?.setChecks, toCurrent));
     setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
     setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
+    setSetMetrics(remapExerciseKeys(draft?.setMetrics, toCurrent));
     setHandSet(remapExerciseKeys(draft?.handSet, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
@@ -19335,6 +19307,7 @@ function Workout({ state, setState, nav, dayId }) {
       setChecks: remapExerciseKeys(setChecks, toStable),
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
+      setMetrics: remapExerciseKeys(setMetrics, toStable),
       // Saved with the rest of the draft, or a reload mid-session turns every
       // deliberately different set back into a box the next fill will stamp
       // over.
@@ -19343,7 +19316,7 @@ function Workout({ state, setState, nav, dayId }) {
     };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
-  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, handSet, swappedMap, notes, finished]);
+  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, setMetrics, handSet, swappedMap, notes, finished]);
 
   // "Last time" is memoised because it sorts the athlete's entire log history,
   // and without it that ran on every keystroke into a weight field.
@@ -19540,6 +19513,7 @@ function Workout({ state, setState, nav, dayId }) {
   const ex = x && exById(swappedMap[x.id] || x.exerciseId);
   // Warm-up and cool-down movements get a done tick instead of set rows.
   const tracked = isTrackedExercise(x);
+  const metricMode = metricModeFor(x);
   const totalSets = x?.sets || 0;
   const doneSets = setChecks[x?.id]?.length || 0;
   const phaseLabel = PHASES.find(p => p.key === x?.phase)?.label;
@@ -19570,7 +19544,8 @@ function Workout({ state, setState, nav, dayId }) {
     timerMode === "running" || timerMode === "done" ||
     Object.values(setChecks).some(list => (list || []).length > 0) ||
     Object.values(setWeights).some(list => (list || []).some(v => v !== "" && v != null)) ||
-    Object.values(setReps).some(list => (list || []).some(v => v !== "" && v != null));
+    Object.values(setReps).some(list => (list || []).some(v => v !== "" && v != null)) ||
+    Object.values(setMetrics).some(list => (list || []).some(v => v && Object.values(v).some(n => n !== "" && n != null)));
 
   const goToDay = (id) => {
     if (!id || id === day.id) return;
@@ -19752,7 +19727,19 @@ function Workout({ state, setState, nav, dayId }) {
       const typedByHand = handSet[item.id] || [];
       // One entry per prescribed set, so set 3 stays set 3 even when set 2 was
       // skipped — the position is what makes "last time" line up next session.
+      const mode = metricModeFor(item);
+      const metrics = setMetrics[item.id] || [];
       const sets = Array.from({ length: item.sets || 0 }, (_, i) => {
+        // Time and intervals carry no reps or weight, so they can never
+        // become a personal best or a "last time" load by accident.
+        if (mode === "time") {
+          return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
+            minutes: metricNumber(metrics[i]?.minutes), manual: false };
+        }
+        if (mode === "intervals") {
+          return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
+            workSec: metricNumber(metrics[i]?.work), restSec: metricNumber(metrics[i]?.rest), manual: false };
+        }
         const weight = normalizeWeight(typed[i]);
         // What was done, not what was asked for. Without it a set of five at
         // 135 and a set of ten at 135 logged identically, and "last time"
@@ -19793,8 +19780,9 @@ function Workout({ state, setState, nav, dayId }) {
         setsCompleted: checked.filter(i => i < (item.sets || 0)).length,
         reps: item.reps,
         rpe: item.rpe,
+        metric: mode,
         sets,
-        topWeight: topSetWeight(sets),
+        topWeight: mode === "load" ? topSetWeight(sets) : null,
       };
     }).filter(Boolean);
     const setsCompleted = exerciseDetail.reduce((n, e) => n + e.setsCompleted, 0);
@@ -19988,6 +19976,7 @@ function Workout({ state, setState, nav, dayId }) {
       setChecks: remapExerciseKeys(setChecks, toStable),
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
+      setMetrics: remapExerciseKeys(setMetrics, toStable),
       handSet: remapExerciseKeys(handSet, toStable),
       swappedMap: remapExerciseKeys(swappedMap, toStable),
       seconds: timerIsLive ? liveTimerSeconds() : 0,
@@ -20105,32 +20094,9 @@ function Workout({ state, setState, nav, dayId }) {
 
         <SessionTimerPrompt mode={timerMode} onYes={armTimer} onNo={declineTimer} onStart={startTimer} />
 
-        {/* Which session of the program this is, and a direct way to any other.
-            The arrows above step one at a time; this row is for jumping. */}
-        {allDays.length > 1 && (
-          <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
-            <span className="text-[11px] font-semibold shrink-0 mr-0.5" style={{ color: C.faint }}>
-              Day {dayIdx + 1} of {allDays.length}
-            </span>
-            {allDays.map((d, i) => {
-              const active = d.id === day.id;
-              return (
-                <button key={d.id} onClick={() => requestDaySwitchTo(d.id)}
-                  className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold"
-                  style={{
-                    background: active ? C.orange : C.panel,
-                    color: active ? "#fff" : C.sub,
-                    border: `1px solid ${active ? C.orange : C.border}`,
-                  }}>
-                  {i + 1}
-                  {isDayScheduledOn(d, todayISO()) && !active && (
-                    <span className="ml-1" style={{ color: C.olive }}>•</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        {/* No "Day 5 of 7" strip, week/phase bubble or last-session recap here
+            (Isaiah, 23 Oct): once a workout starts, the screen is about this
+            workout only. The program's shape lives on the Program tab. */}
 
         {/* Said out loud, because an unexplained lighter session reads as the
             app being wrong — and the athlete adds the sets back, which defeats
@@ -20150,33 +20116,6 @@ function Workout({ state, setState, nav, dayId }) {
             </div>
           </div>
         )}
-
-        {/* Where this week sits, on the screen where the athlete is actually
-            lifting. "Level of difficulty 6" in week 1 and "8" in week 3 is
-            only meaningful if you know which week you're in and that the
-            climb is deliberate. */}
-        {!deloadWeek && weekInfo && weekInfo.rampWeeks > 1 && (() => {
-          const step = progressionStep(weekInfo.weekInPhase, weekInfo.rampWeeks);
-          const atPeak = step === 0;
-          const accent = atPeak ? C.orange : C.blue;
-          return (
-            <div className="rounded-xl px-3.5 py-2.5 mb-4 flex items-center gap-2.5" style={{ background: `${accent}12`, border: `1px solid ${accent}55` }}>
-              <TrendingUp size={14} className="shrink-0" style={{ color: accent }} />
-              <span className="text-[12.5px]" style={{ color: C.sub }}>
-                <span className="font-semibold" style={{ color: accent }}>
-                  Week {weekInfo.weekInPhase} of {weekInfo.rampWeeks}
-                  {programPlan.blocks.length > 1 ? ` · Phase ${weekInfo.phase.index}` : ""}.{" "}
-                </span>
-                {atPeak ? "The hardest week of this phase." : "Difficulty steps up again next week."}
-              </span>
-            </div>
-          );
-        })()}
-
-        {/* What this same session looked like last microcycle. Shown without
-            being asked for, because the alternative is an athlete standing in
-            a gym trying to remember last Monday. */}
-        <LastSessionRecap session={lastSession} />
 
         {!dayIsScheduled && (
           <div className="rounded-xl p-4 mb-5" style={{ background: `${C.amber}12`, border: `1px solid ${C.amber}55` }}>
@@ -20237,7 +20176,7 @@ function Workout({ state, setState, nav, dayId }) {
               </p>
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 tabular-nums text-[15px]" style={{ color: C.orange }}>
-              <span>{x.sets} {tracked ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps} reps</span>
+              <span>{x.sets} {tracked && metricMode === "load" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
             {/* The number that decides how much weight goes on the bar, in
@@ -20296,16 +20235,20 @@ function Workout({ state, setState, nav, dayId }) {
         </div>
 
         <div className="mb-2">
-          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Sets</div>
+          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : "Sets"}</div>
           <div className="text-[12.5px] mt-0.5" style={{ color: C.faint }}>
-            Type the weight you used, then tap the set as you finish it.
+            {metricMode === "time"
+              ? "Type how many minutes you went for, then tick it."
+              : metricMode === "intervals"
+              ? "Type your work and rest time for each round, then tick the round."
+              : "Type the weight you used, then tap the set as you finish it."}
           </div>
         </div>
 
         {/* Last time's numbers, right where the decision is made. This is the
             whole point of recording weight: walking up to the bar and knowing
             what you did last week, without digging through history. */}
-        {lastSets && (() => {
+        {metricMode === "load" && lastSets && (() => {
           // Which session the numbers came from decides what they are worth.
           // Same session, previous microcycle is the comparison the whole
           // block is built on; anything else is context, and gets coloured
@@ -20360,6 +20303,78 @@ function Workout({ state, setState, nav, dayId }) {
           );
         })()}
 
+        {metricMode !== "load" && (() => {
+          const list = setMetrics[x.id] || [];
+          const write = (i, field, value) => setSetMetrics(m => {
+            const forExercise = [...(m[x.id] || [])];
+            forExercise[i] = { ...(forExercise[i] || {}), [field]: value };
+            return { ...m, [x.id]: forExercise };
+          });
+          const box = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" };
+          const planMin = prescribedMinutes(x.reps);
+          const planWork = prescribedSeconds(x.reps);
+          const planRest = intervalRestSeconds(x);
+          return (
+            <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${C.border}` }}>
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] uppercase tracking-[.08em] font-semibold"
+                style={{ background: C.panelAlt, color: C.faint }}>
+                <span className="shrink-0" style={{ width: 44 }}>{metricMode === "intervals" ? "Round" : "Set"}</span>
+                {metricMode === "time"
+                  ? <span className="flex-1 text-center">Minutes</span>
+                  : <>
+                      <span className="flex-1 text-center">Work (sec)</span>
+                      <span className="flex-1 text-center">Rest (sec)</span>
+                    </>}
+                <span className="shrink-0 text-right" style={{ width: 44 }}>Done</span>
+              </div>
+              {Array.from({ length: totalSets }).map((_, i) => {
+                const checked = (setChecks[x.id] || []).includes(i);
+                const v = list[i] || {};
+                return (
+                  <div key={i} className="px-3 py-2 flex items-center gap-2"
+                    style={{ background: checked ? `${C.olive}14` : "transparent", borderTop: `1px solid ${C.border}` }}>
+                    <span className="tabular-nums text-[15px] font-semibold shrink-0"
+                      style={{ width: 44, color: checked ? C.olive : C.sub }}>{i + 1}</span>
+                    {metricMode === "time" ? (
+                      <input type="number" inputMode="decimal" min="0" step="any"
+                        placeholder={planMin != null ? String(planMin) : ""}
+                        value={v.minutes ?? ""} onChange={e => write(i, "minutes", e.target.value)}
+                        aria-label={`Minutes for set ${i + 1}`}
+                        className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                    ) : (
+                      <>
+                        <input type="number" inputMode="numeric" min="0" step="1"
+                          placeholder={planWork != null ? String(planWork) : ""}
+                          value={v.work ?? ""} onChange={e => write(i, "work", e.target.value)}
+                          aria-label={`Work seconds for round ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                        <input type="number" inputMode="numeric" min="0" step="1"
+                          placeholder={planRest != null ? String(planRest) : ""}
+                          value={v.rest ?? ""} onChange={e => write(i, "rest", e.target.value)}
+                          aria-label={`Rest seconds after round ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                      </>
+                    )}
+                    <button onClick={() => toggleSet(i)}
+                      aria-label={checked ? `${i + 1} is done. Press to undo it.` : `Mark ${i + 1} done`}
+                      aria-pressed={checked}
+                      className="shrink-0 flex items-center justify-end" style={{ width: 44, height: 40 }}>
+                      {checked
+                        ? <CheckCircle2 size={22} style={{ color: C.olive }} />
+                        : <Circle size={22} style={{ color: C.faint }} />}
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="px-3 py-2 text-[11px] tabular-nums" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
+                {metricMode === "time"
+                  ? (planMin != null ? `Planned: ${planMin} min. Leave a box empty to log the plan as written.` : "Leave a box empty if you didn't time it.")
+                  : `${(setChecks[x.id] || []).length} of ${totalSets} rounds done${planWork != null ? ` · planned ${planWork}s work` : ""}${planRest != null ? ` / ${planRest}s rest` : ""}`}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* SET · REPS · WEIGHT · DONE, in that order, as one table.
             It used to be a stack of cards: a full-width "Press here when you
             finish Set 3" button with the weight box floated off its right
@@ -20372,6 +20387,7 @@ function Workout({ state, setState, nav, dayId }) {
             switch lives in the WEIGHT heading because that is the only place
             it applies - it is not a global setting an athlete should have to
             go to their profile to change with a bar loaded. */}
+        {metricMode === "load" && (
         <div className="rounded-xl overflow-hidden mb-5" style={{ border: `1px solid ${C.border}` }}>
           <div className="flex items-center gap-2 px-3 py-2 text-[11px] uppercase tracking-[.08em] font-semibold"
             style={{ background: C.panelAlt, color: C.faint }}>
@@ -20528,6 +20544,7 @@ function Workout({ state, setState, nav, dayId }) {
             );
           })}
         </div>
+        )}
         </>)}
         </>)}
 
@@ -20681,6 +20698,7 @@ function Workout({ state, setState, nav, dayId }) {
           // to a goblet squat, and got logged against it.
           setSetWeights(w => ({ ...w, [target.id]: [] }));
           setSetReps(r => ({ ...r, [target.id]: [] }));
+          setSetMetrics(r => ({ ...r, [target.id]: [] }));
           setSetChecks(sc => ({ ...sc, [target.id]: [] }));
           checksRef.current = { ...checksRef.current, [target.id]: [] };
         }} reasonPreset="" />

@@ -51,6 +51,25 @@ Branch `timer-stop-and-push`.
   athlete. The switch is "Phone Notifications" in both settings screens.
   iPhone needs the app opened from the home screen icon.
 
+## 0c. Isaiah's clean-up list, 23 Oct 2026 (branch `timer-stop-and-push`)
+
+- Program tab: every block (Warm-Up, Power, Primary, Secondary...) starts
+  collapsed, description included, and opens only when tapped.
+- The "N exercises is a lot for a 90-minute session" box is gone from the
+  athlete's program screen. Coaches say that to clients themselves.
+- Workout screen shows only this workout: no "Day 5 of 7" strip, no
+  week/phase bubble, no "2 weeks ago on this session" recap
+  (`LastSessionRecap` deleted). The day title stays. Other days are reached
+  from the Program tab via the My Program | My Workout tabs.
+- Logging matches the exercise (`metricModeFor`, by phase): `aerobic` logs
+  minutes; `lactic`/interval phases log work and rest seconds per round;
+  everything else is reps and weight. Time and interval sets are stored in
+  `workout_logs.exercises` as `minutes` / `workSec` / `restSec` with null
+  reps and weight, so they never become a weight PR. No migration.
+- `_verify/run.sh` stops at `tdz-selftest.mjs` in the sandbox because
+  `acorn` is not installed in node_modules; tdz.mjs was run separately
+  (clean), as were hooks.mjs and unwired.mjs (clean).
+
 ## 1. Where things are
 
 | Thing | Where |
