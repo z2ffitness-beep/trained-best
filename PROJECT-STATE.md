@@ -1,6 +1,6 @@
 # Trained.best: read this first
 
-**Last updated 15 Oct 2026.** Anyone picking this project up, in any chat, on
+**Last updated 23 Oct 2026.** Anyone picking this project up, in any chat, on
 any machine, starts here. Keep it current: if you change something in this
 repo or the database, update this file in the same commit.
 
@@ -8,6 +8,29 @@ It exists because context was lost between 7 and 15 Oct and a week of work
 had to be reconstructed from file timestamps.
 
 ---
+
+## 0. Update, 23 Oct 2026 (read this before sections 4c and 8)
+
+- **`redesign-branding` is merged into main and live.** It went in with the
+  "Build one" fix (pull request #2, 22 Oct). The working branch is now main;
+  new work goes on a fresh branch off main.
+- **Migrations 004, 005 and 006 are APPLIED to live** (23 Oct, in order,
+  checked afterwards: all four functions, the new profiles and storage
+  policies, the `message-media` bucket and the two message columns exist;
+  11 profiles and 12 messages untouched). Ignore "not applied" below.
+- **Vercel environment variables:** `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+  `ANTHROPIC_API_KEY` are set for Production and Preview on the
+  `trained-best` project. The serverless function had no Supabase variables
+  at all before, which is what "AI is misconfigured" meant. The browser
+  never noticed because `src/supabaseClient.js` has built-in fallbacks.
+- **"Build one" was broken**: it never passed `allowEmpty`, so the
+  empty-program guard meant for failed imports refused it every time. Fixed.
+- **Cleanup branch `cleanup-oct-23`**: root `chat.js` deleted (only
+  `api/chat.js` runs), and the Caught Up badge is now shown as **Comeback**
+  (key still `caughtup`).
+- `_verify/tdz-selftest.mjs` fails 15 of 26 in the Linux sandbox only, the
+  same before and after these changes: it cannot load a package there. Every
+  unit suite passes.
 
 ## 1. Where things are
 
