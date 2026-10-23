@@ -17346,8 +17346,12 @@ function AthleteProgram({ state, setState, nav }) {
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
-        <div className="text-2xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>My Program</div>
-        <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>AI-generated for your goals</div>
+        <ProgramWorkoutTabs active="program"
+          onWorkout={() => {
+            const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
+            nav.go("athlete-workout", today?.id);
+          }} />
+        <div className="text-[15px] mt-3" style={{ color: C.sub }}>AI-generated for your goals</div>
       </div>
 
       <div className="px-5 pt-4">
@@ -18999,6 +19003,32 @@ function ConnectionBanner({ online, pending, blocked }) {
   );
 }
 
+// My Program | My Workout, side by side, as tabs. The same row sits at the
+// top of both screens so an athlete can flip between the plan and the
+// session they are doing without hunting for the way back.
+function ProgramWorkoutTabs({ active, onProgram, onWorkout }) {
+  const tab = (key, label, onClick) => {
+    const on = active === key;
+    return (
+      <button key={key} onClick={on ? undefined : onClick} aria-pressed={on}
+        className="flex-1 rounded-xl py-2.5 text-[15px] font-bold transition-colors"
+        style={{
+          background: on ? C.panel : "transparent",
+          color: on ? C.blue : C.sub,
+          boxShadow: on ? C.cardShadow : "none",
+        }}>
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div className="flex gap-1 p-1 rounded-2xl" style={{ background: C.border + "66" }}>
+      {tab("program", "My Program", onProgram)}
+      {tab("workout", "My Workout", onWorkout)}
+    </div>
+  );
+}
+
 // The workout clock. A full-width row under the session name, inside the
 // sticky header, big enough to read at arm's length mid-set. It used to float
 // in the top-right corner, which put it directly on top of the Stop button.
@@ -20062,6 +20092,10 @@ function Workout({ state, setState, nav, dayId }) {
         </button>
       } />
       <div className="px-5 pt-5">
+
+        <div className="mb-4">
+          <ProgramWorkoutTabs active="workout" onProgram={() => nav.go("athlete-program")} />
+        </div>
 
         {/* In person or online, on the screen the athlete opens to train. This
             is the last moment it can usefully be said. */}
