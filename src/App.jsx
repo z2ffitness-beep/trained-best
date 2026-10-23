@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
-import { supabase } from "./supabaseClient";
+import { supabase, SUPABASE_URL } from "./supabaseClient";
 import {
   Dumbbell, Users, MessageSquare, LayoutGrid, Calendar, BookOpen, Flame, TrendingUp, Clock,
   ChevronRight, ChevronLeft, Plus, X, Search, Check, User, LogOut, Send,
@@ -15451,6 +15451,7 @@ function CoachProfile({ state, setState, nav }) {
         <ProfileDetailsCard state={state} setState={setState} />
         <ThemePicker state={state} setState={setState} />
         <ChangePasswordCard />
+        <PhoneNotificationsCard userId={state.me.id} />
 
         <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>More</div>
         <div className="grid grid-cols-2 gap-3 mb-5">
@@ -21628,6 +21629,122 @@ async function saveProfileSetting(setState, userId, key, value) {
 // This path needs no email and works whatever the mail provider is doing. It is
 // also the flow the coach described from the start: hand a client credentials,
 // they sign in, they change it to something of their own.
+// ---- Phone notifications ----
+// One card in settings, for coaches and athletes alike. Anything that lands in
+// the bell is also sent to every phone the person has turned this on for
+// (see supabase/functions/send-push and migration 007).
+//
+// iPhone only allows this for an app saved to the home screen, and only from
+// a tap, so the card explains that rather than showing a button that cannot
+// work in Safari.
+function urlBase64ToUint8Array(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+function pushSupport() {
+  if (typeof window === "undefined") return "unsupported";
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent || "");
+  const standalone = window.matchMedia?.("(display-mode: standalone)")?.matches || navigator.standalone === true;
+  if (isIOS && !standalone) return "needs-home-screen";
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
+  return "ok";
+}
+
+function PhoneNotificationsCard({ userId }) {
+  const support = pushSupport();
+  const [status, setStatus] = useState("checking"); // checking | on | off | blocked
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    if (support !== "ok") { setStatus("off"); return; }
+    if (Notification.permission === "denied") { setStatus("blocked"); return; }
+    let alive = true;
+    navigator.serviceWorker.ready
+      .then(reg => reg.pushManager.getSubscription())
+      .then(sub => { if (alive) setStatus(sub ? "on" : "off"); })
+      .catch(() => { if (alive) setStatus("off"); });
+    return () => { alive = false; };
+  }, [support]);
+
+  const turnOn = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { setStatus(perm === "denied" ? "blocked" : "off"); return; }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push?public-key`);
+      const { publicKey } = await res.json();
+      if (!publicKey) throw new Error("no key");
+      const reg = await navigator.serviceWorker.ready;
+      const sub = (await reg.pushManager.getSubscription())
+        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+      const j = sub.toJSON();
+      const { error } = await supabase.from("push_subscriptions").upsert({
+        user_id: userId, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
+        user_agent: (navigator.userAgent || "").slice(0, 200),
+      }, { onConflict: "endpoint" });
+      if (error) throw error;
+      setStatus("on");
+    } catch {
+      setErr("Couldn't turn notifications on. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const turnOff = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+        await sub.unsubscribe();
+      }
+      setStatus("off");
+    } catch {
+      setErr("Couldn't turn notifications off. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const on = status === "on";
+  let detail;
+  if (support === "needs-home-screen") detail = "On iPhone, open Trained.best from your home screen icon first, then turn this on.";
+  else if (support !== "ok") detail = "This browser can't receive notifications.";
+  else if (status === "blocked") detail = "Notifications are blocked for this app. Allow them in your phone's Settings, then come back.";
+  else if (on) detail = "On for this phone. You'll get a notice whenever something lands in your bell.";
+  else detail = "Get a notice on this phone whenever something lands in your bell, like a client finishing a workout.";
+
+  const canToggle = support === "ok" && status !== "blocked" && status !== "checking";
+  return (
+    <>
+      <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Phone Notifications</div>
+      <div className="rounded-2xl p-3.5 mb-5" style={{ ...card(), border: `1px solid ${on ? C.orange : C.border}` }}>
+        <div className="flex items-center gap-3">
+          <Bell size={18} style={{ color: on ? C.orange : C.faint }} className="shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Notifications on this phone</div>
+            <div className="text-[11px] mt-0.5 leading-relaxed" style={{ color: C.sub }}>{detail}</div>
+          </div>
+          {canToggle && (
+            <button onClick={on ? turnOff : turnOn} disabled={busy}
+              aria-label={on ? "Turn phone notifications off" : "Turn phone notifications on"}
+              className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
+              style={{ background: on ? C.panel : C.orange, color: on ? C.text : "#fff", border: `1px solid ${on ? C.border : C.orange}` }}>
+              {busy ? "…" : on ? "Turn off" : "Turn on"}
+            </button>
+          )}
+        </div>
+        {err && <div className="text-[11px] mt-2" style={{ color: C.red }}>{err}</div>}
+      </div>
+    </>
+  );
+}
+
 function ChangePasswordCard() {
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState("");
@@ -22004,6 +22121,7 @@ function AthletePreferences({ state, setState }) {
       <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
       <ChangePasswordCard />
+        <PhoneNotificationsCard userId={state.me.id} />
 
       {/* Also in the set table's header, which is where it is actually
           needed with a bar loaded. This copy is for someone setting the app

@@ -15,3 +15,6 @@ const supabaseAnonKey =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBrdWp5Z3lpYnVpeXlycnlyc3dyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4NTAyNzEsImV4cCI6MjEwMTQyNjI3MX0.NXR7JwsTYOFKO45HWnmP3ZZHstrpjF6Pny9axQbWJCM";
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+// Used to reach Edge Functions with a plain fetch (send-push).
+export const SUPABASE_URL = supabaseUrl;

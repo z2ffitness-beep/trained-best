@@ -132,3 +132,33 @@ self.addEventListener("fetch", (event) => {
     return cached || (await network) || Response.error();
   })());
 });
+
+// ---- Phone notifications ----
+// The send-push function (Supabase) sends { title, body, tag, url }. Shown
+// even when the app is closed. iPhone only delivers these to the app once it
+// is saved to the home screen and the person has tapped "Turn on".
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data && event.data.text() }; }
+  const title = data.title || "Trained.best";
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || "",
+    tag: data.tag || undefined,
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    data: { url: data.url || "/" },
+  }));
+});
+
+// Tapping the notification brings the app forward, or opens it.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const c of all) {
+      if ("focus" in c) { await c.focus(); return; }
+    }
+    if (self.clients.openWindow) await self.clients.openWindow(url);
+  })());
+});
