@@ -244,11 +244,11 @@ test("stepping between sessions did not leave with the arrows", () => {
     "the day strip no longer says which session this is");
 });
 
-test("the sheet offers exactly the three answers, and says what each does", () => {
-  const at = src.indexOf('title="Stop for today?"');
+test("the sheet offers pause or resume, keep going, and the two ways to stop", () => {
+  const at = src.indexOf('title="Workout options"');
   assert.ok(at > 0, "there is no Stop sheet");
   const sheet = src.slice(at, src.indexOf("</Modal>", at));
-  for (const label of ["Stop and save my progress", "Keep going", "I'm done for good, count what I did"]) {
+  for (const label of ["Pause timer", "Resume timer", "Stop and save my progress", "Keep going", "I'm done for good, count what I did"]) {
     assert.ok(sheet.includes(label), `the sheet is missing "${label}"`);
   }
   assert.ok(/Nothing is logged until you finish/.test(sheet),
@@ -345,6 +345,16 @@ test("the card hides when the program no longer has that day", () => {
     "the card renders without checking the session still exists");
   assert.ok(/sessionIdentity\(myProgram, d\) === pausedWorkout\.dayKey/.test(src),
     "the stored key is never translated back to a day of the live program");
+});
+
+test("the workout clock lives in the header, not floating over the Stop button", () => {
+  assert.ok(!/function SessionTimerBadge/.test(src), "the floating timer badge is back");
+  assert.ok(/below=\{timerIsLive\s*\?\s*<SessionTimerStrip/.test(src), "the timer strip is not in the header");
+  const at = src.indexOf("const resumeTimer = () => {");
+  assert.ok(at > 0, "there is no way to resume the timer");
+  const body = src.slice(at, src.indexOf("\n  };", at));
+  assert.ok(/Date\.now\(\) - sofar \* 1000/.test(body), "resuming does not carry the time already on the clock");
+  assert.ok(/mode: "running"/.test(body), "resuming is not remembered across a reload");
 });
 
 for (const [name, fn] of tests) {

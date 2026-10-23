@@ -8623,22 +8623,28 @@ function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart
 // SHARED CHROME
 // ============================================================
 
-function TopBar({ title, onLogout, right, hideBell = false }) {
+function TopBar({ title, onLogout, right, hideBell = false, below = null }) {
   const notif = React.useContext(NotificationContext);
   const wideBar = useIsWide();
+  // `below` is a second row inside the same sticky header (the workout timer).
+  // Inside the header rather than floating over the page, so it can never sit
+  // on top of the buttons in the row above it.
   return (
-    <div className="sticky top-0 z-20 flex items-center justify-between gap-3 px-4 safe-top"
+    <div className="sticky top-0 z-20 px-4 safe-top"
       style={{
         paddingTop: wideBar ? 26 : 16, paddingBottom: wideBar ? 20 : 16,
         background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         borderBottom: `1px solid ${C.border}`,
       }}>
+     <div className="flex items-center justify-between gap-3">
       <h1 className="truncate" style={{ fontFamily: DISPLAY, fontSize: wideBar ? 30 : 25, fontWeight: 700, letterSpacing: "-.02em", color: C.text }}>{title}</h1>
       <div className="flex items-center gap-3 shrink-0">
         {right}
         {!hideBell && notif?.open && <NotificationBell count={notif.count} onClick={notif.open} />}
         {onLogout && <button onClick={onLogout} style={{ color: C.sub }}><LogOut size={18} /></button>}
       </div>
+     </div>
+      {below}
     </div>
   );
 }
@@ -18992,23 +18998,29 @@ function ConnectionBanner({ online, pending, blocked }) {
   );
 }
 
-// The badge. Top-right, above the page, bright enough to read at arm's length
-// mid-set. Sits below the header rather than on top of it so it never covers
-// the day switcher.
-function SessionTimerBadge({ seconds, running, onStop }) {
-  const accent = running ? C.olive : C.red;
+// The workout clock. A full-width row under the session name, inside the
+// sticky header, big enough to read at arm's length mid-set. It used to float
+// in the top-right corner, which put it directly on top of the Stop button.
+// Pause and Resume sit on the strip itself; the Stop button opens the menu
+// with the same choice plus the ways to end the session.
+function SessionTimerStrip({ seconds, running, onPause, onResume }) {
+  const accent = running ? C.olive : C.orange;
   return (
-    <div className="fixed z-30" style={{ top: "calc(68px + env(safe-area-inset-top))", right: 12 }}>
-      <button onClick={running ? onStop : undefined} disabled={!running}
-        aria-label={running ? "Stop the workout timer" : "Workout time"}
-        className="rounded-2xl px-3 py-2 flex flex-col items-end"
-        style={{ background: accent, boxShadow: `0 4px 16px ${accent}66`, border: `2px solid ${accent}` }}>
-        <span className="tabular-nums tabular-nums leading-none" style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
+    <div className="mt-3 rounded-xl px-3 py-2 flex items-center justify-between gap-3"
+      style={{ background: `${accent}1f`, border: `1px solid ${accent}` }}>
+      <div className="flex items-baseline gap-2 min-w-0">
+        <span className="tabular-nums leading-none" style={{ fontSize: 22, fontWeight: 800, color: C.text }}>
           {formatClock(seconds)}
         </span>
-        <span className="text-[11px] font-bold uppercase tracking-[.16em] leading-none mt-1" style={{ color: "#ffffffcc" }}>
-          {running ? "Tap to stop" : "Stopped"}
+        <span className="text-[11px] font-bold uppercase tracking-[.16em]" style={{ color: accent }}>
+          {running ? "Timing" : "Paused"}
         </span>
+      </div>
+      <button onClick={running ? onPause : onResume}
+        aria-label={running ? "Pause the workout timer" : "Resume the workout timer"}
+        className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
+        style={{ background: accent, color: "#fff" }}>
+        {running ? "Pause" : "Resume"}
       </button>
     </div>
   );
@@ -19647,11 +19659,22 @@ function Workout({ state, setState, nav, dayId }) {
   const armTimer = () => { getAudioContext(); setTimerMode("ready"); rememberTimer({ mode: "ready" }); };
   const declineTimer = () => { setTimerMode("off"); rememberTimer({ mode: "off" }); };
   const startTimer = () => { getAudioContext(); setCountdownN(3); setTimerMode("counting"); };
-  const stopTimer = () => {
+  // Pausing freezes the clock ("done" is the frozen state, and is what a
+  // reload restores). Resuming starts it again from the frozen time by moving
+  // the wall-clock anchor back, so the paused stretch is not counted.
+  const pauseTimer = () => {
     const final = Math.round((Date.now() - (timerStartRef.current || Date.now())) / 1000);
     setTimerSeconds(final);
     setTimerMode("done");
     rememberTimer({ mode: "done", startedAt: null, seconds: final });
+  };
+  const resumeTimer = () => {
+    const sofar = Math.max(0, Math.round(timerSeconds || 0));
+    const startedAt = Date.now() - sofar * 1000;
+    timerStartRef.current = startedAt;
+    setTimerSeconds(sofar);
+    setTimerMode("running");
+    rememberTimer({ mode: "running", startedAt, seconds: sofar });
   };
   const timerIsLive = timerMode === "running" || timerMode === "done";
 
@@ -20011,7 +20034,6 @@ function Workout({ state, setState, nav, dayId }) {
 
   return (
     <div className="pb-36">
-      {timerIsLive && <SessionTimerBadge seconds={timerSeconds} running={timerMode === "running"} onStop={stopTimer} />}
       {timerMode === "counting" && countdownN > 0 && <SessionTimerCountdown n={countdownN} />}
       {/* Stop, and the name of the session. Nothing else.
           Two things used to live here as well and no longer do. The "1/23"
@@ -20024,7 +20046,11 @@ function Workout({ state, setState, nav, dayId }) {
           does the same job better: it shows every day at once, says which one
           is scheduled for today, and jumps straight to any of them instead of
           stepping. */}
-      <TopBar title={day.name} right={
+      <TopBar title={day.name}
+        below={timerIsLive
+          ? <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />
+          : null}
+        right={
         /* Red, because stopping is the one thing an athlete does mid-session
            that the app had no answer for. The old way out was the back
            gesture, which said nothing about what happened to the sets. */
@@ -20569,14 +20595,21 @@ function Workout({ state, setState, nav, dayId }) {
           : <Btn className="flex-1" disabled={!dayIsScheduled} onClick={() => setFinishOpen(true)}>Finish Workout</Btn>}
       </div>
 
-      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Stop for today?">
+      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Workout options">
+        {timerIsLive && (
+          <Btn variant="primary" className="w-full mb-2"
+            onClick={() => { if (timerMode === "running") pauseTimer(); else resumeTimer(); setStopOpen(null); }}>
+            {timerMode === "running" ? "Pause timer" : "Resume timer"}
+          </Btn>
+        )}
+        <Btn variant="secondary" className="w-full mb-4" onClick={() => setStopOpen(null)}>Keep going</Btn>
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>Stop for today</div>
         <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
           {stopOpen?.replaces
             ? `Your sets, where you are in the session and the time so far are all kept. You already have a paused ${sessionLabel(stopOpen.replaces)} workout, and saving this one replaces it.`
             : "Your sets, where you are in the session and the time so far are all kept. Nothing is logged until you finish."}
         </p>
-        <Btn variant="primary" className="w-full" onClick={stopAndSave}>Stop and save my progress</Btn>
-        <Btn variant="ghost" className="w-full mt-2" onClick={() => setStopOpen(null)}>Keep going</Btn>
+        <Btn variant={timerIsLive ? "secondary" : "primary"} className="w-full" onClick={stopAndSave}>Stop and save my progress</Btn>
         {/* Separate from the two above, because this one writes a session to
             the record and the other two do not. */}
         <Btn variant="secondary" className="w-full mt-2" onClick={stopAndLog} disabled={saving}>
