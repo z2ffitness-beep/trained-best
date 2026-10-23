@@ -569,7 +569,7 @@ test("both panels are actually on the profile, with the programme's week", () =>
   assert.ok(/<BadgeWall logs=\{state\.workoutLogs\} sessionsPerWeek=\{pointsPerWeekTarget\}/.test(src),
     "the badge wall is written but never rendered");
   assert.ok(/program=\{pointsProgram\}/.test(src),
-    "the wall is not given the programme, so Week One and Caught Up can never be earned");
+    "the wall is not given the programme, so Week One and Comeback can never be earned");
 });
 
 // ---------- the session on paper ----------

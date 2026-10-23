@@ -4920,11 +4920,10 @@ function hasNewBest(logs) {
 
 // A session done later in the week than the day it was scheduled for.
 //
-// The spec calls this a missed workout made up on a later day. The app has no
-// concept of "missed" yet - that arrives with the Plan rebuild - so this is
-// the honest version of the same thing: Tuesday's session, trained on
-// Thursday. Earlier in the week does not count; that is being ahead, not
-// catching up.
+// The spec's Comeback badge: a missed workout made up on a later day.
+// Tuesday's session, trained on Thursday. Earlier in the week does not
+// count; that is being ahead, not coming back. The key stays "caughtup" so
+// nothing that refers to it has to change.
 function hasCaughtUp(logs, program) {
   const byName = new Map((program?.days || []).map(d => [d.name, d.weekday]));
   for (const log of logs || []) {
@@ -4946,7 +4945,7 @@ const BADGES = [
   { key: "first",    name: "First Workout", hint: "Log your first session" },
   { key: "week1",    name: "Week One",      hint: "Train in the first week of your programme" },
   { key: "perfect",  name: "Perfect Week",  hint: "Do every session a week schedules" },
-  { key: "caughtup", name: "Caught Up",     hint: "Train a session later in the week than it was planned for" },
+  { key: "caughtup", name: "Comeback",      hint: "Do a missed session on a later day" },
   { key: "everyset", name: "Every Set",     hint: "Finish a session with every prescribed set ticked" },
   { key: "newbest",  name: "New Best",      hint: "Beat your own heaviest set on a movement" },
   { key: "w10",  name: "10 Sessions",  hint: "Ten sessions that counted",            count: 10 },
