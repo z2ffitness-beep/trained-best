@@ -12748,190 +12748,9 @@ function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf }) {
   );
 }
 
-// The whole week on one screen, editable in place.
-//
-// The month grid answers "what's on the 14th". This answers "what does my week
-// look like" — the question you're actually asking when you want to move leg
-// day off Friday. Before this, changing a session's day meant opening a
-// specific calendar date, finding the session on it, and editing from there,
-// which only worked if you already knew which date to tap.
-//
-// Rest days are listed too, so an empty Wednesday is visible rather than
-// implied by absence, and any session sitting on no day at all gets its own
-// section instead of quietly vanishing from the calendar.
-// The session's blocks as a compact colour-coded strip. Used anywhere a day is
-// listed rather than opened, so the calendar speaks the same language as the
-// Program tab instead of reducing a session to an exercise count.
-function BlockChips({ exercises, className = "" }) {
-  const blocks = buildSessionBlocks(exercises);
-  if (blocks.length === 0) return null;
-  return (
-    <span className={`flex flex-wrap gap-1 mt-1.5 ${className}`}>
-      {blocks.map(b => (
-        <span key={b.key} className="text-[11px] font-semibold px-1.5 py-0.5 rounded"
-          style={{ background: `${b.accent}1f`, color: b.accent, border: `1px solid ${b.accent}55` }}>
-          {b.label}
-        </span>
-      ))}
-    </span>
-  );
-}
 
-// The whole week in one row: seven blocks, each filled with the colour of the
-// session that runs on it. Answers "what am I doing on Thursday" without
-// reading anything — the list underneath is for changing things, this is for
-// knowing them.
-function WeekAtAGlance({ days, colorOf }) {
-  const list = days || [];
-  if (!list.some(d => d.weekday)) return null;
 
-  return (
-    <div className="flex gap-1.5 mb-3">
-      {WEEKDAY_ORDER.map(w => {
-        // First match only. A doubled-up day is flagged in the list below; up
-        // here it would just make one block twice as tall as the rest.
-        const day = list.find(d => d.weekday === w);
-        const tone = day ? (colorOf ? colorOf(day.id) : C.blue) : null;
-        const label = day ? day.name.split("—")[0].trim() : "Rest";
-        return (
-          <div key={w} className="flex-1 min-w-0 flex flex-col items-center gap-1">
-            <div className="w-full rounded-xl flex items-center justify-center"
-              style={{
-                aspectRatio: "1 / 1",
-                background: day ? tone : C.bg,
-                border: `1px solid ${day ? tone : C.border}`,
-              }}>
-              <span style={{
-                fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, lineHeight: 1,
-                color: day ? "#fff" : C.faint,
-              }}>
-                {w.slice(0, 3).toUpperCase()}
-              </span>
-            </div>
-            <span className="text-[11px] leading-tight text-center truncate w-full"
-              style={{ color: day ? tone : C.faint }}>
-              {label}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
-// The weekday, as a solid block in the session's colour.
-//
-// This was three small letters tinted blue, which meant the weekday and the
-// session it holds were two pieces of text to read and match up. Filled, it is
-// one thing: the Wednesday block IS Day 2's colour, so which session runs when
-// is answered before anything is read.
-function WeekdayBlock({ weekday, tone, filled, muted }) {
-  const label = weekday ? weekday.slice(0, 3).toUpperCase() : "—";
-  return (
-    <span
-      className="shrink-0 flex flex-col items-center justify-center rounded-xl"
-      style={{
-        width: 52,
-        height: 52,
-        background: filled ? tone : muted ? C.bg : `${tone}18`,
-        border: `1px solid ${filled ? tone : muted ? C.border : `${tone}66`}`,
-        // White on a filled block, the session's own colour otherwise. The
-        // palette's colours are all mid-dark, so white holds up on every one.
-        color: filled ? "#fff" : muted ? C.faint : tone,
-      }}>
-      <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, lineHeight: 1, letterSpacing: "0.02em" }}>
-        {label}
-      </span>
-    </span>
-  );
-}
-
-function WeekScheduleEditor({ days, onSetWeekday, colorOf }) {
-  const [openId, setOpenId] = useState(null);
-  const list = days || [];
-  const unscheduled = list.filter(d => !d.weekday);
-  if (list.length === 0) return null;
-
-  const picker = (day) => (
-    <div className="px-4 pb-3.5">
-      <DayWeekdayPicker
-        value={day.weekday}
-        otherDays={list.filter(d => d.id !== day.id)}
-        onChange={(wd) => { onSetWeekday(day.id, wd); setOpenId(null); }} />
-    </div>
-  );
-
-  return (
-    <div className="rounded-xl overflow-hidden" style={card({ borderRadius: 16 })}>
-      {WEEKDAY_ORDER.map((w, i) => {
-        // All matches, not the first. A program can end up with two sessions on
-        // one weekday (more than seven training days, or an older program built
-        // before the scheduling fixes). Showing only `find()`'s first match left
-        // the other one with no row anywhere in this editor — invisible on the
-        // calendar AND unmovable, which is the exact trap this screen exists to
-        // get people out of.
-        const onDay = list.filter(d => d.weekday === w);
-        return (
-          <div key={w} style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
-            {onDay.length === 0 ? (
-              <div className="w-full flex items-center gap-3 px-4 py-3">
-                <WeekdayBlock weekday={w} muted />
-                <span className="flex-1 text-[15px]" style={{ color: C.faint }}>Rest day</span>
-              </div>
-            ) : onDay.map((day, j) => {
-              const isOpen = openId === day.id;
-              return (
-                <div key={day.id}>
-                  <button type="button"
-                    onClick={() => setOpenId(id => (id === day.id ? null : day.id))}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left">
-                    {/* Filled in the session's colour. On a doubled-up day the
-                        second row's block is hollow, so the weekday reads once
-                        rather than twice. */}
-                    <WeekdayBlock weekday={j ? null : w}
-                      tone={colorOf ? colorOf(day.id) : C.blue}
-                      filled={!j} />
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-[15px] font-semibold truncate" style={{ color: C.text }}>{day.name}</span>
-                      <span className="block text-[11px]" style={{ color: j ? C.orange : C.sub }}>
-                        {j ? "Doubled up on this day — move it" : `${(day.exercises || []).length} exercises · ~${sessionMinutes(day.exercises)} min`}
-                      </span>
-                      {/* The blocks this session is actually made of, in the
-                          same words as the Program tab. A weekday row reading
-                          only "14 exercises" says nothing about whether it's a
-                          heavy lifting day or a conditioning one. */}
-                      <span className="flex flex-wrap items-center gap-1 mt-1.5">
-                        <SessionModeTag mode={sessionModeFor(day)} size="xs" />
-                      </span>
-                      <BlockChips exercises={day.exercises} />
-                    </span>
-                    <span className="text-[11px] font-semibold shrink-0" style={{ color: C.blue }}>{isOpen ? "Close" : "Move"}</span>
-                  </button>
-                  {isOpen && picker(day)}
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
-
-      {unscheduled.map(day => (
-        <div key={day.id} style={{ borderTop: `1px solid ${C.border}`, background: `${C.orange}0d` }}>
-          <button type="button" onClick={() => setOpenId(id => (id === day.id ? null : day.id))}
-            className="w-full flex items-center gap-3 px-4 py-3 text-left">
-            <WeekdayBlock weekday={null} tone={C.orange} />
-            <span className="flex-1 min-w-0">
-              <span className="block text-[15px] font-medium truncate" style={{ color: C.text }}>{day.name}</span>
-              <span className="block text-[11px]" style={{ color: C.orange }}>Not on your calendar — pick a day</span>
-            </span>
-            <span className="text-[11px] font-semibold shrink-0" style={{ color: C.blue }}>{openId === day.id ? "Close" : "Set"}</span>
-          </button>
-          {openId === day.id && picker(day)}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // Add or remove weeks and phases. The one destructive action in the program
 // editor that changes the SHAPE of the plan rather than its contents, so it
@@ -16641,80 +16460,6 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
   );
 }
 
-// The shape of the program over time: its blocks, and where the deloads fall.
-//
-// A program used to be a set of sessions repeated identically until it ran
-// out. Nothing said which week you were in, and nothing ever backed off — so
-// week 11 of a twelve-week block asked for exactly what week 1 did, by which
-// point most people are carrying enough fatigue that the hard weeks stop
-// working.
-function ProgramTimeline({ program }) {
-  const plan = buildProgramPlan(program.weeks);
-  const week = currentProgramWeek(program);
-  if (plan.weeks < 2) return null;
-
-  return (
-    <div className="rounded-2xl p-4 mb-5" style={card()}>
-      <div className="flex items-baseline justify-between mb-1">
-        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.orange }}>Phase Structure</div>
-        <div className="text-[12.5px] tabular-nums" style={{ color: C.sub }}>Week {week} of {plan.weeks}</div>
-      </div>
-      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
-        {plan.deloadWeeks.length === 0
-          ? `Short enough to train straight through — no back-off week needed over ${plan.weeks} weeks.`
-          : `${plan.blocks.length} phases. Week${plan.deloadWeeks.length > 1 ? "s" : ""} ${plan.deloadWeeks.join(" and ")} ${plan.deloadWeeks.length > 1 ? "are" : "is"} a deload: same movements, about 40% fewer sets, taken a couple of points easier. That's what lets the hard weeks either side of it keep working.`}
-      </p>
-
-      {/* One cell per week, so the shape of the program is visible at a glance
-          rather than described. */}
-      <div className="space-y-2">
-        {plan.blocks.map(b => (
-          <div key={b.index}>
-            <div className="flex items-baseline justify-between mb-1">
-              <span className="text-[11px] font-semibold" style={{ color: C.text }}>
-                Phase {b.index}
-              </span>
-              <span className="text-[11px] tabular-nums" style={{ color: C.faint }}>
-                Weeks {b.startWeek}–{b.endWeek}
-              </span>
-            </div>
-            <div className="flex gap-1">
-              {Array.from({ length: b.endWeek - b.startWeek + 1 }, (_, i) => {
-                const w = b.startWeek + i;
-                const deload = plan.deloadWeeks.includes(w);
-                const isNow = w === week;
-                const done = w < week;
-                return (
-                  <div key={w} className="flex-1 rounded-md py-1.5 text-center text-[11px] font-bold"
-                    title={deload ? `Week ${w} — deload` : `Week ${w}`}
-                    style={{
-                      background: deload ? `${C.amber}22` : done ? `${C.orange}22` : C.bg,
-                      color: deload ? C.amber : isNow ? C.orange : done ? C.orange : C.sub,
-                      border: `1px solid ${isNow ? C.orange : deload ? `${C.amber}66` : C.border}`,
-                      opacity: !isNow && !done && !deload ? 0.75 : 1,
-                    }}>
-                    {deload ? "↓" : w}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {plan.deloadWeeks.length > 0 && (
-        <div className="flex items-center gap-3 mt-3 text-[11px]" style={{ color: C.faint }}>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: `${C.amber}22`, border: `1px solid ${C.amber}66` }} /> Deload
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: C.bg, border: `1px solid ${C.orange}` }} /> This week
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // What each status looks like. Colour alone is never the whole signal - the
 // word is always there too, because a row of coloured squares means nothing
@@ -23029,7 +22774,9 @@ function CalendarViewPage({ state, setState, nav }) {
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
-  const [clearOpen, setClearOpen] = useState(false);
+  // The day shown in the card under the calendar. Today until another date
+  // is tapped.
+  const [picked, setPicked] = useState(() => todayISO());
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -23068,24 +22815,11 @@ function CalendarViewPage({ state, setState, nav }) {
   const removeSkip = (dayId, idx) => {
     persistMyProgramDays(state, setState, prog => ({ ...prog, days: prog.days.map(d => d.id === dayId ? { ...d, skipRanges: (d.skipRanges || []).filter((_, i) => i !== idx) } : d) }));
   };
-  const bulkClear = (dayIds, mode, range) => {
-    persistMyProgramDays(state, setState, prog => ({
-      ...prog,
-      days: prog.days.map(d => {
-        if (!dayIds.includes(d.id)) return d;
-        // Off the calendar entirely, so any "this one date is online" it was
-        // carrying now refers to a date the session no longer runs on.
-        if (mode === "permanent") return { ...d, weekday: null, scheduleStart: null, scheduleWeeks: null, skipRanges: [], modeByDate: {} };
-        return { ...d, skipRanges: [...(d.skipRanges || []), range] };
-      })
-    }));
-  };
 
 
   return (
     <div className="pb-28">
-      <TopBar title="Calendar" onLogout={nav.logout}
-        right={myProgram && <button onClick={() => setClearOpen(true)} aria-label="Delete sessions"><Trash2 size={18} style={{ color: C.sub }} /></button>} />
+      <TopBar title="Calendar" onLogout={nav.logout} />
       <div className="px-5 pt-5">
 
         {/* Today, answered before the grid. The calendar's main job for an
@@ -23111,7 +22845,7 @@ function CalendarViewPage({ state, setState, nav }) {
           if (todaysDay) {
             return (
               <div className="relative rounded-2xl p-5 mb-5 overflow-hidden"
-                style={{ background: `linear-gradient(135deg, ${programDayColor(myProgram, todaysDay.id)}, ${programDayColor(myProgram, todaysDay.id)}bb)` }}>
+                style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
                 <div className="absolute rounded-full" style={{ width: 150, height: 150, right: -50, top: -50, background: "#ffffff14" }} />
                 <div className="text-[11px] font-semibold uppercase tracking-widest relative" style={{ color: "#ffffffb0" }}>Due today</div>
                 <div className="text-2xl mt-1 truncate relative" style={{ fontFamily: DISPLAY, fontWeight: 800, color: "#fff" }}>{todaysDay.name}</div>
@@ -23125,8 +22859,8 @@ function CalendarViewPage({ state, setState, nav }) {
                 </div>
                 <button onClick={() => nav.go("athlete-workout", todaysDay.id)}
                   className="relative mt-4 inline-flex items-center gap-2 rounded-full px-4 py-2.5 font-semibold text-[15px]"
-                  style={{ background: "#fff", color: programDayColor(myProgram, todaysDay.id) }}>
-                  <Play size={14} fill={programDayColor(myProgram, todaysDay.id)} /> Start Workout
+                  style={{ background: "#fff", color: C.blue }}>
+                  <Play size={14} fill={C.blue} /> Start Workout
                 </button>
               </div>
             );
@@ -23152,114 +22886,64 @@ function CalendarViewPage({ state, setState, nav }) {
               if (d === null) return <div key={`empty${i}`} />;
               const ds = dateStrFor(d);
               const hasLog = !!logsByDate[ds];
-              const scheduledDay = scheduledDayFor(ds);
+              const planned = !!scheduledDayFor(ds);
               const isToday = ds === todayStr;
-              // Today with a session still to do is the one cell that has to
-              // jump out — it's the question the athlete opens the calendar to
-              // answer. Orange ring + filled ground, distinct from both a
-              // completed day and an ordinary scheduled one.
-              const dueToday = isToday && scheduledDay && !hasLog;
-              // The session's OWN colour, so a Tuesday that runs Day 2 reads
-              // as Day 2 here exactly as it does on the program screen.
-              //
-              // Colour now carries identity, so the other two things a cell has
-              // to say are carried by shape instead: a dashed edge means still
-              // to come, a solid edge plus the tick below means done, and a
-              // thick ring means today. Encoding all three in hue is what left
-              // a completed Day 1 and a completed Day 3 looking identical.
-              const tone = scheduledDay ? programDayColor(myProgram, scheduledDay.id) : C.sub;
+              const isPicked = ds === picked;
+              // One colour for everything. Planned is a dot, done is a green
+              // tick, today is a ring, the tapped day is filled. Nothing to
+              // decode, so no legend.
               return (
-                <button key={ds} onClick={() => setOpenDate(ds)}
-                  className="aspect-square rounded-lg flex flex-col items-center justify-center text-[12.5px] tabular-nums relative px-0.5"
+                <button key={ds} onClick={() => setPicked(ds)}
+                  aria-label={`${ds}${hasLog ? ", done" : planned ? ", session planned" : ""}`}
+                  className="aspect-square rounded-lg flex flex-col items-center justify-center text-[13px] tabular-nums relative"
                   style={{
-                    background: dueToday ? `${tone}33` : hasLog ? `${tone}22` : scheduledDay ? `${tone}16` : C.bg,
-                    color: scheduledDay ? tone : C.sub,
-                    border: dueToday
-                      ? `2px solid ${tone}`
-                      : isToday ? `2px solid ${C.faint}`
-                      : hasLog ? `1px solid ${tone}66`
-                      : scheduledDay ? `1px dashed ${tone}66`
-                      : "1px solid transparent",
-                    fontWeight: dueToday || isToday ? 700 : 400,
+                    background: isPicked ? C.blue : hasLog ? `${C.olive}1f` : "transparent",
+                    color: isPicked ? "#fff" : C.text,
+                    border: isToday && !isPicked ? `2px solid ${C.blue}` : "2px solid transparent",
+                    fontWeight: isToday || isPicked ? 700 : 500,
                   }}>
                   <span>{d}</span>
-                  {scheduledDay && <span className="text-[7px] leading-none mt-0.5 truncate w-full text-center" style={{ color: tone }}>{scheduledDay.name.split("—")[0].trim()}</span>}
-                  {/* One pixel of colour for online days. The full badge won't
-                      fit in a calendar cell, but "am I meeting my coach this
-                      week" should still be answerable from the month view. */}
-                  {scheduledDay && sessionModeFor(scheduledDay, ds) === "online" && (
-                    <span className="absolute" style={{ top: 3, left: 3, width: 4, height: 4, borderRadius: 999, background: C[sessionModeMeta("online").accentKey] }} />
-                  )}
-                  {/* Deliberately NOT the session's colour. Done is done, and
-                      it has to read the same on every day of the week. */}
-                  {hasLog && <span className="absolute" style={{ bottom: 2, right: 3, width: 4, height: 4, borderRadius: 999, background: C.olive }} />}
+                  {hasLog
+                    ? <Check size={10} strokeWidth={3.5} style={{ color: isPicked ? "#fff" : C.olive }} />
+                    : <span style={{ width: 5, height: 5, borderRadius: 999, marginTop: 2, background: planned ? (isPicked ? "#fff" : C.blue) : "transparent" }} />}
                 </button>
               );
             })}
           </div>
         </div>
 
-        {myProgram && (
-          <>
-            <ChalkDivider label="Your Week" />
-            <WeekAtAGlance days={myProgram.days || []} colorOf={(id) => programDayColor(myProgram, id)} />
-            <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
-              Tap a session below to move it to a different day. The calendar updates straight away.
-            </p>
-            <WeekScheduleEditor days={myProgram.days || []} onSetWeekday={setDayWeekday}
-              colorOf={(id) => programDayColor(myProgram, id)} />
-          </>
-        )}
-
-        {/* The real structure of the athlete's own program. This was a
-            hardcoded "Week 1-2 Accumulation / 3-4 Intensification / 5-6 Peak"
-            shown to everyone — the same three rows for a four-week program and
-            a twelve-week one, describing a periodisation the app never
-            actually prescribed. */}
-        {myProgram && (
-          <>
-            <ChalkDivider label="Phase Overview" />
-            <ProgramTimeline program={myProgram} />
-          </>
-        )}
-
-        <ChalkDivider label="Legend" />
-        {/* Each session keeps its colour from the Program tab, so the grid can
-            be read by shape: dashed is still to come, solid with a tick is
-            done, thick ring is today. */}
-        {(myProgram?.days || []).some(d => d.weekday) && (
-          <div className="flex flex-wrap gap-2 mb-3">
-            {(myProgram?.days || []).filter(d => d.weekday).map(d => {
-              const tone = programDayColor(myProgram, d.id);
-              return (
-                <span key={d.id} className="inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-semibold"
-                  style={{ background: `${tone}16`, color: tone, border: `1px solid ${tone}55` }}>
-                  <span style={{ width: 6, height: 6, borderRadius: 999, background: tone, display: "block" }} />
-                  {d.name.split("—")[0].trim()}
-                </span>
-              );
-            })}
-          </div>
-        )}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <div className="w-3 h-3 rounded shrink-0 relative" style={{ background: `${C.steel}22`, border: `1px solid ${C.steel}` }}>
-              <span className="absolute" style={{ bottom: 0, right: 0, width: 3, height: 3, borderRadius: 999, background: C.olive }} />
-            </div> Done — solid edge, green tick
-          </div>
-          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <div className="w-3 h-3 rounded shrink-0" style={{ background: `${C.steel}18`, border: `1px dashed ${C.steel}` }} /> Still to come — dashed edge
-          </div>
-          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <div className="w-3 h-3 rounded shrink-0" style={{ background: "transparent", border: `2px solid ${C.faint}` }} /> Today
-          </div>
-          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <div className="shrink-0 flex items-center justify-center" style={{ width: 12, height: 12 }}>
-              <span style={{ width: 5, height: 5, borderRadius: 999, background: C[sessionModeMeta("online").accentKey], display: "block" }} />
+        {myProgram && (() => {
+          const day = scheduledDayFor(picked);
+          const logs = logsByDate[picked] || [];
+          const label = new Date(picked + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+          const mins = day ? Math.round(sessionMinutes(day.exercises || [])) : 0;
+          return (
+            <div className="rounded-2xl p-4 mb-5" style={card()}>
+              <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>
+                {picked === todayStr ? "Today" : label}
+              </div>
+              {logs.length > 0 ? (
+                <div className="mt-1.5 flex items-center gap-2">
+                  <CheckCircle2 size={18} style={{ color: C.olive }} className="shrink-0" />
+                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{logs[0].programDay || "Session"} · done</div>
+                </div>
+              ) : day ? (
+                <>
+                  <div className="text-xl mt-1" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{day.name}</div>
+                  <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
+                    {(day.exercises || []).length} exercises{mins ? ` · ~${mins} min` : ""}
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <Btn className="flex-1" icon={Play} onClick={() => nav.go("athlete-workout", day.id)}>Start</Btn>
+                    <Btn variant="secondary" className="flex-1" onClick={() => setOpenDate(picked)}>Move to another day</Btn>
+                  </div>
+                </>
+              ) : (
+                <div className="text-[15px] mt-1.5" style={{ color: C.sub }}>Rest day. Nothing planned.</div>
+              )}
             </div>
-            Online session
-          </div>
-        </div>
+          );
+        })()}
       </div>
 
       <DayDetailModal
@@ -23277,95 +22961,10 @@ function CalendarViewPage({ state, setState, nav }) {
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
         onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
-      <ClearScheduleModal open={clearOpen} onClose={() => setClearOpen(false)} days={(myProgram?.days || []).filter(d => d.weekday)} onApply={bulkClear} />
     </div>
   );
 }
 
-function ClearScheduleModal({ open, onClose, days, onApply }) {
-  const [selected, setSelected] = useState(() => new Set());
-  const [mode, setMode] = useState("permanent"); // "permanent" | "limited"
-  const [startDate, setStartDate] = useState(() => todayISO());
-  const [endDate, setEndDate] = useState(() => endDateFromWeeks(todayISO(), 2));
-
-  // This modal stays mounted, so without a full reset it reopens holding the
-  // previous deletion's mode and date range with every day re-selected — one
-  // stray tap then re-applies an old range to the whole schedule.
-  useEffect(() => {
-    if (!open) return;
-    setSelected(new Set());
-    setMode("permanent");
-    setStartDate(todayISO());
-    setEndDate(endDateFromWeeks(todayISO(), 2));
-  }, [open]);
-
-  const toggle = (id) => setSelected(s => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
-
-  const apply = () => {
-    if (selected.size === 0) return;
-    if (mode === "limited" && (!startDate || !endDate)) return;
-    onApply(Array.from(selected), mode, mode === "limited" ? { start: startDate, end: endDate } : null);
-    onClose();
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Delete Sessions">
-      {days.length === 0 ? (
-        <p className="text-[15px]" style={{ color: C.sub }}>No training days are currently scheduled.</p>
-      ) : (
-        <>
-          <p className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>Which sessions?</p>
-          <div className="space-y-2 mb-4">
-            {days.map(d => {
-              const isOn = selected.has(d.id);
-              return (
-                <button key={d.id} onClick={() => toggle(d.id)} className="w-full flex items-center justify-between rounded-lg p-3"
-                  style={{ background: isOn ? `${C.orange}18` : C.panel, border: `1px solid ${isOn ? C.orange : C.border}` }}>
-                  <div className="text-left">
-                    <div className="text-[15px] font-medium" style={{ color: isOn ? C.orange : C.text }}>{d.name}</div>
-                    <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{d.weekday}</div>
-                  </div>
-                  {isOn && <Check size={16} style={{ color: C.orange }} />}
-                </button>
-              );
-            })}
-          </div>
-
-          <p className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>For good, or just a date range?</p>
-          <div className="flex gap-2 mb-3">
-            <button onClick={() => setMode("permanent")} className="flex-1 rounded-lg py-2.5 text-[15px] font-semibold"
-              style={{ background: mode === "permanent" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "permanent" ? C.red : C.border}`, color: mode === "permanent" ? C.red : C.sub }}>
-              For good
-            </button>
-            <button onClick={() => setMode("limited")} className="flex-1 rounded-lg py-2.5 text-[15px] font-semibold"
-              style={{ background: mode === "limited" ? `${C.red}18` : C.bg, border: `1px solid ${mode === "limited" ? C.red : C.border}`, color: mode === "limited" ? C.red : C.sub }}>
-              Specific dates
-            </button>
-          </div>
-          {mode === "limited" && (
-            <div className="flex items-end gap-2 mb-4">
-              <div className="flex-1">
-                <label className="block text-[11px] uppercase tracking-[.16em] font-semibold mb-1" style={{ color: C.sub }}>From</label>
-                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
-                  className="text-[12.5px] rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-              </div>
-              <div className="flex-1">
-                <label className="block text-[11px] uppercase tracking-[.16em] font-semibold mb-1" style={{ color: C.sub }}>To</label>
-                <input type="date" value={endDate} min={startDate} onChange={e => setEndDate(e.target.value)}
-                  className="text-[12.5px] rounded py-2 px-2 w-full" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }} />
-              </div>
-            </div>
-          )}
-
-          <Btn variant="danger" className="w-full" disabled={selected.size === 0} onClick={apply}>
-            Delete {selected.size} session{selected.size !== 1 ? "s" : ""}
-          </Btn>
-        </>
-      )}
-      <Btn variant="ghost" className="w-full mt-2.5" onClick={onClose}>Cancel</Btn>
-    </Modal>
-  );
-}
 
 function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip, colorOf }) {
   const [clearStart, setClearStart] = useState("");
