@@ -16122,18 +16122,6 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           )}
         </div>
 
-        <ChalkDivider label="Recent Sessions" />
-        {state.workoutLogs.length === 0 ? (
-          <div className="p-8 text-center" style={card()}>
-            <Dumbbell size={24} style={{ color: C.faint }} className="mx-auto mb-3" />
-            <div style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 700, color: C.text }}>No sessions yet</div>
-            <p className="mt-1" style={{ fontSize: 13.5, color: C.sub }}>Start today's workout and it shows up here.</p>
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {state.workoutLogs.map(l => <SessionLogRow key={l.id} log={l} />)}
-          </div>
-        )}
         </div>
       </div>
     </div>
@@ -17408,48 +17396,8 @@ function AthleteProgram({ state, setState, nav }) {
           </div>
         </div>
 
-        {/* Today's session, pinned above the rest of the programme.
-            With the Workout tab gone this is the main way in, so it states
-            what is on and starts it in one tap. Every day further down keeps
-            its own Start button for training out of order. */}
-        {(() => {
-          const todayIso = todayISO();
-          const todaysDay = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
-          const doneToday = (state.workoutLogs || []).some(l => l?.date === todayIso);
-          if (!todaysDay) {
-            return (
-              <div className="rounded-3xl p-5 mb-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: C.sub }}>Today</div>
-                <div className="text-[15px] mt-1.5" style={{ color: C.text }}>Rest day — nothing scheduled.</div>
-                <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>Start any session below if you want to train anyway.</div>
-              </div>
-            );
-          }
-          return (
-            <div className="rounded-3xl p-5 mb-5" style={{
-              background: C.panel,
-              border: `1px solid ${doneToday ? C.olive : C.orange}`,
-            }}>
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[12.5px] font-semibold uppercase tracking-[.16em]" style={{ color: doneToday ? C.olive : C.orange }}>
-                    {doneToday ? "Today · logged" : "Today"}
-                  </div>
-                  <div className="text-xl mt-1" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{todaysDay.name}</div>
-                  <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>
-                    {(todaysDay.exercises || []).length} exercises
-                  </div>
-                </div>
-                <button onClick={() => nav.go("athlete-workout", todaysDay.id)}
-                  className="inline-flex items-center gap-1.5 rounded-full px-5 py-3 font-semibold text-[15px] shrink-0"
-                  style={{ background: doneToday ? C.panel : C.orange, color: doneToday ? C.text : "#fff", border: doneToday ? `1px solid ${C.border}` : "none" }}>
-                  <Play size={14} fill={doneToday ? "none" : "#fff"} /> {doneToday ? "Open" : "Start"}
-                </button>
-              </div>
-            </div>
-          );
-        })()}
-
+        {/* No "Today" card here (Isaiah, 24 Oct): My Workout at the top opens
+            today's session, and every day below has its own Start. */}
         <ProgramExplainer program={myProgram} state={state} />
 
         {/* ---- super tabs: the blocks ----
@@ -17697,9 +17645,6 @@ function AthleteProgram({ state, setState, nav }) {
               <p className="text-[15px] mt-2 leading-relaxed" style={{ color: C.sub }}>{day.why}</p>
             )}
 
-            <DayWeekdayPicker value={day.weekday} onChange={(w) => setMyDayWeekday(day.id, w)}
-              otherDays={myProgram.days.filter(d => d.id !== day.id)}
-              colorOf={(id) => (id ? dayColor(id) : activeDayColor)} />
             <div className="mb-4" />
 
             {/* Blocks, not a flat list. Every block starts collapsed and only

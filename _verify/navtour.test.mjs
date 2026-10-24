@@ -81,27 +81,14 @@ test("an unknown screen still falls back rather than lighting nothing", () => {
 
 // ---------- today, pinned ----------
 
-test("Program pins today's session above the programme", () => {
+test("My Workout, at the top of Program, opens today's session", () => {
+  // The pinned Today card was removed on 24 Oct at Isaiah's request; the
+  // My Workout tab is now the one-tap way into today's session.
   const at = src.indexOf("function AthleteProgram");
   const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/isDayScheduledOn\(d, todayIso\)/.test(body),
-    "nothing works out which session is today");
-  assert.ok(/nav\.go\("athlete-workout", todaysDay\.id\)/.test(body),
-    "the pinned session does not start the workout");
-});
-
-test("a rest day says so instead of showing an empty panel", () => {
-  const at = src.indexOf("function AthleteProgram");
-  const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/Rest day/.test(body),
-    "with nothing scheduled the top of the screen just goes blank");
-});
-
-test("a session already logged today reads as done, not as undone", () => {
-  const at = src.indexOf("function AthleteProgram");
-  const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/const doneToday = \(state\.workoutLogs \|\| \[\]\)\.some/.test(body),
-    "it will say Start on a session the athlete already finished");
+  assert.ok(/isDayScheduledOn\(d, todayISO\(\)\)/.test(body), "nothing works out which session is today");
+  assert.ok(/nav\.go\("athlete-workout", today\?\.id\)/.test(body), "My Workout does not open today's session");
+  assert.ok(!/Rest day — nothing scheduled/.test(body), "the Today card is back");
 });
 
 // ---------- the cards ----------
