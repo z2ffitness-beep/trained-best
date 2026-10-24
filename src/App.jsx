@@ -22774,9 +22774,6 @@ function CalendarViewPage({ state, setState, nav }) {
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
-  // The day shown in the card under the calendar. Today until another date
-  // is tapped.
-  const [picked, setPicked] = useState(() => todayISO());
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -22822,58 +22819,9 @@ function CalendarViewPage({ state, setState, nav }) {
       <TopBar title="Calendar" onLogout={nav.logout} />
       <div className="px-5 pt-5">
 
-        {/* Today, answered before the grid. The calendar's main job for an
-            athlete is "what am I doing today" — that shouldn't require reading
-            a month grid and matching a colour to a legend. */}
-        {(() => {
-          const todaysDay = scheduledDayFor(todayStr);
-          const doneToday = !!logsByDate[todayStr];
-          if (!myProgram) return null;
-
-          if (doneToday) {
-            return (
-              <div className="rounded-2xl p-4 mb-5 flex items-center gap-3" style={{ background: `${C.olive}14`, border: `1px solid ${C.olive}55` }}>
-                <CheckCircle2 size={20} style={{ color: C.olive }} className="shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-[15px] font-semibold" style={{ color: C.text }}>Today's session is done</div>
-                  <div className="text-[12.5px] truncate" style={{ color: C.sub }}>{logsByDate[todayStr][0]?.programDay}</div>
-                </div>
-              </div>
-            );
-          }
-
-          if (todaysDay) {
-            return (
-              <div className="relative rounded-2xl p-5 mb-5 overflow-hidden"
-                style={{ background: `linear-gradient(135deg, ${C.gradFrom}, ${C.gradTo})` }}>
-                <div className="absolute rounded-full" style={{ width: 150, height: 150, right: -50, top: -50, background: "#ffffff14" }} />
-                <div className="text-[11px] font-semibold uppercase tracking-widest relative" style={{ color: "#ffffffb0" }}>Due today</div>
-                <div className="text-2xl mt-1 truncate relative" style={{ fontFamily: DISPLAY, fontWeight: 800, color: "#fff" }}>{todaysDay.name}</div>
-                <div className="text-[12.5px] mt-0.5 relative flex items-center gap-2 flex-wrap" style={{ color: "#ffffffcc" }}>
-                  <span>{todaysDay.exercises.length} exercises</span>
-                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                    style={{ background: "#ffffff2e", color: "#fff" }}>
-                    {sessionModeFor(todaysDay, todayStr) === "online" ? <Video size={10} /> : <MapPin size={10} />}
-                    {sessionModeMeta(sessionModeFor(todaysDay, todayStr)).short}
-                  </span>
-                </div>
-                <button onClick={() => nav.go("athlete-workout", todaysDay.id)}
-                  className="relative mt-4 inline-flex items-center gap-2 rounded-full px-4 py-2.5 font-semibold text-[15px]"
-                  style={{ background: "#fff", color: C.blue }}>
-                  <Play size={14} fill={C.blue} /> Start Workout
-                </button>
-              </div>
-            );
-          }
-
-          return (
-            <div className="rounded-2xl p-4 mb-5 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
-              <div className="text-[15px] font-semibold" style={{ color: C.text }}>Rest day</div>
-              <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Nothing scheduled today.</p>
-            </div>
-          );
-        })()}
-
+        {/* No workout can be started from here (Isaiah, 24 Oct): the only ways
+            in are My Workout on the Program tab and the top of Home. This
+            page is for seeing the month and moving sessions. */}
         <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
           <div className="flex items-center justify-between mb-4">
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() - 1); return d; })}><ChevronLeft size={18} style={{ color: C.sub }} /></button>
@@ -22888,12 +22836,12 @@ function CalendarViewPage({ state, setState, nav }) {
               const hasLog = !!logsByDate[ds];
               const planned = !!scheduledDayFor(ds);
               const isToday = ds === todayStr;
-              const isPicked = ds === picked;
+              const isPicked = ds === openDate;
               // One colour for everything. Planned is a dot, done is a green
               // tick, today is a ring, the tapped day is filled. Nothing to
               // decode, so no legend.
               return (
-                <button key={ds} onClick={() => setPicked(ds)}
+                <button key={ds} onClick={() => setOpenDate(ds)}
                   aria-label={`${ds}${hasLog ? ", done" : planned ? ", session planned" : ""}`}
                   className="aspect-square rounded-lg flex flex-col items-center justify-center text-[13px] tabular-nums relative"
                   style={{
@@ -22912,38 +22860,9 @@ function CalendarViewPage({ state, setState, nav }) {
           </div>
         </div>
 
-        {myProgram && (() => {
-          const day = scheduledDayFor(picked);
-          const logs = logsByDate[picked] || [];
-          const label = new Date(picked + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-          const mins = day ? Math.round(sessionMinutes(day.exercises || [])) : 0;
-          return (
-            <div className="rounded-2xl p-4 mb-5" style={card()}>
-              <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>
-                {picked === todayStr ? "Today" : label}
-              </div>
-              {logs.length > 0 ? (
-                <div className="mt-1.5 flex items-center gap-2">
-                  <CheckCircle2 size={18} style={{ color: C.olive }} className="shrink-0" />
-                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{logs[0].programDay || "Session"} · done</div>
-                </div>
-              ) : day ? (
-                <>
-                  <div className="text-xl mt-1" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>{day.name}</div>
-                  <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                    {(day.exercises || []).length} exercises{mins ? ` · ~${mins} min` : ""}
-                  </div>
-                  <div className="flex gap-2 mt-3">
-                    <Btn className="flex-1" icon={Play} onClick={() => nav.go("athlete-workout", day.id)}>Start</Btn>
-                    <Btn variant="secondary" className="flex-1" onClick={() => setOpenDate(picked)}>Move to another day</Btn>
-                  </div>
-                </>
-              ) : (
-                <div className="text-[15px] mt-1.5" style={{ color: C.sub }}>Rest day. Nothing planned.</div>
-              )}
-            </div>
-          );
-        })()}
+        <p className="text-[12.5px] text-center mb-5" style={{ color: C.sub }}>
+          Tap a day to see its session or move it to another day.
+        </p>
       </div>
 
       <DayDetailModal
