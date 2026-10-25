@@ -3942,6 +3942,7 @@ const mapPack = r => ({
   id: r.id, athleteId: r.athlete_id, coachId: r.coach_id, sessionTypeId: r.session_type_id,
   sessionsTotal: r.sessions_total, amountCents: r.amount_cents, status: r.status,
   source: r.source, note: r.note, createdAt: r.created_at, expiresOn: r.expires_on,
+  paidAt: r.paid_at,
 });
 
 // Returns an error string, or null. A failed load MUST NOT look like an empty
@@ -4141,8 +4142,15 @@ async function archiveSessionType(typeId, setState) {
 
 const DELIVERY_KINDS = [
   { key: "in_person", label: "In person", hint: "You're in the room together.", accentKey: "olive" },
+  { key: "virtual", label: "Virtual", hint: "Live, over a video call.", accentKey: "orange" },
   { key: "remote", label: "Remote", hint: "Coached remotely; they train on their own.", accentKey: "blue" },
 ];
+
+// The older one-person live-in-app type reads as Virtual to everyone.
+function deliveryFor(type) {
+  const key = type?.delivery === "in_app_live" ? "virtual" : type?.delivery;
+  return DELIVERY_KINDS.find(d => d.key === key) || DELIVERY_KINDS[0];
+}
 
 function formatMoney(cents) {
   if (cents == null || !isFinite(cents)) return null;
@@ -12353,6 +12361,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               be: reachable when wanted, never beside something routine.
               Deliberately OUTSIDE the `program &&` block above — a client with no
               program assigned still needs to be removable. */}
+          <CoachClientHistory state={state} setState={setState} athleteId={athlete.id} />
+
           <ChalkDivider label="End Coaching" />
           <button onClick={() => setOffRosterOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
@@ -23217,6 +23227,127 @@ function SessionModePicker({ value, onChange, onClear, clearLabel }) {
 // ============================================================
 
 // Shared bits, so the coach's list and the athlete's read the same way.
+// Past booked sessions and what was paid, for one client. The same component
+// on the client's Book page and on the coach's view of that client.
+//
+// Billing is the packs the coach has recorded (paid or pending). There is no
+// card payment in the app yet; when Stripe arrives its payments land in the
+// same credit_packs table (source 'stripe') and show here unchanged.
+const BOOKING_RESULT = {
+  attended: { label: "Attended", key: "olive" },
+  no_show: { label: "No-show", key: "red" },
+  cancelled: { label: "Cancelled", key: "faint" },
+  late_cancelled: { label: "Late cancel, session used", key: "amber" },
+  booked: { label: "Not marked yet", key: "sub" },
+};
+
+function SessionAndBillingHistory({ booking, athleteId, coachView = false }) {
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const typeById = Object.fromEntries((booking.sessionTypes || []).map(t => [t.id, t]));
+  const slotById = Object.fromEntries((booking.slots || []).map(sl => [sl.id, sl]));
+  const now = Date.now();
+
+  const past = (booking.bookings || [])
+    .filter(b => b.athleteId === athleteId)
+    .map(b => ({ b, slot: slotById[b.slotId] }))
+    .filter(r => r.slot && (new Date(r.slot.startsAt).getTime() <= now || r.b.status === "cancelled" || r.b.status === "late_cancelled"))
+    .sort((x, y) => new Date(y.slot.startsAt) - new Date(x.slot.startsAt));
+  const shown = showAllSessions ? past : past.slice(0, 8);
+
+  const packs = (booking.packs || [])
+    .filter(p => p.athleteId === athleteId && p.status !== "void")
+    .sort((x, y) => new Date(y.paidAt || y.createdAt) - new Date(x.paidAt || x.createdAt));
+  const paidTotal = packs.filter(p => p.status === "paid").reduce((n, p) => n + (p.amountCents || 0), 0);
+
+  const dateLabel = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  return (
+    <>
+      <ChalkDivider label="Session History" />
+      {past.length === 0 ? (
+        <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
+          No past sessions yet.
+        </div>
+      ) : (
+        <div className="space-y-2 mb-5">
+          {shown.map(({ b, slot }) => {
+            const type = typeById[slot.sessionTypeId];
+            const delivery = deliveryFor(type);
+            const result = BOOKING_RESULT[b.status] || BOOKING_RESULT.booked;
+            const accent = C[delivery.accentKey];
+            return (
+              <div key={b.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card()}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{type?.name || "Session"}</div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: C.sub }}>
+                    <span className="tabular-nums">{dateLabel(slot.startsAt)} · {formatSlotTime(slot.startsAt)}</span>
+                    <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 11, background: `${accent}1f`, color: accent, border: `1px solid ${accent}55` }}>
+                      {delivery.label}
+                    </span>
+                    {type?.priceCents != null && <span className="tabular-nums">{formatMoney(type.priceCents)}</span>}
+                  </div>
+                </div>
+                <span className="shrink-0 text-[11px] font-semibold" style={{ color: C[result.key] || C.sub }}>
+                  {result.label}
+                </span>
+              </div>
+            );
+          })}
+          {past.length > 8 && (
+            <button onClick={() => setShowAllSessions(v => !v)} className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+              {showAllSessions ? "Show fewer" : `Show all ${past.length}`}
+            </button>
+          )}
+        </div>
+      )}
+
+      <ChalkDivider label="Billing History" />
+      {packs.length === 0 ? (
+        <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
+          {coachView ? "No payments recorded for this client yet." : "No payments recorded yet."}
+        </div>
+      ) : (
+        <div className="space-y-2 mb-5">
+          {packs.map(p => {
+            const type = typeById[p.sessionTypeId];
+            const paid = p.status === "paid";
+            return (
+              <div key={p.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card()}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>
+                    {p.sessionsTotal} session{p.sessionsTotal === 1 ? "" : "s"}{type ? ` · ${type.name}` : ""}
+                  </div>
+                  <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>
+                    {dateLabel(p.paidAt || p.createdAt)}{p.source === "stripe" ? " · paid by card" : ""}{p.note ? ` · ${p.note}` : ""}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="tabular-nums text-[15px] font-bold" style={{ color: C.text }}>{formatMoney(p.amountCents) || "—"}</div>
+                  <div className="text-[11px] font-semibold" style={{ color: paid ? C.olive : C.amber }}>{paid ? "Paid" : "Pending"}</div>
+                </div>
+              </div>
+            );
+          })}
+          {paidTotal > 0 && (
+            <div className="text-[12.5px] text-right tabular-nums pr-1" style={{ color: C.sub }}>
+              Total paid: <span className="font-bold" style={{ color: C.text }}>{formatMoney(paidTotal)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// The coach's copy of a client's session and billing history. Loads the
+// booking data if the coach hasn't opened the schedule yet this session.
+function CoachClientHistory({ state, setState, athleteId }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => { if (!booking.loaded) loadBooking(setState); }, [booking.loaded]);
+  if (!booking.loaded) return null;
+  return <SessionAndBillingHistory booking={booking} athleteId={athleteId} coachView />;
+}
+
 function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
   const taken = heldBookings(bookings, slot.id);
   const cap = openings?.[slot.id]?.capacity ?? slotCapacity(slot, type);
@@ -23224,7 +23355,7 @@ function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
   // How many are in it, from the server. An athlete cannot see other people's
   // booking rows, so counting `taken` would say nobody is here.
   const filled = openings?.[slot.id]?.taken ?? taken.length;
-  const delivery = DELIVERY_KINDS.find(d => d.key === type?.delivery) || DELIVERY_KINDS[0];
+  const delivery = deliveryFor(type);
   const accent = C[delivery.accentKey];
 
   return (
@@ -23241,6 +23372,9 @@ function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
             {delivery.label}
           </span>
           <span>{capacityLabel(cap)}</span>
+          {type?.priceCents != null && (
+            <span className="tabular-nums font-semibold" style={{ color: C.text }}>{formatMoney(type.priceCents)} / session</span>
+          )}
           {/* Spots left, not spots taken. It's the number that decides
               whether the athlete can have this one. */}
           <span style={{ color: left === 0 ? C.amber : C.faint }}>
@@ -23295,7 +23429,7 @@ function SessionTypeEditor({ types, onAdd, onArchive, busy }) {
           </div>
         )}
         {types.map(t => {
-          const delivery = DELIVERY_KINDS.find(d => d.key === t.delivery) || DELIVERY_KINDS[0];
+          const delivery = deliveryFor(t);
           const accent = C[delivery.accentKey];
           return (
             <div key={t.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card({ borderRadius: 16 })}>
@@ -24763,6 +24897,10 @@ function AthleteBooking({ state, setState, nav }) {
             ))}
           </div>
         )}
+
+        <div className="mt-6">
+          <SessionAndBillingHistory booking={booking} athleteId={myId} />
+        </div>
       </div>
 
       {/* Said before it happens, not after. A client who discovers the charge
