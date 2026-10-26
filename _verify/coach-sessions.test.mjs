@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = path.join(here, "..", "src", "App.jsx");
 
 const H = await load(APP, [
-  "localDayKey", "coachSessionsByDay",
+  "localDayKey", "coachSessionsByDay", "nextBookedSession",
   { name: "HOLDS_SPOT", kind: "const" },
   { name: "UPCOMING_SESSION_DAYS", kind: "const" },
 ]);
@@ -81,6 +81,36 @@ test("open times nobody booked, and bookings for someone not on the roster, are 
     [{ id: "b", slotId: "s2", athleteId: "zz", status: "booked" }],
   );
   assert.equal(r.today.length, 0);
+});
+
+
+// ---------- the client's own card ----------
+
+test("client: today's session wins, flagged as today", () => {
+  const n = H.nextBookedSession({ sessionTypes: types,
+    slots: [{ id: "s1", startsAt: at(9, 28, 9), sessionTypeId: "t" }, { id: "s2", startsAt: at(9, 26, 17), sessionTypeId: "t" }],
+    bookings: [{ id: "b1", slotId: "s1", athleteId: "a", status: "booked" }, { id: "b2", slotId: "s2", athleteId: "a", status: "booked" }] }, "a", now);
+  assert.equal(n.booking.id, "b2");
+  assert.equal(n.isToday, true);
+});
+
+test("client: a session already over today is skipped for the next one", () => {
+  const n = H.nextBookedSession({ sessionTypes: types,
+    slots: [{ id: "s1", startsAt: at(9, 26, 8), sessionTypeId: "t" }, { id: "s2", startsAt: at(9, 29, 9), sessionTypeId: "t" }],
+    bookings: [{ id: "b1", slotId: "s1", athleteId: "a", status: "booked" }, { id: "b2", slotId: "s2", athleteId: "a", status: "booked" }] }, "a", now);
+  assert.equal(n.booking.id, "b2");
+  assert.equal(n.isToday, false);
+});
+
+test("client: someone else's booking, a cancelled booking or a cancelled time is never shown", () => {
+  const n = H.nextBookedSession({ sessionTypes: types,
+    slots: [{ id: "s1", startsAt: at(9, 27, 9), sessionTypeId: "t" }, { id: "s2", startsAt: at(9, 28, 9), sessionTypeId: "t", cancelledAt: "x" }],
+    bookings: [
+      { id: "b1", slotId: "s1", athleteId: "b", status: "booked" },
+      { id: "b2", slotId: "s1", athleteId: "a", status: "cancelled" },
+      { id: "b3", slotId: "s2", athleteId: "a", status: "booked" },
+    ] }, "a", now);
+  assert.equal(n, null);
 });
 
 for (const [name, fn] of tests) {

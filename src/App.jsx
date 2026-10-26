@@ -3840,6 +3840,9 @@ function describeNotification(n) {
     return { title: n.title, detail: d.programDay || "Confirmed for today", accent: C.blue, icon: Calendar };
   }
   // The 7 AM notice to a coach: who they are seeing today (migration 009).
+  if (n?.kind === "session_today") {
+    return { title: n.title, detail: n.body || "Open Book to see it", accent: C.orange, icon: Calendar };
+  }
   if (n?.kind === "sessions_today") {
     return { title: n.title, detail: n.body || "Open the Dashboard to see who", accent: C.orange, icon: Calendar };
   }
@@ -15683,6 +15686,71 @@ function CoachProfile({ state, setState, nav }) {
 // ATHLETE PORTAL
 // ============================================================
 
+// The client's next booked session with their coach, at the top of Home.
+// Isaiah, 26 Oct: a client should be told, on the day, that they have a
+// session, not have to go and look for it on the Book page. On a session day
+// it says "Session today"; otherwise it shows the next one, so the answer to
+// "when do I see my coach" is always one glance away. Nothing booked: nothing
+// shown. Tapping it opens the Book page, where cancelling and moving live.
+function nextBookedSession(booking, athleteId, now = new Date()) {
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const typeById = new Map((booking?.sessionTypes || []).map(t => [t.id, t]));
+  let best = null;
+  for (const b of booking?.bookings || []) {
+    if (b.athleteId !== athleteId || !HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime())) continue;
+    const type = typeById.get(slot.sessionTypeId) || null;
+    const ends = when.getTime() + (Number(type?.durationMin) || 60) * 60000;
+    if (ends < now.getTime()) continue;
+    if (!best || when < best.when) best = { when, slot, type, booking: b };
+  }
+  if (!best) return null;
+  return { ...best, isToday: localDayKey(best.when) === localDayKey(now) };
+}
+
+function AthleteSessionCard({ state, setState, nav }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => {
+    if (!state.booking?.loaded && setState) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+  if (!booking.loaded || booking.error) return null;
+  const next = nextBookedSession(booking, state.me?.id);
+  if (!next) return null;
+
+  const delivery = deliveryFor(next.type);
+  const accent = next.isToday ? C.orange : C.blue;
+  const coachName = (state.coachProfile?.name || "").trim().split(/\s+/)[0];
+  const tomorrowKey = (() => { const t = new Date(); t.setDate(t.getDate() + 1); return localDayKey(t); })();
+  const dayText = next.isToday ? "Today"
+    : localDayKey(next.when) === tomorrowKey ? "Tomorrow"
+    : next.when.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
+  return (
+    <button onClick={() => nav.go("athlete-booking")}
+      className="w-full rounded-xl p-4 mb-4 flex items-center gap-3 text-left"
+      style={{ ...card({ borderRadius: 16 }), border: `1px solid ${accent}66`, background: `${accent}10` }}>
+      <div className="rounded-full w-11 h-11 flex items-center justify-center shrink-0" style={{ background: `${accent}22` }}>
+        <Calendar size={20} style={{ color: accent }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: accent }}>
+          {next.isToday ? "Session today" : "Next session"}
+        </div>
+        <div className="text-[17px] font-bold mt-0.5" style={{ color: C.text }}>
+          {next.isToday ? formatSlotTime(next.slot.startsAt) : `${dayText}, ${formatSlotTime(next.slot.startsAt)}`}
+        </div>
+        <div className="text-[12.5px] truncate" style={{ color: C.sub }}>
+          {[next.type?.name, coachName ? `with ${coachName}` : null, delivery.label].filter(Boolean).join(" · ")}
+        </div>
+      </div>
+      <ChevronRight size={18} style={{ color: C.faint }} className="shrink-0" />
+    </button>
+  );
+}
+
 function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const wideHome = useIsWide();
   // Displayed only. The raw program is what any editor and every save
@@ -15906,6 +15974,12 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </button>
         </div>
       </div>
+
+      {/* Booked sessions with the coach. Clients only: a coach in their own
+          training mode is the one running the sessions. */}
+      {FEATURES.booking && !isCoach && state.coachProfile && (
+        <div className="px-5 pt-3"><AthleteSessionCard state={state} setState={setState} nav={nav} /></div>
+      )}
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
@@ -26499,7 +26573,10 @@ function AppInner() {
   // a list of who is in it that is hours old.
   useEffect(() => {
     if (!authed || !authUserId) return;
-    if (view !== "coach-booking" && view !== "athlete-booking") return;
+    // The two Home screens too (26 Oct): both now show booked sessions, and a
+    // client told "Session today" about a session that was cancelled an hour
+    // ago would turn up for nothing.
+    if (!["coach-booking", "athlete-booking", "coach-dashboard", "athlete-dashboard"].includes(view)) return;
     loadBooking(setState);
   }, [view, authed, authUserId]);
 

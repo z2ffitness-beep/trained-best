@@ -39,7 +39,10 @@ had to be reconstructed from file timestamps.
   In person or Virtual, finished ones dimmed) and "Upcoming Sessions" (next
   7 days, by day). Tests: `_verify/coach-sessions.test.mjs`. Roster order
   unchanged (soonest first). Bell shows the new `sessions_today` kind.
-- **Migration 009 is written and NOT applied** (waiting on Isaiah): pg_cron,
+- **Migration 009 is APPLIED** (approved by Isaiah 26 Oct, checked after:
+  job `coach-sessions-today` hourly and active, does nothing outside 7 AM,
+  not callable by signed-in users). Now also sends each client
+  "Session today at 5:30 PM" per booking (kind `session_today`). Was: pg_cron,
   `notify_coaches_sessions_today()`, and an hourly job that, at 7 AM Toronto
   only, adds one bell notification per coach with booked clients today
   ("3 sessions today" / "9:00 AM Josiah, ..."). The 007 trigger sends it to
@@ -55,6 +58,13 @@ had to be reconstructed from file timestamps.
   old program row stays in the database; only active_program_id moves.
   `coach-generate.test.mjs` now checks button/sentence pairs instead of a
   fixed count of 3.
+- **Branch `client-session-card` (off `new-program-button`), 26 Oct:**
+  client Home shows "Session today" (time, type, coach, In person or
+  Virtual) or "Next session" at the top; nothing if nothing is booked; taps
+  through to Book. Booking data now also refreshes on both Home screens.
+- Coach is already told when a client completes a workout
+  (`session_completed`, bell + Dashboard Today panel). Isaiah's coach
+  account had Phone Notifications OFF on 26 Oct, so none reached his phone.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
   based, not caused by these branches. Look at it separately.
