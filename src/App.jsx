@@ -10966,17 +10966,14 @@ function CoachSessionRow({ r, nav }) {
   );
 }
 
-function CoachSessionsEmpty({ text }) {
-  return (
-    <div className="rounded-xl p-4 mb-5 text-center text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>{text}</div>
-  );
-}
-
 function CoachSessionsPanel({ state, setState, nav }) {
   const booking = state.booking || EMPTY_BOOKING;
   useEffect(() => {
     if (!state.booking?.loaded && setState) loadBooking(setState);
   }, [state.booking?.loaded, setState]);
+  // Closed by default: the Dashboard shows today in full, and everything
+  // after it (tomorrow included) sits behind one tap. Isaiah, 26 Oct.
+  const [showUpcoming, setShowUpcoming] = useState(false);
 
   if (booking.error) {
     return (
@@ -10997,29 +10994,46 @@ function CoachSessionsPanel({ state, setState, nav }) {
     ? "Tomorrow"
     : g.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 
+  const upcomingCount = upcomingByDay.reduce((n, g) => n + g.rows.length, 0);
+
   return (
-    <>
-      {today.length === 0 ? <CoachSessionsEmpty text="No sessions booked today." /> : (
-        <div className="mb-5">
+    <div className="mb-5">
+      {today.length === 0 ? (
+        <div className="text-[15px] mb-2.5" style={{ color: C.faint }}>No sessions booked today.</div>
+      ) : (
+        <>
           <div className="text-[12.5px] mb-2" style={{ color: C.sub }}>
             <span className="font-semibold" style={{ color: C.text }}>{today.length}</span> {today.length === 1 ? "session" : "sessions"} today
           </div>
-          <div className="space-y-2">{today.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
-        </div>
+          <div className="space-y-2 mb-2.5">{today.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+        </>
       )}
 
-      <ChalkDivider label="Upcoming Sessions" />
-      {upcomingByDay.length === 0 ? <CoachSessionsEmpty text={`Nothing booked in the next ${UPCOMING_SESSION_DAYS} days.`} /> : (
-        <div className="mb-5 space-y-4">
-          {upcomingByDay.map(g => (
-            <div key={g.key}>
-              <div className="text-[12.5px] font-semibold mb-2" style={{ color: C.sub }}>{dayLabel(g)}</div>
-              <div className="space-y-2">{g.rows.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+      {upcomingCount === 0 ? (
+        <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing else booked in the next {UPCOMING_SESSION_DAYS} days.</div>
+      ) : (
+        <>
+          <button onClick={() => setShowUpcoming(v => !v)} aria-expanded={showUpcoming}
+            className="w-full rounded-xl px-3.5 py-3 flex items-center justify-between text-left" style={card()}>
+            <span className="text-[15px] font-semibold" style={{ color: C.text }}>
+              Upcoming: {upcomingCount} {upcomingCount === 1 ? "session" : "sessions"}
+              <span className="font-normal text-[12.5px] ml-1.5" style={{ color: C.sub }}>next {UPCOMING_SESSION_DAYS} days</span>
+            </span>
+            {showUpcoming ? <ChevronUp size={16} style={{ color: C.faint }} /> : <ChevronDown size={16} style={{ color: C.faint }} />}
+          </button>
+          {showUpcoming && (
+            <div className="mt-3 space-y-4">
+              {upcomingByDay.map(g => (
+                <div key={g.key}>
+                  <div className="text-[12.5px] font-semibold mb-2" style={{ color: C.sub }}>{dayLabel(g)}</div>
+                  <div className="space-y-2">{g.rows.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
-    </>
+    </div>
   );
 }
 
@@ -11043,7 +11057,7 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
         {/* Booked sessions first: who the coach is seeing today and this
             week. Isaiah, 26 Oct: the coach has to see this the moment the
             app opens, not only on the Sessions calendar. */}
-        <ChalkDivider label="Sessions Today" />
+        <ChalkDivider label="Sessions" />
         <CoachSessionsPanel state={state} setState={setState} nav={nav} />
 
         {/* Who needs you, next. The counts and the invite code are still
