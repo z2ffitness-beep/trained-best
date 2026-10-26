@@ -49,6 +49,12 @@ had to be reconstructed from file timestamps.
   it from the AI stream (`programBuildProgress`: days written vs days
   expected); group assign and photo moves show done of total. Quick loads
   keep the spinner, agreed with Isaiah. Tests: `_verify/loading-percent.test.mjs`.
+- **Branch `new-program-button` (off `loading-percent`), 26 Oct:** client
+  page Program tab has "Make new program" once a program exists. It opens
+  the same three starts as an empty tab (their answers, blank, import). The
+  old program row stays in the database; only active_program_id moves.
+  `coach-generate.test.mjs` now checks button/sentence pairs instead of a
+  fixed count of 3.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
   based, not caused by these branches. Look at it separately.

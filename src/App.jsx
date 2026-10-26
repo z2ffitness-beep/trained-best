@@ -12098,6 +12098,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // from the roster's Assign sheet.
   const [generateOpen, setGenerateOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // The three ways to start a program, offered again once one exists.
+  // Isaiah, 26 Oct: when a client's program is up, the coach needs a way to
+  // give them a new one from here. The old one stays saved as history.
+  const [newProgramOpen, setNewProgramOpen] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
@@ -12594,11 +12598,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         {tab === "program" && (<>
           <ChalkDivider label="Assigned Program — Edit" />
           {program && (
-            <button onClick={() => setImportOpen(true)}
-              className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-              style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
-              <ClipboardList size={15} /> Import a program from a doc
-            </button>
+            <Btn className="w-full mb-3" icon={Plus} disabled={generating || building || importing}
+              onClick={() => setNewProgramOpen(true)}>
+              {generating || building ? "Creating…" : "Make new program"}
+            </Btn>
           )}
           {!program && (
             <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
@@ -12891,6 +12894,28 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
       <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
         athlete={athlete} onImport={importProgram} saving={importing} />
+      <Modal open={newProgramOpen} onClose={() => setNewProgramOpen(false)} title="Make a new program">
+        <p className="text-[12.5px] mb-4 leading-snug" style={{ color: C.sub }}>
+          {program?.name ? `${program.name} stays saved. ` : ""}The new program replaces it as what {firstName} trains from.
+        </p>
+        <Btn className="w-full mb-2" icon={Sparkles} disabled={generating || !canBuildFromAnswers}
+          onClick={() => { setNewProgramOpen(false); setGenerateOpen(true); }}>
+          Use their answers
+        </Btn>
+        <p className="text-[11px] mb-3 leading-snug" style={{ color: C.faint }}>
+          {canBuildFromAnswers
+            ? `Built from ${firstName}'s goals, injuries, sport, schedule and equipment. You review it before it's saved.`
+            : `${firstName} hasn't finished the questionnaire, so there's nothing on file to build from yet.`}
+        </p>
+        <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building}
+          onClick={async () => { setNewProgramOpen(false); await buildProgram(); }}>
+          Start blank
+        </Btn>
+        <Btn variant="secondary" className="w-full" icon={ClipboardList}
+          onClick={() => { setNewProgramOpen(false); setImportOpen(true); }}>
+          Import a program
+        </Btn>
+      </Modal>
       {/* Fed this athlete's REAL answers, the same as the roster's Assign
           sheet. An earlier version of that screen passed a hardcoded example
           intake and so built a program for an imaginary MMA fighter whoever

@@ -147,7 +147,13 @@ ok("the button and the sentence under it read the SAME condition", () => {
   // saying there is nothing to build from.
   assert.match(detailBody, /disabled=\{generating \|\| !canBuildFromAnswers\}/);
   assert.match(detailBody, /\{canBuildFromAnswers\s*\n?\s*\?/);
-  assert.equal((detailBody.match(/canBuildFromAnswers/g) || []).length, 3);
+  // One definition, then a button and its sentence per place the option is
+  // offered: the empty Program tab, and (26 Oct) the "Make a new program"
+  // sheet. Every button must have its sentence and vice versa.
+  const buttons = (detailBody.match(/disabled=\{generating \|\| !canBuildFromAnswers\}/g) || []).length;
+  const sentences = (detailBody.match(/\{canBuildFromAnswers\s*\n?\s*\?/g) || []).length;
+  assert.equal(buttons, sentences);
+  assert.equal((detailBody.match(/canBuildFromAnswers/g) || []).length, 1 + buttons + sentences);
 });
 
 ok("a generated programme is NOT saved with allowEmpty", () => {
