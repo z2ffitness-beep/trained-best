@@ -10162,13 +10162,79 @@ function aiNetworkError(elapsedMs, aborted) {
   return new Error("The connection to the server broke before the program came back. Tap Try Again — nothing was lost.");
 }
 
+// How far a program build has got, from the text the AI has streamed so far.
+// Isaiah, 26 Oct: every long wait shows a real percentage, not a spinner.
+//
+// Real, not a timer: the model writes the program as JSON, one day at a time,
+// and each day opens with an "exercises" key. Days started so far, against the
+// days the program should have, is the count. Inside the current day, its
+// exercises (one "phase" key each) move it along, assuming about ten a day and
+// never letting one day claim to be finished before the next one starts.
+// The name and rationale at the top take the first few percent.
+//
+// Returns a fraction from 0 to 0.99. The last 1% is the save, which only the
+// caller knows has happened.
+const EXERCISES_PER_DAY_GUESS = 10;
+
+function programBuildProgress(text, totalDays) {
+  const days = Math.max(1, Number(totalDays) || 1);
+  const t = text || "";
+  const dayStarts = [];
+  const re = /"exercises"\s*:/g;
+  let m;
+  while ((m = re.exec(t))) dayStarts.push(m.index);
+  if (dayStarts.length === 0) {
+    return Math.min(0.04, (t.length / 800) * 0.04);
+  }
+  const current = t.slice(dayStarts[dayStarts.length - 1]);
+  const exercisesInDay = (current.match(/"phase"\s*:/g) || []).length;
+  const intoDay = Math.min(exercisesInDay / EXERCISES_PER_DAY_GUESS, 0.95);
+  const done = Math.min(dayStarts.length - 1 + intoDay, days);
+  return Math.min(0.99, 0.05 + 0.94 * (done / days));
+}
+
+// Days a pasted program has, for the import's percentage. Counts lines that
+// open with "Day 3", "Week 1 Day 2", "Monday" and the like; four if none.
+function countPastedDays(raw) {
+  const lines = String(raw || "").split(/\n/);
+  const n = lines.filter(l => /^\s*(week\s*\d+\s*[-,:]?\s*)?(day\s*\d+|mon|tue|wed|thu|fri|sat|sun)/i.test(l)).length;
+  return n > 0 ? n : 4;
+}
+
+// Percentage bar for long waits. `fraction` is 0 to 1.
+function LoadingPercent({ fraction, label, detail, big = false }) {
+  const pct = Math.max(0, Math.min(100, Math.round((Number(fraction) || 0) * 100)));
+  return (
+    <div className="w-full max-w-xs mx-auto text-center">
+      <div className={`tabular-nums font-bold ${big ? "text-5xl" : "text-4xl"}`} style={{ fontFamily: DISPLAY, color: C.orange }}>{pct}%</div>
+      <div className="h-2 rounded-full mt-3 overflow-hidden" style={{ background: C.border }}
+        role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <div className="h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 400ms ease-out" }} />
+      </div>
+      {label && <p className={`${big ? "text-2xl font-bold" : "text-[15px]"} mt-4`} style={{ color: C.text, ...(big ? { fontFamily: DISPLAY } : {}) }}>{label}</p>}
+      {detail && <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>{detail}</p>}
+    </div>
+  );
+}
+
+// Holds the highest percentage seen, so the bar never steps backwards.
+function useBuildProgress() {
+  const [fraction, setFraction] = useState(0);
+  const reset = () => setFraction(0);
+  const onText = (totalDays) => (text) => {
+    const f = programBuildProgress(text, totalDays);
+    setFraction(prev => (f > prev ? f : prev));
+  };
+  return { fraction, setFraction, reset, onText };
+}
+
 // Reads the server's SSE relay. Each frame is either a text chunk, an in-band
 // error, or the terminator carrying stop_reason.
 //
 // stop_reason matters: "max_tokens" means the model ran out of room and the
 // JSON is truncated, which is a specific, explainable failure rather than the
 // generic parse error the athlete used to see.
-async function readAIStream(response) {
+async function readAIStream(response, onText) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -10189,7 +10255,7 @@ async function readAIStream(response) {
       if (!raw) continue;
       let evt;
       try { evt = JSON.parse(raw); } catch { continue; }
-      if (typeof evt.t === "string") text += evt.t;
+      if (typeof evt.t === "string") { text += evt.t; if (onText) { try { onText(text); } catch { /* never break the build over a progress bar */ } } }
       else if (evt.error) streamError = evt.error;
       else if (evt.done) stopReason = evt.stop_reason;
     }
@@ -10203,7 +10269,7 @@ async function readAIStream(response) {
   return text;
 }
 
-async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM }) {
+async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM, onText }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
@@ -10264,7 +10330,7 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("text/event-stream") && response.body) {
     try {
-      return await readAIStream(response);
+      return await readAIStream(response, onText);
     } catch (err) {
       // A socket that dies mid-stream surfaces here as a TypeError, not as a
       // message we wrote. Only those get re-labelled as a network fault.
@@ -10288,14 +10354,17 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
+  const progress = useBuildProgress();
 
   const generate = async () => {
-    setStatus("loading"); setErrorMsg("");
+    setStatus("loading"); setErrorMsg(""); progress.reset();
     try {
       const text = await callAI({
         messages: [{ role: "user", content: buildAIPrompt(intake) }],
         maxTokens: 32000,
+        onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
       });
+      progress.setFraction(1);
       const parsed = parseAIJson(text);
       setResult(parsed);
       setStatus("done");
@@ -10319,8 +10388,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <Loader2 size={32} className="animate-spin mx-auto mb-4" style={{ color: C.orange }} />
-          <p className="text-[15px]" style={{ color: C.sub }}>Building a program around the athlete's profile...</p>
+          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the athlete's profile. Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -11712,9 +11780,8 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
 
         {bulkProgress ? (
           <div className="text-center py-6">
-            <Loader2 size={24} className="animate-spin mx-auto mb-3" style={{ color: C.orange }} />
-            <div className="text-[15px]" style={{ color: C.text }}>{bulkProgress.done + 1} of {bulkProgress.total}</div>
-            <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>{bulkProgress.name}</div>
+            <LoadingPercent fraction={bulkProgress.done / Math.max(1, bulkProgress.total)}
+              label={`${bulkProgress.done + 1} of ${bulkProgress.total}`} detail={bulkProgress.name} />
           </div>
         ) : (
           <div className="space-y-2.5">
@@ -13043,15 +13110,19 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
     if (!open) { setRaw(""); setStatus("idle"); setResult(null); setError(""); }
   }, [open]);
 
+  const progress = useBuildProgress();
+
   const convert = async () => {
     const text = raw.trim();
     if (text.length < 40) { setError("Paste the whole program - that looks like a line or two."); setStatus("error"); return; }
-    setStatus("converting"); setError("");
+    setStatus("converting"); setError(""); progress.reset();
     try {
       const reply = await callAI({
         messages: [{ role: "user", content: buildImportPrompt(text, athlete) }],
         maxTokens: 32000,
+        onText: progress.onText(countPastedDays(text)),
       });
+      progress.setFraction(1);
       const parsed = parseAIJson(reply);
       if (!parsed?.days?.length) throw new Error("No training days were found in that text.");
       setResult(parsed);
@@ -13087,9 +13158,7 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
 
       {status === "converting" && (
         <div className="text-center py-10">
-          <Loader2 size={30} className="animate-spin mx-auto mb-4" style={{ color: C.orange }} />
-          <p className="text-[15px]" style={{ color: C.text }}>Reading your program...</p>
-          <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>Keeping your numbers, working out which section each movement belongs to.</p>
+          <LoadingPercent fraction={progress.fraction} label="Reading your program" detail="Keeping your numbers, working out which section each movement belongs to." />
         </div>
       )}
 
@@ -15521,7 +15590,7 @@ function CoachProfile({ state, setState, nav }) {
                 <div className="text-[15px] font-semibold" style={{ color: C.text }}>Speed up the app</div>
                 <div className="text-[12.5px] mt-0.5 leading-relaxed" style={{ color: C.sub }}>
                   {migrating
-                    ? `Moving photos… ${migrateAt} of ${builtInNames.length}`
+                    ? `Moving photos… ${Math.round((migrateAt / Math.max(1, builtInNames.length)) * 100)}% (${migrateAt} of ${builtInNames.length})`
                     : `${stillInCode} exercise photo${stillInCode === 1 ? "" : "s"} are still stored inside the app itself. Moving them makes the app load much faster for you and your athletes. One tap, about a minute, safe to leave and come back to.`}
                 </div>
               </div>
@@ -26356,6 +26425,7 @@ function AppInner() {
   }, []);
 
   const [generatingProgram, setGeneratingProgram] = useState(false);
+  const signupProgress = useBuildProgress();
   // Set only when a programme was actually generated and saved. A failed
   // generation leaves it null, so the athlete lands on the dashboard with the
   // retry the Program tab already offers, rather than on a screen announcing
@@ -26639,10 +26709,12 @@ function AppInner() {
         }
 
         setGeneratingProgram(true);
+        signupProgress.reset();
         try {
           const text = await callAI({
             messages: [{ role: "user", content: buildAIPrompt(data) }],
             maxTokens: 32000,
+            onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
           });
           const parsed = parseAIJson(text);
           parsed.days = attachWeekdays(parsed.days, data.trainingDays);
@@ -26840,9 +26912,8 @@ function AppInner() {
     if (generatingProgram) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
-          <Loader2 size={40} className="animate-spin mb-6" style={{ color: C.orange }} />
-          <h2 className="text-2xl font-bold text-center" style={{ fontFamily: DISPLAY, color: C.text }}>Building your program</h2>
-          <p className="text-[15px] mt-2 text-center" style={{ color: C.sub }}>AI is creating a personalized plan based on your goals, sport, schedule, and equipment.</p>
+          <LoadingPercent big fraction={signupProgress.fraction} label="Building your program"
+            detail="AI is creating a personalized plan based on your goals, sport, schedule and equipment. Usually two to four minutes." />
         </div>
       );
     }

@@ -44,6 +44,11 @@ had to be reconstructed from file timestamps.
   only, adds one bell notification per coach with booked clients today
   ("3 sessions today" / "9:00 AM Josiah, ..."). The 007 trigger sends it to
   the phone. Once per coach per day.
+- **Branch `loading-percent` (off `coach-sessions-today`), 26 Oct:** Isaiah
+  wants every long wait to show a percentage. Program builds and imports read
+  it from the AI stream (`programBuildProgress`: days written vs days
+  expected); group assign and photo moves show done of total. Quick loads
+  keep the spinner, agreed with Isaiah. Tests: `_verify/loading-percent.test.mjs`.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
   based, not caused by these branches. Look at it separately.
