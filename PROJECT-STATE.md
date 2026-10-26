@@ -65,6 +65,17 @@ had to be reconstructed from file timestamps.
 - Coach is already told when a client completes a workout
   (`session_completed`, bell + Dashboard Today panel). Isaiah's coach
   account had Phone Notifications OFF on 26 Oct, so none reached his phone.
+- **Branch `program-board` (off `client-session-card`), 26 Oct, Part 1 of 2:**
+  `ProgramBoard`: the whole program like Relay, one column per training day,
+  one row per week, sections and movements with that week's sets x reps.
+  Wide screens: full grid. Phones: one week at a time with arrows (Isaiah's
+  choice). Week tab now opens on Program with a Program | Calendar switch
+  (calendar kept). Also on the coach's client page, Program tab, above the
+  editor. Display only; numbers from prescribeForWeek/buildSessionBlocks.
+- **Part 2, not built yet:** "Adjust with AI" on the board. Scope: whole
+  program, one week, one day, one section; typed request; before/after
+  preview; Save or Discard. Coaches and solo athletes only (coached athletes
+  view only). A one-week change becomes a byWeek entry (its own block).
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
   based, not caused by these branches. Look at it separately.

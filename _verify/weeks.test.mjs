@@ -310,7 +310,8 @@ test("every caller drops the holes at its own site", () => {
   // Each of the three call sites, checked where it actually is - counting
   // .filter(Boolean) across the whole file passes even after one is deleted.
   const sites = [...src.matchAll(/prescribeForWeek\(/g)].map(m => m.index);
-  assert.equal(sites.length, 5, "one declaration plus four call sites");
+  // Five call sites since 26 Oct: the program board (programBoardWeek).
+  assert.equal(sites.length, 6, "one declaration plus five call sites");
 
   const [, ...calls] = sites;
   calls.forEach((at) => {

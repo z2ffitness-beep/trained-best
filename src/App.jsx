@@ -12599,6 +12599,14 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         </>)}
 
         {tab === "program" && (<>
+          {program && (program.days || []).length > 0 && (
+            <>
+              <ChalkDivider label="Whole Program" />
+              <div className="mb-5">
+                <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={setDetailExercise} />
+              </div>
+            </>
+          )}
           <ChalkDivider label="Assigned Program — Edit" />
           {program && (
             <Btn className="w-full mb-3" icon={Plus} disabled={generating || building || importing}
@@ -23098,7 +23106,135 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
   );
 }
 
+// ---------- the program board ----------
+//
+// Isaiah, 26 Oct: the whole program at a glance, the way Relay shows one.
+// Every training day, every section in it and every movement with that week's
+// sets and reps, week after week, outside of opening each workout.
+//
+// Wide screens get the grid: one column per training day, one row per week.
+// Phones get one week at a time, days stacked, with arrows to change week; a
+// seven-column grid at 390px is unreadable.
+//
+// Display only. Every number comes from the same prescribeForWeek and
+// buildSessionBlocks the Program tab uses, so the board can never disagree
+// with what the athlete is told on the day.
+function programBoardWeek(program, day, week, plan, authored) {
+  const sorted = [...(day?.exercises || [])].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase));
+  const items = sorted.map(x => prescribeForWeek(x, plan, week, authored)).filter(Boolean);
+  return buildSessionBlocks(items);
+}
+
+function boardDayOrder(days) {
+  const at = (d) => {
+    const i = WEEKDAY_ORDER.indexOf(d?.weekday);
+    return i < 0 ? 99 : i;
+  };
+  return (days || []).map((d, i) => ({ d, i }))
+    .sort((a, b) => at(a.d) - at(b.d) || a.i - b.i)
+    .map(x => x.d);
+}
+
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick }) {
+  const blocks = programBoardWeek(program, day, week, plan, authored);
+  return (
+    <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div className="font-semibold text-[15px] leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name || "Session"}</div>
+        {day.weekday && <div className="text-[11px] shrink-0" style={{ color: C.faint }}>{day.weekday.slice(0, 3)}</div>}
+      </div>
+      {blocks.length === 0 && <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing this week.</div>}
+      {blocks.map(b => (
+        <div key={b.key} className="mt-2.5 first:mt-0">
+          <div className="text-[11px] uppercase tracking-[.14em] font-semibold mb-1" style={{ color: b.accent || C.sub }}>{b.label}</div>
+          {b.items.map((x, i) => {
+            const ex = exById(x.exerciseId);
+            const name = ex?.name || x.name || "Exercise";
+            const img = exerciseImage(name);
+            return (
+              <button key={x.id || i} onClick={() => onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
+                className="w-full flex items-center gap-2.5 py-1.5 text-left" style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
+                <div className="rounded-md w-8 h-8 shrink-0 overflow-hidden flex items-center justify-center" style={{ background: img ? PHOTO_TILE : C.panelAlt }}>
+                  {img ? <img src={img} alt="" loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={13} style={{ color: C.faint }} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium leading-snug truncate" style={{ color: C.text }}>{name}</div>
+                  <div className="text-[11px] tabular-nums" style={{ color: C.sub }}>{x.sets}×{x.reps}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProgramBoard({ program, exercises, onExerciseClick }) {
+  const wide = useIsWide();
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
+  if (!program || !(program.days || []).length) {
+    return (
+      <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>No program yet</div>
+      </div>
+    );
+  }
+  const authored = programHasWeeklyPlan(program);
+  const plan = buildProgramPlan(program.weeks);
+  const deloads = new Set(authored ? authoredDeloadWeeks(program) : (plan.deloadWeeks || []));
+  const days = boardDayOrder(program.days);
+  const byId = new Map((exercises || []).map(e => [e.id, e]));
+  const exById = (id) => byId.get(id);
+  const nowWeek = currentProgramWeek(program);
+  const weekLabel = (w) => `Week ${w}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
+  const shared = { program, plan, authored, exById, onExerciseClick };
+
+  if (!wide) {
+    const shown = Math.min(total, Math.max(1, week));
+    return (
+      <div>
+        <div className="flex items-center justify-between rounded-xl px-3 py-2.5 mb-3" style={card({ borderRadius: 14 })}>
+          <button onClick={() => setWeek(w => Math.max(1, w - 1))} disabled={shown <= 1} aria-label="Previous week"
+            style={{ opacity: shown <= 1 ? 0.3 : 1 }}><ChevronLeft size={20} style={{ color: C.sub }} /></button>
+          <div className="text-center">
+            <div className="font-semibold text-[15px]" style={{ fontFamily: DISPLAY, color: C.text }}>Week {shown} of {total}</div>
+            {(deloads.has(shown) || shown === nowWeek) && (
+              <div className="text-[11px]" style={{ color: C.orange }}>{[deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
+            )}
+          </div>
+          <button onClick={() => setWeek(w => Math.min(total, w + 1))} disabled={shown >= total} aria-label="Next week"
+            style={{ opacity: shown >= total ? 0.3 : 1 }}><ChevronRight size={20} style={{ color: C.sub }} /></button>
+        </div>
+        <div className="space-y-3">
+          {days.map(d => <ProgramBoardDay key={d.id} day={d} week={shown} {...shared} />)}
+        </div>
+      </div>
+    );
+  }
+
+  const weeks = Array.from({ length: total }, (_, i) => i + 1);
+  const cols = `repeat(${days.length}, minmax(240px, 1fr))`;
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div style={{ minWidth: days.length * 252 }}>
+        {weeks.map(w => (
+          <div key={w} className="mb-5">
+            <div className="text-[12.5px] font-semibold mb-2 sticky left-0" style={{ color: w === nowWeek ? C.orange : C.sub }}>{weekLabel(w)}</div>
+            <div className="grid gap-3 items-start" style={{ gridTemplateColumns: cols }}>
+              {days.map(d => <ProgramBoardDay key={d.id} day={d} week={w} {...shared} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CalendarViewPage({ state, setState, nav }) {
+  // Program board first, the month calendar one tap away (Isaiah, 26 Oct).
+  const [weekView, setWeekView] = useState("program");
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
@@ -23142,10 +23278,34 @@ function CalendarViewPage({ state, setState, nav }) {
   };
 
 
+  const weekTabs = (
+    <SegmentedTabs value={weekView} onChange={setWeekView}
+      options={[{ key: "program", label: "Program" }, { key: "calendar", label: "Calendar" }]} />
+  );
+  const detailModal = (
+    <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+      canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+      onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
+  );
+
+  if (weekView === "program") {
+    return (
+      <div className="pb-28">
+        <TopBar title="Week" onLogout={nav.logout} />
+        <div className="px-5 pt-5">
+          <div className="mb-4">{weekTabs}</div>
+          <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise} />
+        </div>
+        {detailModal}
+      </div>
+    );
+  }
+
   return (
     <div className="pb-28">
-      <TopBar title="Calendar" onLogout={nav.logout} />
+      <TopBar title="Week" onLogout={nav.logout} />
       <div className="px-5 pt-5">
+        <div className="mb-4">{weekTabs}</div>
 
         {/* No workout can be started from here (Isaiah, 24 Oct): the only ways
             in are My Workout on the Program tab and the top of Home. This
