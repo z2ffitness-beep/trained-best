@@ -3839,6 +3839,10 @@ function describeNotification(n) {
     const d = n.data || {};
     return { title: n.title, detail: d.programDay || "Confirmed for today", accent: C.blue, icon: Calendar };
   }
+  // The 7 AM notice to a coach: who they are seeing today (migration 009).
+  if (n?.kind === "sessions_today") {
+    return { title: n.title, detail: n.body || "Open the Dashboard to see who", accent: C.orange, icon: Calendar };
+  }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
     // The summary when a caller knew what changed, the program's name when it
@@ -10893,7 +10897,133 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   );
 }
 
-function CoachDashboard({ state, nav, onSwitchMode }) {
+// Booked sessions with the coach, by day: today, then the next seven days.
+// Not to be confused with CoachTodayPanel, which is PROGRAM workouts scheduled
+// today. This is the coach's own diary: who is coming in, when, and how.
+// One row per client, so a semi-private slot shows everyone who is in it.
+// Open times nobody has booked are left out: this answers "who am I seeing".
+const UPCOMING_SESSION_DAYS = 7;
+
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function coachSessionsByDay(booking, athletes, now = new Date(), days = UPCOMING_SESSION_DAYS) {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + days + 1);
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const typeById = new Map((booking?.sessionTypes || []).map(t => [t.id, t]));
+  const athleteById = new Map((athletes || []).map(a => [a.id, a]));
+
+  const rows = [];
+  for (const b of booking?.bookings || []) {
+    if (!HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime()) || when < start || when >= end) continue;
+    const athlete = athleteById.get(b.athleteId);
+    if (!athlete) continue;
+    const type = typeById.get(slot.sessionTypeId) || null;
+    const minutes = Number(type?.durationMin) || 60;
+    rows.push({ id: b.id, when, athlete, type, slot, over: when.getTime() + minutes * 60000 < now.getTime() });
+  }
+  rows.sort((x, y) => x.when - y.when || (x.athlete.name || "").localeCompare(y.athlete.name || ""));
+
+  const todayKey = localDayKey(start);
+  const today = rows.filter(r => localDayKey(r.when) === todayKey);
+  const upcomingByDay = [];
+  for (const r of rows) {
+    const key = localDayKey(r.when);
+    if (key === todayKey) continue;
+    let group = upcomingByDay[upcomingByDay.length - 1];
+    if (!group || group.key !== key) { group = { key, date: r.when, rows: [] }; upcomingByDay.push(group); }
+    group.rows.push(r);
+  }
+  return { today, upcomingByDay };
+}
+
+function CoachSessionRow({ r, nav }) {
+  const delivery = deliveryFor(r.type);
+  const accent = C[delivery.accentKey];
+  return (
+    <button onClick={() => nav.go("coach-athlete-detail", r.athlete.id)}
+      className="w-full rounded-xl p-3 flex items-center gap-3 text-left"
+      style={{ ...card(), opacity: r.over ? 0.55 : 1 }}>
+      <div className="w-16 shrink-0 tabular-nums text-[15px] font-bold" style={{ color: C.text }}>{formatSlotTime(r.slot.startsAt)}</div>
+      <Avatar initials={r.athlete.avatar} size={34} photoUrl={r.athlete.photoUrl} />
+      <div className="flex-1 min-w-0">
+        <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{r.athlete.name}</div>
+        <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: C.sub }}>
+          <span className="truncate">{r.type?.name || "Session"}</span>
+          <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 11, background: `${accent}1f`, color: accent, border: `1px solid ${accent}55` }}>
+            {delivery.label}
+          </span>
+        </div>
+      </div>
+      <ChevronRight size={16} style={{ color: C.faint }} className="shrink-0" />
+    </button>
+  );
+}
+
+function CoachSessionsEmpty({ text }) {
+  return (
+    <div className="rounded-xl p-4 mb-5 text-center text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>{text}</div>
+  );
+}
+
+function CoachSessionsPanel({ state, setState, nav }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => {
+    if (!state.booking?.loaded && setState) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+
+  if (booking.error) {
+    return (
+      <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.sub }}>
+        Couldn't load your sessions. Open the Sessions tab to try again.
+      </div>
+    );
+  }
+  if (!booking.loaded) {
+    return <div className="text-[12.5px] mb-5" style={{ color: C.faint }}>Loading sessions...</div>;
+  }
+
+  const { today, upcomingByDay } = coachSessionsByDay(booking, state.athletes);
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowKey = localDayKey(tomorrow);
+  const dayLabel = (g) => g.key === tomorrowKey
+    ? "Tomorrow"
+    : g.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
+  return (
+    <>
+      {today.length === 0 ? <CoachSessionsEmpty text="No sessions booked today." /> : (
+        <div className="mb-5">
+          <div className="text-[12.5px] mb-2" style={{ color: C.sub }}>
+            <span className="font-semibold" style={{ color: C.text }}>{today.length}</span> {today.length === 1 ? "session" : "sessions"} today
+          </div>
+          <div className="space-y-2">{today.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+        </div>
+      )}
+
+      <ChalkDivider label="Upcoming Sessions" />
+      {upcomingByDay.length === 0 ? <CoachSessionsEmpty text={`Nothing booked in the next ${UPCOMING_SESSION_DAYS} days.`} /> : (
+        <div className="mb-5 space-y-4">
+          {upcomingByDay.map(g => (
+            <div key={g.key}>
+              <div className="text-[12.5px] font-semibold mb-2" style={{ color: C.sub }}>{dayLabel(g)}</div>
+              <div className="space-y-2">{g.rows.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function CoachDashboard({ state, setState, nav, onSwitchMode }) {
   const wideDash = useIsWide();
   const totalAthletes = state.athletes.length;
   // Counts programs that are actually with an athlete. This used to count
@@ -10910,7 +11040,13 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
       <div className="px-5 pt-5">
         {onSwitchMode && !wideDash && <ModeSwitch training={false} onChange={onSwitchMode} />}
 
-        {/* Who needs you, first. The counts and the invite code are still
+        {/* Booked sessions first: who the coach is seeing today and this
+            week. Isaiah, 26 Oct: the coach has to see this the moment the
+            app opens, not only on the Sessions calendar. */}
+        <ChalkDivider label="Sessions Today" />
+        <CoachSessionsPanel state={state} setState={setState} nav={nav} />
+
+        {/* Who needs you, next. The counts and the invite code are still
             here, underneath: a coach opening the app wants to know whether
             anybody is stuck, and "11 athletes, 9 programs" cannot answer
             that. The answer used to be spread across four screens - a missed

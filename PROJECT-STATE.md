@@ -1,6 +1,6 @@
 # Trained.best: read this first
 
-**Last updated 23 Oct 2026.** Anyone picking this project up, in any chat, on
+**Last updated 26 Oct 2026.** Anyone picking this project up, in any chat, on
 any machine, starts here. Keep it current: if you change something in this
 repo or the database, update this file in the same commit.
 
@@ -8,6 +8,45 @@ It exists because context was lost between 7 and 15 Oct and a week of work
 had to be reconstructed from file timestamps.
 
 ---
+
+## 0d. Update, 24 to 26 Oct 2026 (read this first)
+
+- **Merged to main on 24 Oct:** the clean-up list (0c), timer and phone
+  notifications (0b), Program tab without the Today card or weekday picker,
+  Home without Recent Sessions, the simpler calendar (today, the month, the
+  day you tap), and starting a workout from the Week tab.
+- **Branch `session-and-billing-history`, 25 Oct, pushed, NOT merged:**
+  session types can be Virtual, priced separately from In person (private or
+  semi-private); the old live-in-app type reads as Virtual. Every session
+  card shows In person or Virtual and the price per session. The client's
+  Book page and the coach's client page show Session History and Billing
+  History (packs, paid or pending, total paid).
+- **Migration 008 is APPLIED** (approved by Isaiah 25 Oct). It only widens
+  the `session_types.delivery` check to allow `virtual`. No rows changed.
+- Preview: trained-best-git-session-and-billing-history-trainedbythebest.vercel.app
+- The 25 Oct chat: https://claude.ai/code/session_01U6FNotn3bEdFg16hv9knLr
+- **Still open:** QC and merge this branch; the third welcome-screen role
+  (4c, ask Isaiah); the two five-day athletes with no split (4c); the Vercel
+  function duration check (4c); deleting the v1 signup lists once a real
+  account has signed up on the new flow; 220 exercises still need demo media.
+- **Decided 26 Oct:** `groupAthletesBySession` is dropped, the roster does
+  not need it. What Isaiah wants instead: somewhere on the coach's account
+  that tells the coach which clients have a booked session today, and which
+  clients have upcoming sessions. Note the Dashboard's "Today" panel shows
+  program workouts scheduled today, NOT booked sessions with the coach.
+- **Branch `coach-sessions-today` (off `session-and-billing-history`), 26 Oct:**
+  coach Dashboard now opens with "Sessions Today" (booked clients, time,
+  In person or Virtual, finished ones dimmed) and "Upcoming Sessions" (next
+  7 days, by day). Tests: `_verify/coach-sessions.test.mjs`. Roster order
+  unchanged (soonest first). Bell shows the new `sessions_today` kind.
+- **Migration 009 is written and NOT applied** (waiting on Isaiah): pg_cron,
+  `notify_coaches_sessions_today()`, and an hourly job that, at 7 AM Toronto
+  only, adds one bell notification per coach with booked clients today
+  ("3 sessions today" / "9:00 AM Josiah, ..."). The 007 trigger sends it to
+  the phone. Once per coach per day.
+- `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
+  Monday whatever the season", 21 vs 22) with or without this work. Date
+  based, not caused by these branches. Look at it separately.
 
 ## 0. Update, 23 Oct 2026 (read this before sections 4c and 8)
 
