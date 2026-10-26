@@ -235,13 +235,15 @@ test("the header has room for the session's name", () => {
     "requestDaySwitch is still being computed with nothing calling it");
 });
 
-test("the workout screen is about this workout only, the way back to other days is the Program tab", () => {
+test("the workout screen is about this workout only, the way back to other days is the Week tab", () => {
   // Isaiah, 23 Oct: no day strip, week/phase bubble or last-session recap
   // once a workout has started.
   assert.ok(!/Day \{dayIdx \+ 1\} of \{allDays\.length\}/.test(src), "the day strip is back");
   assert.ok(!/<LastSessionRecap /.test(src), "the last-session recap is back on the workout screen");
-  assert.ok(/<ProgramWorkoutTabs active="workout" onProgram=\{\(\) => nav\.go\("athlete-program"\)\} \/>/.test(src),
-    "there is no way back to the program from inside a workout");
+  // 26 Oct: the whole program lives on Week > Program, reached from the
+  // bottom bar; the My Program switch at the top of the workout is gone.
+  assert.ok(!/<ProgramWorkoutTabs/.test(src), "the My Program switch is back on the workout screen");
+  assert.ok(/\{ key: "calendar", label: "Week"/.test(src), "there is no Week tab to reach the program from");
 });
 
 test("the sheet offers pause or resume, keep going, and the two ways to stop", () => {

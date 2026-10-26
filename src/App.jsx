@@ -8865,6 +8865,7 @@ function FirstRunTour({ hasCoach, onDone }) {
 // workout had Home lit up underneath them.
 const NAV_PARENT = {
   "athlete-workout": "athlete-program",
+  "athlete-program-edit": "calendar",
 };
 
 function BottomNav({ items, active, onChange }) {
@@ -17019,9 +17020,14 @@ function DayActionSheet({ open, row, program, today, onClose, onMove, onSkip, on
   );
 }
 
-function AthleteProgram({ state, setState, nav }) {
+function AthleteProgram({ state, setState, nav, initialDayId = null }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
-  const [activeDayIdx, setActiveDayIdx] = useState(0);
+  // Opened from a day's Edit button on the Program board (26 Oct), so it
+  // starts on that day rather than the first one.
+  const [activeDayIdx, setActiveDayIdx] = useState(() => {
+    const i = (myProgram?.days || []).findIndex(d => d.id === initialDayId);
+    return i < 0 ? 0 : i;
+  });
   // Up here with the other hooks, not down beside the day it prints. React
   // counts hooks per render; this screen returns early when there is no
   // programme yet, and a useState below that point runs on some renders and
@@ -17069,7 +17075,7 @@ function AthleteProgram({ state, setState, nav }) {
   if (!myProgram) {
     return (
       <div className="pb-28">
-        <TopBar title="My Program" onLogout={nav.logout} />
+        <TopBar title="My Workout" onLogout={nav.logout} />
         <div className="px-5 pt-10 text-center">
           {/* The error branch is checked BEFORE the coached/self-guided split.
               It used to sit inside the self-guided branch, so a coached athlete
@@ -17452,11 +17458,13 @@ function AthleteProgram({ state, setState, nav }) {
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
-        <ProgramWorkoutTabs active="program"
-          onWorkout={() => {
-            const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
-            nav.go("athlete-workout", today?.id);
-          }} />
+        {/* The editor now (26 Oct). My Program as a tab is gone: the plan
+            lives on Week > Program, and this screen is reached from a day's
+            Edit button there. */}
+        <button onClick={() => nav.go("calendar")} className="flex items-center gap-1 text-[15px] font-semibold" style={{ color: C.blue }}>
+          <ChevronLeft size={18} /> Back to Week
+        </button>
+        <h1 className="mt-2" style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 700, color: C.text }}>Edit Program</h1>
         <div className="text-[15px] mt-3" style={{ color: C.sub }}>AI-generated for your goals</div>
       </div>
 
@@ -19053,32 +19061,6 @@ function ConnectionBanner({ online, pending, blocked }) {
   );
 }
 
-// My Program | My Workout, side by side, as tabs. The same row sits at the
-// top of both screens so an athlete can flip between the plan and the
-// session they are doing without hunting for the way back.
-function ProgramWorkoutTabs({ active, onProgram, onWorkout }) {
-  const tab = (key, label, onClick) => {
-    const on = active === key;
-    return (
-      <button key={key} onClick={on ? undefined : onClick} aria-pressed={on}
-        className="flex-1 rounded-xl py-2.5 text-[15px] font-bold transition-colors"
-        style={{
-          background: on ? C.panel : "transparent",
-          color: on ? C.blue : C.sub,
-          boxShadow: on ? C.cardShadow : "none",
-        }}>
-        {label}
-      </button>
-    );
-  };
-  return (
-    <div className="flex gap-1 p-1 rounded-2xl" style={{ background: C.border + "66" }}>
-      {tab("program", "My Program", onProgram)}
-      {tab("workout", "My Workout", onWorkout)}
-    </div>
-  );
-}
-
 // The workout clock. A full-width row under the session name, inside the
 // sticky header, big enough to read at arm's length mid-set. It used to float
 // in the top-right corner, which put it directly on top of the Stop button.
@@ -19103,6 +19085,55 @@ function SessionTimerStrip({ seconds, running, onPause, onResume }) {
         style={{ background: accent, color: "#fff" }}>
         {running ? "Pause" : "Resume"}
       </button>
+    </div>
+  );
+}
+
+// The My Workout tab (Isaiah, 26 Oct). Straight to today's workout; on a day
+// with nothing scheduled, says so and names the next session. No program at
+// all falls through to the program screen, which owns the "build one",
+// "waiting on your coach" and "try again" states.
+function nextScheduledSession(program, fromIso = todayISO(), lookAhead = 21) {
+  const start = new Date(`${fromIso}T12:00:00`);
+  for (let i = 1; i <= lookAhead; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const day = (program?.days || []).find(x => isDayScheduledOn(x, iso));
+    if (day) return { day, date: d, iso, inDays: i };
+  }
+  return null;
+}
+
+function MyWorkoutTab({ state, setState, nav }) {
+  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  if (!myProgram || !(myProgram.days || []).length) {
+    return <AthleteProgram state={state} setState={setState} nav={nav} />;
+  }
+  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
+  if (today) return <Workout state={state} setState={setState} nav={nav} dayId={today.id} />;
+
+  const next = nextScheduledSession(myProgram);
+  const when = next
+    ? (next.inDays === 1 ? "Tomorrow" : next.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }))
+    : null;
+  return (
+    <div className="pb-28">
+      <TopBar title="My Workout" onLogout={nav.logout} />
+      <div className="px-5 pt-8">
+        <div className="rounded-2xl p-6 text-center" style={card({ borderRadius: 20 })}>
+          <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.blue}1f` }}>
+            <Calendar size={24} style={{ color: C.blue }} />
+          </div>
+          <div className="text-[19px] font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>You don't have a workout today</div>
+          {next && (
+            <p className="text-[15px] mt-2" style={{ color: C.sub }}>
+              Next: <span className="font-semibold" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</span>, {when}
+            </p>
+          )}
+          <Btn variant="secondary" className="w-full mt-5" icon={Calendar} onClick={() => nav.go("calendar")}>See your week</Btn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -20108,9 +20139,6 @@ function Workout({ state, setState, nav, dayId }) {
       } />
       <div className="px-5 pt-5">
 
-        <div className="mb-4">
-          <ProgramWorkoutTabs active="workout" onProgram={() => nav.go("athlete-program")} />
-        </div>
 
         {/* In person or online, on the screen the athlete opens to train. This
             is the last moment it can usefully be said. */}
@@ -23135,13 +23163,21 @@ function boardDayOrder(days) {
     .map(x => x.d);
 }
 
-function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick }) {
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay }) {
   const blocks = programBoardWeek(program, day, week, plan, authored);
   return (
     <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
       <div className="flex items-baseline justify-between gap-2 mb-2">
         <div className="font-semibold text-[15px] leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name || "Session"}</div>
-        {day.weekday && <div className="text-[11px] shrink-0" style={{ color: C.faint }}>{day.weekday.slice(0, 3)}</div>}
+        <div className="flex items-center gap-2 shrink-0">
+          {day.weekday && <div className="text-[11px]" style={{ color: C.faint }}>{day.weekday.slice(0, 3)}</div>}
+          {onEditDay && (
+            <button onClick={() => onEditDay(day)} className="text-[11px] font-semibold rounded-full px-2 py-0.5"
+              style={{ color: C.blue, border: `1px solid ${C.blue}55` }} aria-label={`Edit ${day.name || "session"}`}>
+              Edit
+            </button>
+          )}
+        </div>
       </div>
       {blocks.length === 0 && <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing this week.</div>}
       {blocks.map(b => (
@@ -23170,7 +23206,7 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
   );
 }
 
-function ProgramBoard({ program, exercises, onExerciseClick }) {
+function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
   const wide = useIsWide();
   const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
   const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
@@ -23189,7 +23225,7 @@ function ProgramBoard({ program, exercises, onExerciseClick }) {
   const exById = (id) => byId.get(id);
   const nowWeek = currentProgramWeek(program);
   const weekLabel = (w) => `Week ${w}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
-  const shared = { program, plan, authored, exById, onExerciseClick };
+  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay };
 
   if (!wide) {
     const shown = Math.min(total, Math.max(1, week));
@@ -23232,9 +23268,30 @@ function ProgramBoard({ program, exercises, onExerciseClick }) {
   );
 }
 
+// A session's name, shortened for a calendar square: "Monday — Squat + Push"
+// and "Tue: Aerobic Conditioning" both lose the weekday, which the square
+// already says. Isaiah, 26 Oct: the month should be readable without tapping.
+function calendarSessionLabel(name) {
+  const raw = String(name || "").trim();
+  const stripped = raw
+    .replace(/^(day\s*\d+\s*[—:-]\s*)/i, "")
+    .replace(/^((mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?(\s+(morning|evening|am|pm))?)\s*[—:-]?\s*/i, "")
+    .trim();
+  return stripped || raw || "Session";
+}
+
+// A phone's calendar square is about 50px wide: one word fits, a phrase breaks
+// mid-word. The first real word of the label ("Squat", "Hinge", "Aerobic"),
+// with the day's colour carrying the rest.
+function calendarSessionShort(name) {
+  const words = calendarSessionLabel(name).split(/\s+/).filter(w => /[A-Za-z0-9]/.test(w));
+  return words[0] || "Session";
+}
+
 function CalendarViewPage({ state, setState, nav }) {
   // Program board first, the month calendar one tap away (Isaiah, 26 Oct).
   const [weekView, setWeekView] = useState("program");
+  const wideCal = useIsWide();
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
@@ -23294,7 +23351,8 @@ function CalendarViewPage({ state, setState, nav }) {
         <TopBar title="Week" onLogout={nav.logout} />
         <div className="px-5 pt-5">
           <div className="mb-4">{weekTabs}</div>
-          <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise} />
+          <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise}
+            onEditDay={state.me.coachId ? null : (day) => nav.go("athlete-program-edit", day.id)} />
         </div>
         {detailModal}
       </div>
@@ -23310,13 +23368,13 @@ function CalendarViewPage({ state, setState, nav }) {
         {/* No workout can be started from here (Isaiah, 24 Oct): the only ways
             in are My Workout on the Program tab and the top of Home. This
             page is for seeing the month and moving sessions. */}
-        <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
-          <div className="flex items-center justify-between mb-4">
+        <div className={`rounded-xl ${wideCal ? "p-4" : "px-2 py-3"} mb-5`} style={card({ borderRadius: 16 })}>
+          <div className="flex items-center justify-between mb-4 px-2">
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() - 1); return d; })}><ChevronLeft size={18} style={{ color: C.sub }} /></button>
             <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{monthLabel.toUpperCase()}</div>
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() + 1); return d; })}><ChevronRight size={18} style={{ color: C.sub }} /></button>
           </div>
-          <div className="grid grid-cols-7 gap-1.5">
+          <div className="grid grid-cols-7 gap-1">
             {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i} className="text-center text-[11px]" style={{ color: C.faint }}>{d}</div>)}
             {cells.map((d, i) => {
               if (d === null) return <div key={`empty${i}`} />;
@@ -23325,23 +23383,37 @@ function CalendarViewPage({ state, setState, nav }) {
               const planned = !!scheduledDayFor(ds);
               const isToday = ds === todayStr;
               const isPicked = ds === openDate;
-              // One colour for everything. Planned is a dot, done is a green
-              // tick, today is a ring, the tapped day is filled. Nothing to
-              // decode, so no legend.
+              // Each square names its session (Isaiah, 26 Oct), in that
+              // session's own colour, so the month reads at a glance. Done is
+              // a green tick, today is a ring, the tapped day is filled.
+              const sched = scheduledDayFor(ds);
+              const tint = sched ? programDayColor(myProgram, sched.id) : C.blue;
               return (
                 <button key={ds} onClick={() => setOpenDate(ds)}
-                  aria-label={`${ds}${hasLog ? ", done" : planned ? ", session planned" : ""}`}
-                  className="aspect-square rounded-lg flex flex-col items-center justify-center text-[13px] tabular-nums relative"
+                  aria-label={`${ds}${sched ? `, ${sched.name}` : ""}${hasLog ? ", done" : ""}`}
+                  className="rounded-lg flex flex-col items-stretch text-left tabular-nums relative overflow-hidden"
                   style={{
-                    background: isPicked ? C.blue : hasLog ? `${C.olive}1f` : "transparent",
-                    color: isPicked ? "#fff" : C.text,
-                    border: isToday && !isPicked ? `2px solid ${C.blue}` : "2px solid transparent",
-                    fontWeight: isToday || isPicked ? 700 : 500,
+                    minHeight: wideCal ? 92 : 58, padding: wideCal ? "6px 7px" : "4px 2px",
+                    background: isPicked ? `${C.blue}26` : hasLog ? `${C.olive}14` : "transparent",
+                    color: C.text,
+                    border: isToday ? `2px solid ${C.blue}` : isPicked ? `2px solid ${C.blue}88` : `1px solid ${C.border}66`,
                   }}>
-                  <span>{d}</span>
-                  {hasLog
-                    ? <Check size={10} strokeWidth={3.5} style={{ color: isPicked ? "#fff" : C.olive }} />
-                    : <span style={{ width: 5, height: 5, borderRadius: 999, marginTop: 2, background: planned ? (isPicked ? "#fff" : C.blue) : "transparent" }} />}
+                  <span className="flex items-center justify-between gap-1" style={{ fontSize: wideCal ? 13 : 12, fontWeight: isToday ? 800 : 600, color: isToday ? C.blue : C.text }}>
+                    {d}
+                    {hasLog && <Check size={wideCal ? 12 : 10} strokeWidth={3.5} style={{ color: C.olive }} />}
+                  </span>
+                  {sched && (
+                    <span className="mt-1 rounded font-semibold leading-tight"
+                      style={{
+                        fontSize: wideCal ? 11 : (calendarSessionShort(sched.name).length > 6 ? 7.5 : calendarSessionShort(sched.name).length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
+                        padding: wideCal ? "2px 4px" : "2px 1px 2px 2px", letterSpacing: wideCal ? 0 : "-0.02em",
+                        ...(wideCal
+                          ? { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }
+                          : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
+                      }}>
+                      {wideCal ? calendarSessionLabel(sched.name) : calendarSessionShort(sched.name)}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -23349,7 +23421,7 @@ function CalendarViewPage({ state, setState, nav }) {
         </div>
 
         <p className="text-[12.5px] text-center mb-5" style={{ color: C.sub }}>
-          Tap a day to see its session or move it to another day.
+          Tap a day to see the whole session or move it to another day.
         </p>
       </div>
 
@@ -27237,7 +27309,7 @@ function AppInner() {
     // which is where somebody about to train is already looking. The route
     // stays — eight places link to it — only the bar entry is gone, and that
     // takes the athlete bar from seven tabs to six.
-    { key: "athlete-program", label: "Program", icon: Dumbbell },
+    { key: "athlete-program", label: "My Workout", icon: Dumbbell },
     { key: "calendar", label: "Week", icon: Calendar },
     // Book and Coach are STATIC - they are here whether or not this athlete has
     // a coach yet.
@@ -27279,7 +27351,8 @@ function AppInner() {
     "coach-profile": <CoachProfile state={state} setState={setState} nav={nav} />,
     "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav}
       isCoach={authed === "coach"} onSwitchMode={authed === "coach" ? setTraining : null} />,
-    "athlete-program": <AthleteProgram state={state} setState={setState} nav={nav} />,
+    "athlete-program": <MyWorkoutTab state={state} setState={setState} nav={nav} />,
+    "athlete-program-edit": <AthleteProgram state={state} setState={setState} nav={nav} initialDayId={navParam} />,
     "athlete-workout": <Workout state={state} setState={setState} nav={nav} dayId={navParam} />,
     "athlete-progress": <AthleteProgress state={state} setState={setState} nav={nav} />,
     "athlete-ai": <AthleteMessages state={state} setState={setState} nav={nav} myUserId={authUserId} />,

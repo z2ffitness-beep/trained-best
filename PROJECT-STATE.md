@@ -76,6 +76,17 @@ had to be reconstructed from file timestamps.
   program, one week, one day, one section; typed request; before/after
   preview; Save or Discard. Coaches and solo athletes only (coached athletes
   view only). A one-week change becomes a byWeek entry (its own block).
+- **Branch `workout-tab-calendar-labels` (off `program-board`), 26 Oct:**
+  Isaiah's changes after seeing the board. Calendar squares name the session
+  in its colour (full name on wide screens, first word on phones, e.g.
+  "Squat"). The bottom-bar Program tab is now **My Workout**: today's workout
+  straight away, or "You don't have a workout today" with the next session.
+  The My Program | My Workout switch (ProgramWorkoutTabs) is deleted. The old
+  My Program screen (AthleteProgram) is now the editor, route
+  `athlete-program-edit`, reached from Edit on a day of the Week > Program
+  board (solo athletes only); it still owns the no-program states, print and
+  rest-timer sound. Tests updated: navtour, paused, program-board.
+- Isaiah wants a demo shown before anything is pushed to GitHub.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
   based, not caused by these branches. Look at it separately.
