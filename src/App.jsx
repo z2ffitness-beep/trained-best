@@ -3839,6 +3839,13 @@ function describeNotification(n) {
     const d = n.data || {};
     return { title: n.title, detail: d.programDay || "Confirmed for today", accent: C.blue, icon: Calendar };
   }
+  // The 7 AM notice to a coach: who they are seeing today (migration 009).
+  if (n?.kind === "session_today") {
+    return { title: n.title, detail: n.body || "Open Book to see it", accent: C.orange, icon: Calendar };
+  }
+  if (n?.kind === "sessions_today") {
+    return { title: n.title, detail: n.body || "Open the Dashboard to see who", accent: C.orange, icon: Calendar };
+  }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
     // The summary when a caller knew what changed, the program's name when it
@@ -3942,6 +3949,7 @@ const mapPack = r => ({
   id: r.id, athleteId: r.athlete_id, coachId: r.coach_id, sessionTypeId: r.session_type_id,
   sessionsTotal: r.sessions_total, amountCents: r.amount_cents, status: r.status,
   source: r.source, note: r.note, createdAt: r.created_at, expiresOn: r.expires_on,
+  paidAt: r.paid_at,
 });
 
 // Returns an error string, or null. A failed load MUST NOT look like an empty
@@ -4141,8 +4149,15 @@ async function archiveSessionType(typeId, setState) {
 
 const DELIVERY_KINDS = [
   { key: "in_person", label: "In person", hint: "You're in the room together.", accentKey: "olive" },
+  { key: "virtual", label: "Virtual", hint: "Live, over a video call.", accentKey: "orange" },
   { key: "remote", label: "Remote", hint: "Coached remotely; they train on their own.", accentKey: "blue" },
 ];
+
+// The older one-person live-in-app type reads as Virtual to everyone.
+function deliveryFor(type) {
+  const key = type?.delivery === "in_app_live" ? "virtual" : type?.delivery;
+  return DELIVERY_KINDS.find(d => d.key === key) || DELIVERY_KINDS[0];
+}
 
 function formatMoney(cents) {
   if (cents == null || !isFinite(cents)) return null;
@@ -8850,6 +8865,7 @@ function FirstRunTour({ hasCoach, onDone }) {
 // workout had Home lit up underneath them.
 const NAV_PARENT = {
   "athlete-workout": "athlete-program",
+  "athlete-program-edit": "calendar",
 };
 
 function BottomNav({ items, active, onChange }) {
@@ -10150,13 +10166,79 @@ function aiNetworkError(elapsedMs, aborted) {
   return new Error("The connection to the server broke before the program came back. Tap Try Again — nothing was lost.");
 }
 
+// How far a program build has got, from the text the AI has streamed so far.
+// Isaiah, 26 Oct: every long wait shows a real percentage, not a spinner.
+//
+// Real, not a timer: the model writes the program as JSON, one day at a time,
+// and each day opens with an "exercises" key. Days started so far, against the
+// days the program should have, is the count. Inside the current day, its
+// exercises (one "phase" key each) move it along, assuming about ten a day and
+// never letting one day claim to be finished before the next one starts.
+// The name and rationale at the top take the first few percent.
+//
+// Returns a fraction from 0 to 0.99. The last 1% is the save, which only the
+// caller knows has happened.
+const EXERCISES_PER_DAY_GUESS = 10;
+
+function programBuildProgress(text, totalDays) {
+  const days = Math.max(1, Number(totalDays) || 1);
+  const t = text || "";
+  const dayStarts = [];
+  const re = /"exercises"\s*:/g;
+  let m;
+  while ((m = re.exec(t))) dayStarts.push(m.index);
+  if (dayStarts.length === 0) {
+    return Math.min(0.04, (t.length / 800) * 0.04);
+  }
+  const current = t.slice(dayStarts[dayStarts.length - 1]);
+  const exercisesInDay = (current.match(/"phase"\s*:/g) || []).length;
+  const intoDay = Math.min(exercisesInDay / EXERCISES_PER_DAY_GUESS, 0.95);
+  const done = Math.min(dayStarts.length - 1 + intoDay, days);
+  return Math.min(0.99, 0.05 + 0.94 * (done / days));
+}
+
+// Days a pasted program has, for the import's percentage. Counts lines that
+// open with "Day 3", "Week 1 Day 2", "Monday" and the like; four if none.
+function countPastedDays(raw) {
+  const lines = String(raw || "").split(/\n/);
+  const n = lines.filter(l => /^\s*(week\s*\d+\s*[-,:]?\s*)?(day\s*\d+|mon|tue|wed|thu|fri|sat|sun)/i.test(l)).length;
+  return n > 0 ? n : 4;
+}
+
+// Percentage bar for long waits. `fraction` is 0 to 1.
+function LoadingPercent({ fraction, label, detail, big = false }) {
+  const pct = Math.max(0, Math.min(100, Math.round((Number(fraction) || 0) * 100)));
+  return (
+    <div className="w-full max-w-xs mx-auto text-center">
+      <div className={`tabular-nums font-bold ${big ? "text-5xl" : "text-4xl"}`} style={{ fontFamily: DISPLAY, color: C.orange }}>{pct}%</div>
+      <div className="h-2 rounded-full mt-3 overflow-hidden" style={{ background: C.border }}
+        role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <div className="h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 400ms ease-out" }} />
+      </div>
+      {label && <p className={`${big ? "text-2xl font-bold" : "text-[15px]"} mt-4`} style={{ color: C.text, ...(big ? { fontFamily: DISPLAY } : {}) }}>{label}</p>}
+      {detail && <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>{detail}</p>}
+    </div>
+  );
+}
+
+// Holds the highest percentage seen, so the bar never steps backwards.
+function useBuildProgress() {
+  const [fraction, setFraction] = useState(0);
+  const reset = () => setFraction(0);
+  const onText = (totalDays) => (text) => {
+    const f = programBuildProgress(text, totalDays);
+    setFraction(prev => (f > prev ? f : prev));
+  };
+  return { fraction, setFraction, reset, onText };
+}
+
 // Reads the server's SSE relay. Each frame is either a text chunk, an in-band
 // error, or the terminator carrying stop_reason.
 //
 // stop_reason matters: "max_tokens" means the model ran out of room and the
 // JSON is truncated, which is a specific, explainable failure rather than the
 // generic parse error the athlete used to see.
-async function readAIStream(response) {
+async function readAIStream(response, onText) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -10177,7 +10259,7 @@ async function readAIStream(response) {
       if (!raw) continue;
       let evt;
       try { evt = JSON.parse(raw); } catch { continue; }
-      if (typeof evt.t === "string") text += evt.t;
+      if (typeof evt.t === "string") { text += evt.t; if (onText) { try { onText(text); } catch { /* never break the build over a progress bar */ } } }
       else if (evt.error) streamError = evt.error;
       else if (evt.done) stopReason = evt.stop_reason;
     }
@@ -10191,7 +10273,7 @@ async function readAIStream(response) {
   return text;
 }
 
-async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM }) {
+async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRAM, onText }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
 
@@ -10252,7 +10334,7 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("text/event-stream") && response.body) {
     try {
-      return await readAIStream(response);
+      return await readAIStream(response, onText);
     } catch (err) {
       // A socket that dies mid-stream surfaces here as a TypeError, not as a
       // message we wrote. Only those get re-labelled as a network fault.
@@ -10276,14 +10358,17 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
+  const progress = useBuildProgress();
 
   const generate = async () => {
-    setStatus("loading"); setErrorMsg("");
+    setStatus("loading"); setErrorMsg(""); progress.reset();
     try {
       const text = await callAI({
         messages: [{ role: "user", content: buildAIPrompt(intake) }],
         maxTokens: 32000,
+        onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
       });
+      progress.setFraction(1);
       const parsed = parseAIJson(text);
       setResult(parsed);
       setStatus("done");
@@ -10307,8 +10392,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <Loader2 size={32} className="animate-spin mx-auto mb-4" style={{ color: C.orange }} />
-          <p className="text-[15px]" style={{ color: C.sub }}>Building a program around the athlete's profile...</p>
+          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the athlete's profile. Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -10885,7 +10969,147 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   );
 }
 
-function CoachDashboard({ state, nav, onSwitchMode }) {
+// Booked sessions with the coach, by day: today, then the next seven days.
+// Not to be confused with CoachTodayPanel, which is PROGRAM workouts scheduled
+// today. This is the coach's own diary: who is coming in, when, and how.
+// One row per client, so a semi-private slot shows everyone who is in it.
+// Open times nobody has booked are left out: this answers "who am I seeing".
+const UPCOMING_SESSION_DAYS = 7;
+
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function coachSessionsByDay(booking, athletes, now = new Date(), days = UPCOMING_SESSION_DAYS) {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + days + 1);
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const typeById = new Map((booking?.sessionTypes || []).map(t => [t.id, t]));
+  const athleteById = new Map((athletes || []).map(a => [a.id, a]));
+
+  const rows = [];
+  for (const b of booking?.bookings || []) {
+    if (!HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime()) || when < start || when >= end) continue;
+    const athlete = athleteById.get(b.athleteId);
+    if (!athlete) continue;
+    const type = typeById.get(slot.sessionTypeId) || null;
+    const minutes = Number(type?.durationMin) || 60;
+    rows.push({ id: b.id, when, athlete, type, slot, over: when.getTime() + minutes * 60000 < now.getTime() });
+  }
+  rows.sort((x, y) => x.when - y.when || (x.athlete.name || "").localeCompare(y.athlete.name || ""));
+
+  const todayKey = localDayKey(start);
+  const today = rows.filter(r => localDayKey(r.when) === todayKey);
+  const upcomingByDay = [];
+  for (const r of rows) {
+    const key = localDayKey(r.when);
+    if (key === todayKey) continue;
+    let group = upcomingByDay[upcomingByDay.length - 1];
+    if (!group || group.key !== key) { group = { key, date: r.when, rows: [] }; upcomingByDay.push(group); }
+    group.rows.push(r);
+  }
+  return { today, upcomingByDay };
+}
+
+function CoachSessionRow({ r, nav }) {
+  const delivery = deliveryFor(r.type);
+  const accent = C[delivery.accentKey];
+  return (
+    <button onClick={() => nav.go("coach-athlete-detail", r.athlete.id)}
+      className="w-full rounded-xl p-3 flex items-center gap-3 text-left"
+      style={{ ...card(), opacity: r.over ? 0.55 : 1 }}>
+      <div className="w-16 shrink-0 tabular-nums text-[15px] font-bold" style={{ color: C.text }}>{formatSlotTime(r.slot.startsAt)}</div>
+      <Avatar initials={r.athlete.avatar} size={34} photoUrl={r.athlete.photoUrl} />
+      <div className="flex-1 min-w-0">
+        <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{r.athlete.name}</div>
+        <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: C.sub }}>
+          <span className="truncate">{r.type?.name || "Session"}</span>
+          <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 11, background: `${accent}1f`, color: accent, border: `1px solid ${accent}55` }}>
+            {delivery.label}
+          </span>
+        </div>
+      </div>
+      <ChevronRight size={16} style={{ color: C.faint }} className="shrink-0" />
+    </button>
+  );
+}
+
+function CoachSessionsPanel({ state, setState, nav }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => {
+    if (!state.booking?.loaded && setState) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+  // Closed by default: the Dashboard shows today in full, and everything
+  // after it (tomorrow included) sits behind one tap. Isaiah, 26 Oct.
+  const [showUpcoming, setShowUpcoming] = useState(false);
+
+  if (booking.error) {
+    return (
+      <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.sub }}>
+        Couldn't load your sessions. Open the Sessions tab to try again.
+      </div>
+    );
+  }
+  if (!booking.loaded) {
+    return <div className="text-[12.5px] mb-5" style={{ color: C.faint }}>Loading sessions...</div>;
+  }
+
+  const { today, upcomingByDay } = coachSessionsByDay(booking, state.athletes);
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowKey = localDayKey(tomorrow);
+  const dayLabel = (g) => g.key === tomorrowKey
+    ? "Tomorrow"
+    : g.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
+  const upcomingCount = upcomingByDay.reduce((n, g) => n + g.rows.length, 0);
+
+  return (
+    <div className="mb-5">
+      {today.length === 0 ? (
+        <div className="text-[15px] mb-2.5" style={{ color: C.faint }}>No sessions booked today.</div>
+      ) : (
+        <>
+          <div className="text-[12.5px] mb-2" style={{ color: C.sub }}>
+            <span className="font-semibold" style={{ color: C.text }}>{today.length}</span> {today.length === 1 ? "session" : "sessions"} today
+          </div>
+          <div className="space-y-2 mb-2.5">{today.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+        </>
+      )}
+
+      {upcomingCount === 0 ? (
+        <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing else booked in the next {UPCOMING_SESSION_DAYS} days.</div>
+      ) : (
+        <>
+          <button onClick={() => setShowUpcoming(v => !v)} aria-expanded={showUpcoming}
+            className="w-full rounded-xl px-3.5 py-3 flex items-center justify-between text-left" style={card()}>
+            <span className="text-[15px] font-semibold" style={{ color: C.text }}>
+              Upcoming: {upcomingCount} {upcomingCount === 1 ? "session" : "sessions"}
+              <span className="font-normal text-[12.5px] ml-1.5" style={{ color: C.sub }}>next {UPCOMING_SESSION_DAYS} days</span>
+            </span>
+            {showUpcoming ? <ChevronUp size={16} style={{ color: C.faint }} /> : <ChevronDown size={16} style={{ color: C.faint }} />}
+          </button>
+          {showUpcoming && (
+            <div className="mt-3 space-y-4">
+              {upcomingByDay.map(g => (
+                <div key={g.key}>
+                  <div className="text-[12.5px] font-semibold mb-2" style={{ color: C.sub }}>{dayLabel(g)}</div>
+                  <div className="space-y-2">{g.rows.map(r => <CoachSessionRow key={r.id} r={r} nav={nav} />)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CoachDashboard({ state, setState, nav, onSwitchMode }) {
   const wideDash = useIsWide();
   const totalAthletes = state.athletes.length;
   // Counts programs that are actually with an athlete. This used to count
@@ -10902,7 +11126,13 @@ function CoachDashboard({ state, nav, onSwitchMode }) {
       <div className="px-5 pt-5">
         {onSwitchMode && !wideDash && <ModeSwitch training={false} onChange={onSwitchMode} />}
 
-        {/* Who needs you, first. The counts and the invite code are still
+        {/* Booked sessions first: who the coach is seeing today and this
+            week. Isaiah, 26 Oct: the coach has to see this the moment the
+            app opens, not only on the Sessions calendar. */}
+        <ChalkDivider label="Sessions" />
+        <CoachSessionsPanel state={state} setState={setState} nav={nav} />
+
+        {/* Who needs you, next. The counts and the invite code are still
             here, underneath: a coach opening the app wants to know whether
             anybody is stuck, and "11 athletes, 9 programs" cannot answer
             that. The answer used to be spread across four screens - a missed
@@ -11554,9 +11784,8 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
 
         {bulkProgress ? (
           <div className="text-center py-6">
-            <Loader2 size={24} className="animate-spin mx-auto mb-3" style={{ color: C.orange }} />
-            <div className="text-[15px]" style={{ color: C.text }}>{bulkProgress.done + 1} of {bulkProgress.total}</div>
-            <div className="text-[12.5px] mt-1" style={{ color: C.sub }}>{bulkProgress.name}</div>
+            <LoadingPercent fraction={bulkProgress.done / Math.max(1, bulkProgress.total)}
+              label={`${bulkProgress.done + 1} of ${bulkProgress.total}`} detail={bulkProgress.name} />
           </div>
         ) : (
           <div className="space-y-2.5">
@@ -11873,6 +12102,10 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // from the roster's Assign sheet.
   const [generateOpen, setGenerateOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // The three ways to start a program, offered again once one exists.
+  // Isaiah, 26 Oct: when a client's program is up, the coach needs a way to
+  // give them a new one from here. The old one stays saved as history.
+  const [newProgramOpen, setNewProgramOpen] = useState(false);
   const [activeDayId, setActiveDayId] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
@@ -12353,6 +12586,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               be: reachable when wanted, never beside something routine.
               Deliberately OUTSIDE the `program &&` block above — a client with no
               program assigned still needs to be removable. */}
+          <CoachClientHistory state={state} setState={setState} athleteId={athlete.id} />
+
           <ChalkDivider label="End Coaching" />
           <button onClick={() => setOffRosterOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
@@ -12365,13 +12600,20 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         </>)}
 
         {tab === "program" && (<>
+          {program && (program.days || []).length > 0 && (
+            <>
+              <ChalkDivider label="Whole Program" />
+              <div className="mb-5">
+                <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={setDetailExercise} />
+              </div>
+            </>
+          )}
           <ChalkDivider label="Assigned Program — Edit" />
           {program && (
-            <button onClick={() => setImportOpen(true)}
-              className="w-full mb-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-              style={{ background: C.panel, color: C.blue, border: `1px dashed ${C.blue}66` }}>
-              <ClipboardList size={15} /> Import a program from a doc
-            </button>
+            <Btn className="w-full mb-3" icon={Plus} disabled={generating || building || importing}
+              onClick={() => setNewProgramOpen(true)}>
+              {generating || building ? "Creating…" : "Make new program"}
+            </Btn>
           )}
           {!program && (
             <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
@@ -12664,6 +12906,28 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         onEverySession={() => { removeSegment(segmentTarget.block, null); setSegmentTarget(null); }} />
       <ImportProgramModal open={importOpen} onClose={() => setImportOpen(false)}
         athlete={athlete} onImport={importProgram} saving={importing} />
+      <Modal open={newProgramOpen} onClose={() => setNewProgramOpen(false)} title="Make a new program">
+        <p className="text-[12.5px] mb-4 leading-snug" style={{ color: C.sub }}>
+          {program?.name ? `${program.name} stays saved. ` : ""}The new program replaces it as what {firstName} trains from.
+        </p>
+        <Btn className="w-full mb-2" icon={Sparkles} disabled={generating || !canBuildFromAnswers}
+          onClick={() => { setNewProgramOpen(false); setGenerateOpen(true); }}>
+          Use their answers
+        </Btn>
+        <p className="text-[11px] mb-3 leading-snug" style={{ color: C.faint }}>
+          {canBuildFromAnswers
+            ? `Built from ${firstName}'s goals, injuries, sport, schedule and equipment. You review it before it's saved.`
+            : `${firstName} hasn't finished the questionnaire, so there's nothing on file to build from yet.`}
+        </p>
+        <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building}
+          onClick={async () => { setNewProgramOpen(false); await buildProgram(); }}>
+          Start blank
+        </Btn>
+        <Btn variant="secondary" className="w-full" icon={ClipboardList}
+          onClick={() => { setNewProgramOpen(false); setImportOpen(true); }}>
+          Import a program
+        </Btn>
+      </Modal>
       {/* Fed this athlete's REAL answers, the same as the roster's Assign
           sheet. An earlier version of that screen passed a hardcoded example
           intake and so built a program for an imaginary MMA fighter whoever
@@ -12883,15 +13147,19 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
     if (!open) { setRaw(""); setStatus("idle"); setResult(null); setError(""); }
   }, [open]);
 
+  const progress = useBuildProgress();
+
   const convert = async () => {
     const text = raw.trim();
     if (text.length < 40) { setError("Paste the whole program - that looks like a line or two."); setStatus("error"); return; }
-    setStatus("converting"); setError("");
+    setStatus("converting"); setError(""); progress.reset();
     try {
       const reply = await callAI({
         messages: [{ role: "user", content: buildImportPrompt(text, athlete) }],
         maxTokens: 32000,
+        onText: progress.onText(countPastedDays(text)),
       });
+      progress.setFraction(1);
       const parsed = parseAIJson(reply);
       if (!parsed?.days?.length) throw new Error("No training days were found in that text.");
       setResult(parsed);
@@ -12927,9 +13195,7 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
 
       {status === "converting" && (
         <div className="text-center py-10">
-          <Loader2 size={30} className="animate-spin mx-auto mb-4" style={{ color: C.orange }} />
-          <p className="text-[15px]" style={{ color: C.text }}>Reading your program...</p>
-          <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>Keeping your numbers, working out which section each movement belongs to.</p>
+          <LoadingPercent fraction={progress.fraction} label="Reading your program" detail="Keeping your numbers, working out which section each movement belongs to." />
         </div>
       )}
 
@@ -15361,7 +15627,7 @@ function CoachProfile({ state, setState, nav }) {
                 <div className="text-[15px] font-semibold" style={{ color: C.text }}>Speed up the app</div>
                 <div className="text-[12.5px] mt-0.5 leading-relaxed" style={{ color: C.sub }}>
                   {migrating
-                    ? `Moving photos… ${migrateAt} of ${builtInNames.length}`
+                    ? `Moving photos… ${Math.round((migrateAt / Math.max(1, builtInNames.length)) * 100)}% (${migrateAt} of ${builtInNames.length})`
                     : `${stillInCode} exercise photo${stillInCode === 1 ? "" : "s"} are still stored inside the app itself. Moving them makes the app load much faster for you and your athletes. One tap, about a minute, safe to leave and come back to.`}
                 </div>
               </div>
@@ -15428,6 +15694,71 @@ function CoachProfile({ state, setState, nav }) {
 // ============================================================
 // ATHLETE PORTAL
 // ============================================================
+
+// The client's next booked session with their coach, at the top of Home.
+// Isaiah, 26 Oct: a client should be told, on the day, that they have a
+// session, not have to go and look for it on the Book page. On a session day
+// it says "Session today"; otherwise it shows the next one, so the answer to
+// "when do I see my coach" is always one glance away. Nothing booked: nothing
+// shown. Tapping it opens the Book page, where cancelling and moving live.
+function nextBookedSession(booking, athleteId, now = new Date()) {
+  const slotById = new Map((booking?.slots || []).map(sl => [sl.id, sl]));
+  const typeById = new Map((booking?.sessionTypes || []).map(t => [t.id, t]));
+  let best = null;
+  for (const b of booking?.bookings || []) {
+    if (b.athleteId !== athleteId || !HOLDS_SPOT.includes(b.status)) continue;
+    const slot = slotById.get(b.slotId);
+    if (!slot || slot.cancelledAt || !slot.startsAt) continue;
+    const when = new Date(slot.startsAt);
+    if (Number.isNaN(when.getTime())) continue;
+    const type = typeById.get(slot.sessionTypeId) || null;
+    const ends = when.getTime() + (Number(type?.durationMin) || 60) * 60000;
+    if (ends < now.getTime()) continue;
+    if (!best || when < best.when) best = { when, slot, type, booking: b };
+  }
+  if (!best) return null;
+  return { ...best, isToday: localDayKey(best.when) === localDayKey(now) };
+}
+
+function AthleteSessionCard({ state, setState, nav }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => {
+    if (!state.booking?.loaded && setState) loadBooking(setState);
+  }, [state.booking?.loaded, setState]);
+  if (!booking.loaded || booking.error) return null;
+  const next = nextBookedSession(booking, state.me?.id);
+  if (!next) return null;
+
+  const delivery = deliveryFor(next.type);
+  const accent = next.isToday ? C.orange : C.blue;
+  const coachName = (state.coachProfile?.name || "").trim().split(/\s+/)[0];
+  const tomorrowKey = (() => { const t = new Date(); t.setDate(t.getDate() + 1); return localDayKey(t); })();
+  const dayText = next.isToday ? "Today"
+    : localDayKey(next.when) === tomorrowKey ? "Tomorrow"
+    : next.when.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
+  return (
+    <button onClick={() => nav.go("athlete-booking")}
+      className="w-full rounded-xl p-4 mb-4 flex items-center gap-3 text-left"
+      style={{ ...card({ borderRadius: 16 }), border: `1px solid ${accent}66`, background: `${accent}10` }}>
+      <div className="rounded-full w-11 h-11 flex items-center justify-center shrink-0" style={{ background: `${accent}22` }}>
+        <Calendar size={20} style={{ color: accent }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: accent }}>
+          {next.isToday ? "Session today" : "Next session"}
+        </div>
+        <div className="text-[17px] font-bold mt-0.5" style={{ color: C.text }}>
+          {next.isToday ? formatSlotTime(next.slot.startsAt) : `${dayText}, ${formatSlotTime(next.slot.startsAt)}`}
+        </div>
+        <div className="text-[12.5px] truncate" style={{ color: C.sub }}>
+          {[next.type?.name, coachName ? `with ${coachName}` : null, delivery.label].filter(Boolean).join(" · ")}
+        </div>
+      </div>
+      <ChevronRight size={18} style={{ color: C.faint }} className="shrink-0" />
+    </button>
+  );
+}
 
 function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
   const wideHome = useIsWide();
@@ -15652,6 +15983,12 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </button>
         </div>
       </div>
+
+      {/* Booked sessions with the coach. Clients only: a coach in their own
+          training mode is the one running the sessions. */}
+      {FEATURES.booking && !isCoach && state.coachProfile && (
+        <div className="px-5 pt-3"><AthleteSessionCard state={state} setState={setState} nav={nav} /></div>
+      )}
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
@@ -16683,9 +17020,14 @@ function DayActionSheet({ open, row, program, today, onClose, onMove, onSkip, on
   );
 }
 
-function AthleteProgram({ state, setState, nav }) {
+function AthleteProgram({ state, setState, nav, initialDayId = null }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
-  const [activeDayIdx, setActiveDayIdx] = useState(0);
+  // Opened from a day's Edit button on the Program board (26 Oct), so it
+  // starts on that day rather than the first one.
+  const [activeDayIdx, setActiveDayIdx] = useState(() => {
+    const i = (myProgram?.days || []).findIndex(d => d.id === initialDayId);
+    return i < 0 ? 0 : i;
+  });
   // Up here with the other hooks, not down beside the day it prints. React
   // counts hooks per render; this screen returns early when there is no
   // programme yet, and a useState below that point runs on some renders and
@@ -16733,7 +17075,7 @@ function AthleteProgram({ state, setState, nav }) {
   if (!myProgram) {
     return (
       <div className="pb-28">
-        <TopBar title="My Program" onLogout={nav.logout} />
+        <TopBar title="My Workout" onLogout={nav.logout} />
         <div className="px-5 pt-10 text-center">
           {/* The error branch is checked BEFORE the coached/self-guided split.
               It used to sit inside the self-guided branch, so a coached athlete
@@ -17116,11 +17458,13 @@ function AthleteProgram({ state, setState, nav }) {
   return (
     <div className="pb-28">
       <div className="px-5 pt-6 pb-2">
-        <ProgramWorkoutTabs active="program"
-          onWorkout={() => {
-            const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
-            nav.go("athlete-workout", today?.id);
-          }} />
+        {/* The editor now (26 Oct). My Program as a tab is gone: the plan
+            lives on Week > Program, and this screen is reached from a day's
+            Edit button there. */}
+        <button onClick={() => nav.go("calendar")} className="flex items-center gap-1 text-[15px] font-semibold" style={{ color: C.blue }}>
+          <ChevronLeft size={18} /> Back to Week
+        </button>
+        <h1 className="mt-2" style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 700, color: C.text }}>Edit Program</h1>
         <div className="text-[15px] mt-3" style={{ color: C.sub }}>AI-generated for your goals</div>
       </div>
 
@@ -18717,32 +19061,6 @@ function ConnectionBanner({ online, pending, blocked }) {
   );
 }
 
-// My Program | My Workout, side by side, as tabs. The same row sits at the
-// top of both screens so an athlete can flip between the plan and the
-// session they are doing without hunting for the way back.
-function ProgramWorkoutTabs({ active, onProgram, onWorkout }) {
-  const tab = (key, label, onClick) => {
-    const on = active === key;
-    return (
-      <button key={key} onClick={on ? undefined : onClick} aria-pressed={on}
-        className="flex-1 rounded-xl py-2.5 text-[15px] font-bold transition-colors"
-        style={{
-          background: on ? C.panel : "transparent",
-          color: on ? C.blue : C.sub,
-          boxShadow: on ? C.cardShadow : "none",
-        }}>
-        {label}
-      </button>
-    );
-  };
-  return (
-    <div className="flex gap-1 p-1 rounded-2xl" style={{ background: C.border + "66" }}>
-      {tab("program", "My Program", onProgram)}
-      {tab("workout", "My Workout", onWorkout)}
-    </div>
-  );
-}
-
 // The workout clock. A full-width row under the session name, inside the
 // sticky header, big enough to read at arm's length mid-set. It used to float
 // in the top-right corner, which put it directly on top of the Stop button.
@@ -18767,6 +19085,55 @@ function SessionTimerStrip({ seconds, running, onPause, onResume }) {
         style={{ background: accent, color: "#fff" }}>
         {running ? "Pause" : "Resume"}
       </button>
+    </div>
+  );
+}
+
+// The My Workout tab (Isaiah, 26 Oct). Straight to today's workout; on a day
+// with nothing scheduled, says so and names the next session. No program at
+// all falls through to the program screen, which owns the "build one",
+// "waiting on your coach" and "try again" states.
+function nextScheduledSession(program, fromIso = todayISO(), lookAhead = 21) {
+  const start = new Date(`${fromIso}T12:00:00`);
+  for (let i = 1; i <= lookAhead; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const day = (program?.days || []).find(x => isDayScheduledOn(x, iso));
+    if (day) return { day, date: d, iso, inDays: i };
+  }
+  return null;
+}
+
+function MyWorkoutTab({ state, setState, nav }) {
+  const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  if (!myProgram || !(myProgram.days || []).length) {
+    return <AthleteProgram state={state} setState={setState} nav={nav} />;
+  }
+  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
+  if (today) return <Workout state={state} setState={setState} nav={nav} dayId={today.id} />;
+
+  const next = nextScheduledSession(myProgram);
+  const when = next
+    ? (next.inDays === 1 ? "Tomorrow" : next.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }))
+    : null;
+  return (
+    <div className="pb-28">
+      <TopBar title="My Workout" onLogout={nav.logout} />
+      <div className="px-5 pt-8">
+        <div className="rounded-2xl p-6 text-center" style={card({ borderRadius: 20 })}>
+          <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.blue}1f` }}>
+            <Calendar size={24} style={{ color: C.blue }} />
+          </div>
+          <div className="text-[19px] font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>You don't have a workout today</div>
+          {next && (
+            <p className="text-[15px] mt-2" style={{ color: C.sub }}>
+              Next: <span className="font-semibold" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</span>, {when}
+            </p>
+          )}
+          <Btn variant="secondary" className="w-full mt-5" icon={Calendar} onClick={() => nav.go("calendar")}>See your week</Btn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -19772,9 +20139,6 @@ function Workout({ state, setState, nav, dayId }) {
       } />
       <div className="px-5 pt-5">
 
-        <div className="mb-4">
-          <ProgramWorkoutTabs active="workout" onProgram={() => nav.go("athlete-program")} />
-        </div>
 
         {/* In person or online, on the screen the athlete opens to train. This
             is the last moment it can usefully be said. */}
@@ -22770,7 +23134,164 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
   );
 }
 
+// ---------- the program board ----------
+//
+// Isaiah, 26 Oct: the whole program at a glance, the way Relay shows one.
+// Every training day, every section in it and every movement with that week's
+// sets and reps, week after week, outside of opening each workout.
+//
+// Wide screens get the grid: one column per training day, one row per week.
+// Phones get one week at a time, days stacked, with arrows to change week; a
+// seven-column grid at 390px is unreadable.
+//
+// Display only. Every number comes from the same prescribeForWeek and
+// buildSessionBlocks the Program tab uses, so the board can never disagree
+// with what the athlete is told on the day.
+function programBoardWeek(program, day, week, plan, authored) {
+  const sorted = [...(day?.exercises || [])].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase));
+  const items = sorted.map(x => prescribeForWeek(x, plan, week, authored)).filter(Boolean);
+  return buildSessionBlocks(items);
+}
+
+function boardDayOrder(days) {
+  const at = (d) => {
+    const i = WEEKDAY_ORDER.indexOf(d?.weekday);
+    return i < 0 ? 99 : i;
+  };
+  return (days || []).map((d, i) => ({ d, i }))
+    .sort((a, b) => at(a.d) - at(b.d) || a.i - b.i)
+    .map(x => x.d);
+}
+
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay }) {
+  const blocks = programBoardWeek(program, day, week, plan, authored);
+  return (
+    <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div className="font-semibold text-[15px] leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name || "Session"}</div>
+        <div className="flex items-center gap-2 shrink-0">
+          {day.weekday && <div className="text-[11px]" style={{ color: C.faint }}>{day.weekday.slice(0, 3)}</div>}
+          {onEditDay && (
+            <button onClick={() => onEditDay(day)} className="text-[11px] font-semibold rounded-full px-2 py-0.5"
+              style={{ color: C.blue, border: `1px solid ${C.blue}55` }} aria-label={`Edit ${day.name || "session"}`}>
+              Edit
+            </button>
+          )}
+        </div>
+      </div>
+      {blocks.length === 0 && <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing this week.</div>}
+      {blocks.map(b => (
+        <div key={b.key} className="mt-2.5 first:mt-0">
+          <div className="text-[11px] uppercase tracking-[.14em] font-semibold mb-1" style={{ color: b.accent || C.sub }}>{b.label}</div>
+          {b.items.map((x, i) => {
+            const ex = exById(x.exerciseId);
+            const name = ex?.name || x.name || "Exercise";
+            const img = exerciseImage(name);
+            return (
+              <button key={x.id || i} onClick={() => onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
+                className="w-full flex items-center gap-2.5 py-1.5 text-left" style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
+                <div className="rounded-md w-8 h-8 shrink-0 overflow-hidden flex items-center justify-center" style={{ background: img ? PHOTO_TILE : C.panelAlt }}>
+                  {img ? <img src={img} alt="" loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={13} style={{ color: C.faint }} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium leading-snug truncate" style={{ color: C.text }}>{name}</div>
+                  <div className="text-[11px] tabular-nums" style={{ color: C.sub }}>{x.sets}×{x.reps}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
+  const wide = useIsWide();
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
+  if (!program || !(program.days || []).length) {
+    return (
+      <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>No program yet</div>
+      </div>
+    );
+  }
+  const authored = programHasWeeklyPlan(program);
+  const plan = buildProgramPlan(program.weeks);
+  const deloads = new Set(authored ? authoredDeloadWeeks(program) : (plan.deloadWeeks || []));
+  const days = boardDayOrder(program.days);
+  const byId = new Map((exercises || []).map(e => [e.id, e]));
+  const exById = (id) => byId.get(id);
+  const nowWeek = currentProgramWeek(program);
+  const weekLabel = (w) => `Week ${w}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
+  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay };
+
+  if (!wide) {
+    const shown = Math.min(total, Math.max(1, week));
+    return (
+      <div>
+        <div className="flex items-center justify-between rounded-xl px-3 py-2.5 mb-3" style={card({ borderRadius: 14 })}>
+          <button onClick={() => setWeek(w => Math.max(1, w - 1))} disabled={shown <= 1} aria-label="Previous week"
+            style={{ opacity: shown <= 1 ? 0.3 : 1 }}><ChevronLeft size={20} style={{ color: C.sub }} /></button>
+          <div className="text-center">
+            <div className="font-semibold text-[15px]" style={{ fontFamily: DISPLAY, color: C.text }}>Week {shown} of {total}</div>
+            {(deloads.has(shown) || shown === nowWeek) && (
+              <div className="text-[11px]" style={{ color: C.orange }}>{[deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
+            )}
+          </div>
+          <button onClick={() => setWeek(w => Math.min(total, w + 1))} disabled={shown >= total} aria-label="Next week"
+            style={{ opacity: shown >= total ? 0.3 : 1 }}><ChevronRight size={20} style={{ color: C.sub }} /></button>
+        </div>
+        <div className="space-y-3">
+          {days.map(d => <ProgramBoardDay key={d.id} day={d} week={shown} {...shared} />)}
+        </div>
+      </div>
+    );
+  }
+
+  const weeks = Array.from({ length: total }, (_, i) => i + 1);
+  const cols = `repeat(${days.length}, minmax(240px, 1fr))`;
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div style={{ minWidth: days.length * 252 }}>
+        {weeks.map(w => (
+          <div key={w} className="mb-5">
+            <div className="text-[12.5px] font-semibold mb-2 sticky left-0" style={{ color: w === nowWeek ? C.orange : C.sub }}>{weekLabel(w)}</div>
+            <div className="grid gap-3 items-start" style={{ gridTemplateColumns: cols }}>
+              {days.map(d => <ProgramBoardDay key={d.id} day={d} week={w} {...shared} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// A session's name, shortened for a calendar square: "Monday — Squat + Push"
+// and "Tue: Aerobic Conditioning" both lose the weekday, which the square
+// already says. Isaiah, 26 Oct: the month should be readable without tapping.
+function calendarSessionLabel(name) {
+  const raw = String(name || "").trim();
+  const stripped = raw
+    .replace(/^(day\s*\d+\s*[—:-]\s*)/i, "")
+    .replace(/^((mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?(\s+(morning|evening|am|pm))?)\s*[—:-]?\s*/i, "")
+    .trim();
+  return stripped || raw || "Session";
+}
+
+// A phone's calendar square is about 50px wide: one word fits, a phrase breaks
+// mid-word. The first real word of the label ("Squat", "Hinge", "Aerobic"),
+// with the day's colour carrying the rest.
+function calendarSessionShort(name) {
+  const words = calendarSessionLabel(name).split(/\s+/).filter(w => /[A-Za-z0-9]/.test(w));
+  return words[0] || "Session";
+}
+
 function CalendarViewPage({ state, setState, nav }) {
+  // Program board first, the month calendar one tap away (Isaiah, 26 Oct).
+  const [weekView, setWeekView] = useState("program");
+  const wideCal = useIsWide();
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [openDate, setOpenDate] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
@@ -22814,21 +23335,46 @@ function CalendarViewPage({ state, setState, nav }) {
   };
 
 
+  const weekTabs = (
+    <SegmentedTabs value={weekView} onChange={setWeekView}
+      options={[{ key: "program", label: "Program" }, { key: "calendar", label: "Calendar" }]} />
+  );
+  const detailModal = (
+    <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
+      canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+      onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
+  );
+
+  if (weekView === "program") {
+    return (
+      <div className="pb-28">
+        <TopBar title="Week" onLogout={nav.logout} />
+        <div className="px-5 pt-5">
+          <div className="mb-4">{weekTabs}</div>
+          <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise}
+            onEditDay={state.me.coachId ? null : (day) => nav.go("athlete-program-edit", day.id)} />
+        </div>
+        {detailModal}
+      </div>
+    );
+  }
+
   return (
     <div className="pb-28">
-      <TopBar title="Calendar" onLogout={nav.logout} />
+      <TopBar title="Week" onLogout={nav.logout} />
       <div className="px-5 pt-5">
+        <div className="mb-4">{weekTabs}</div>
 
         {/* No workout can be started from here (Isaiah, 24 Oct): the only ways
             in are My Workout on the Program tab and the top of Home. This
             page is for seeing the month and moving sessions. */}
-        <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
-          <div className="flex items-center justify-between mb-4">
+        <div className={`rounded-xl ${wideCal ? "p-4" : "px-2 py-3"} mb-5`} style={card({ borderRadius: 16 })}>
+          <div className="flex items-center justify-between mb-4 px-2">
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() - 1); return d; })}><ChevronLeft size={18} style={{ color: C.sub }} /></button>
             <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{monthLabel.toUpperCase()}</div>
             <button onClick={() => setCursor(c => { const d = new Date(c); d.setMonth(d.getMonth() + 1); return d; })}><ChevronRight size={18} style={{ color: C.sub }} /></button>
           </div>
-          <div className="grid grid-cols-7 gap-1.5">
+          <div className="grid grid-cols-7 gap-1">
             {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i} className="text-center text-[11px]" style={{ color: C.faint }}>{d}</div>)}
             {cells.map((d, i) => {
               if (d === null) return <div key={`empty${i}`} />;
@@ -22837,23 +23383,37 @@ function CalendarViewPage({ state, setState, nav }) {
               const planned = !!scheduledDayFor(ds);
               const isToday = ds === todayStr;
               const isPicked = ds === openDate;
-              // One colour for everything. Planned is a dot, done is a green
-              // tick, today is a ring, the tapped day is filled. Nothing to
-              // decode, so no legend.
+              // Each square names its session (Isaiah, 26 Oct), in that
+              // session's own colour, so the month reads at a glance. Done is
+              // a green tick, today is a ring, the tapped day is filled.
+              const sched = scheduledDayFor(ds);
+              const tint = sched ? programDayColor(myProgram, sched.id) : C.blue;
               return (
                 <button key={ds} onClick={() => setOpenDate(ds)}
-                  aria-label={`${ds}${hasLog ? ", done" : planned ? ", session planned" : ""}`}
-                  className="aspect-square rounded-lg flex flex-col items-center justify-center text-[13px] tabular-nums relative"
+                  aria-label={`${ds}${sched ? `, ${sched.name}` : ""}${hasLog ? ", done" : ""}`}
+                  className="rounded-lg flex flex-col items-stretch text-left tabular-nums relative overflow-hidden"
                   style={{
-                    background: isPicked ? C.blue : hasLog ? `${C.olive}1f` : "transparent",
-                    color: isPicked ? "#fff" : C.text,
-                    border: isToday && !isPicked ? `2px solid ${C.blue}` : "2px solid transparent",
-                    fontWeight: isToday || isPicked ? 700 : 500,
+                    minHeight: wideCal ? 92 : 58, padding: wideCal ? "6px 7px" : "4px 2px",
+                    background: isPicked ? `${C.blue}26` : hasLog ? `${C.olive}14` : "transparent",
+                    color: C.text,
+                    border: isToday ? `2px solid ${C.blue}` : isPicked ? `2px solid ${C.blue}88` : `1px solid ${C.border}66`,
                   }}>
-                  <span>{d}</span>
-                  {hasLog
-                    ? <Check size={10} strokeWidth={3.5} style={{ color: isPicked ? "#fff" : C.olive }} />
-                    : <span style={{ width: 5, height: 5, borderRadius: 999, marginTop: 2, background: planned ? (isPicked ? "#fff" : C.blue) : "transparent" }} />}
+                  <span className="flex items-center justify-between gap-1" style={{ fontSize: wideCal ? 13 : 12, fontWeight: isToday ? 800 : 600, color: isToday ? C.blue : C.text }}>
+                    {d}
+                    {hasLog && <Check size={wideCal ? 12 : 10} strokeWidth={3.5} style={{ color: C.olive }} />}
+                  </span>
+                  {sched && (
+                    <span className="mt-1 rounded font-semibold leading-tight"
+                      style={{
+                        fontSize: wideCal ? 11 : (calendarSessionShort(sched.name).length > 6 ? 7.5 : calendarSessionShort(sched.name).length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
+                        padding: wideCal ? "2px 4px" : "2px 1px 2px 2px", letterSpacing: wideCal ? 0 : "-0.02em",
+                        ...(wideCal
+                          ? { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }
+                          : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
+                      }}>
+                      {wideCal ? calendarSessionLabel(sched.name) : calendarSessionShort(sched.name)}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -22861,7 +23421,7 @@ function CalendarViewPage({ state, setState, nav }) {
         </div>
 
         <p className="text-[12.5px] text-center mb-5" style={{ color: C.sub }}>
-          Tap a day to see its session or move it to another day.
+          Tap a day to see the whole session or move it to another day.
         </p>
       </div>
 
@@ -23217,6 +23777,127 @@ function SessionModePicker({ value, onChange, onClear, clearLabel }) {
 // ============================================================
 
 // Shared bits, so the coach's list and the athlete's read the same way.
+// Past booked sessions and what was paid, for one client. The same component
+// on the client's Book page and on the coach's view of that client.
+//
+// Billing is the packs the coach has recorded (paid or pending). There is no
+// card payment in the app yet; when Stripe arrives its payments land in the
+// same credit_packs table (source 'stripe') and show here unchanged.
+const BOOKING_RESULT = {
+  attended: { label: "Attended", key: "olive" },
+  no_show: { label: "No-show", key: "red" },
+  cancelled: { label: "Cancelled", key: "faint" },
+  late_cancelled: { label: "Late cancel, session used", key: "amber" },
+  booked: { label: "Not marked yet", key: "sub" },
+};
+
+function SessionAndBillingHistory({ booking, athleteId, coachView = false }) {
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const typeById = Object.fromEntries((booking.sessionTypes || []).map(t => [t.id, t]));
+  const slotById = Object.fromEntries((booking.slots || []).map(sl => [sl.id, sl]));
+  const now = Date.now();
+
+  const past = (booking.bookings || [])
+    .filter(b => b.athleteId === athleteId)
+    .map(b => ({ b, slot: slotById[b.slotId] }))
+    .filter(r => r.slot && (new Date(r.slot.startsAt).getTime() <= now || r.b.status === "cancelled" || r.b.status === "late_cancelled"))
+    .sort((x, y) => new Date(y.slot.startsAt) - new Date(x.slot.startsAt));
+  const shown = showAllSessions ? past : past.slice(0, 8);
+
+  const packs = (booking.packs || [])
+    .filter(p => p.athleteId === athleteId && p.status !== "void")
+    .sort((x, y) => new Date(y.paidAt || y.createdAt) - new Date(x.paidAt || x.createdAt));
+  const paidTotal = packs.filter(p => p.status === "paid").reduce((n, p) => n + (p.amountCents || 0), 0);
+
+  const dateLabel = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  return (
+    <>
+      <ChalkDivider label="Session History" />
+      {past.length === 0 ? (
+        <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
+          No past sessions yet.
+        </div>
+      ) : (
+        <div className="space-y-2 mb-5">
+          {shown.map(({ b, slot }) => {
+            const type = typeById[slot.sessionTypeId];
+            const delivery = deliveryFor(type);
+            const result = BOOKING_RESULT[b.status] || BOOKING_RESULT.booked;
+            const accent = C[delivery.accentKey];
+            return (
+              <div key={b.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card()}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{type?.name || "Session"}</div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: C.sub }}>
+                    <span className="tabular-nums">{dateLabel(slot.startsAt)} · {formatSlotTime(slot.startsAt)}</span>
+                    <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 11, background: `${accent}1f`, color: accent, border: `1px solid ${accent}55` }}>
+                      {delivery.label}
+                    </span>
+                    {type?.priceCents != null && <span className="tabular-nums">{formatMoney(type.priceCents)}</span>}
+                  </div>
+                </div>
+                <span className="shrink-0 text-[11px] font-semibold" style={{ color: C[result.key] || C.sub }}>
+                  {result.label}
+                </span>
+              </div>
+            );
+          })}
+          {past.length > 8 && (
+            <button onClick={() => setShowAllSessions(v => !v)} className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+              {showAllSessions ? "Show fewer" : `Show all ${past.length}`}
+            </button>
+          )}
+        </div>
+      )}
+
+      <ChalkDivider label="Billing History" />
+      {packs.length === 0 ? (
+        <div className="rounded-xl p-4 mb-5 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
+          {coachView ? "No payments recorded for this client yet." : "No payments recorded yet."}
+        </div>
+      ) : (
+        <div className="space-y-2 mb-5">
+          {packs.map(p => {
+            const type = typeById[p.sessionTypeId];
+            const paid = p.status === "paid";
+            return (
+              <div key={p.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card()}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>
+                    {p.sessionsTotal} session{p.sessionsTotal === 1 ? "" : "s"}{type ? ` · ${type.name}` : ""}
+                  </div>
+                  <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>
+                    {dateLabel(p.paidAt || p.createdAt)}{p.source === "stripe" ? " · paid by card" : ""}{p.note ? ` · ${p.note}` : ""}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="tabular-nums text-[15px] font-bold" style={{ color: C.text }}>{formatMoney(p.amountCents) || "—"}</div>
+                  <div className="text-[11px] font-semibold" style={{ color: paid ? C.olive : C.amber }}>{paid ? "Paid" : "Pending"}</div>
+                </div>
+              </div>
+            );
+          })}
+          {paidTotal > 0 && (
+            <div className="text-[12.5px] text-right tabular-nums pr-1" style={{ color: C.sub }}>
+              Total paid: <span className="font-bold" style={{ color: C.text }}>{formatMoney(paidTotal)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// The coach's copy of a client's session and billing history. Loads the
+// booking data if the coach hasn't opened the schedule yet this session.
+function CoachClientHistory({ state, setState, athleteId }) {
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => { if (!booking.loaded) loadBooking(setState); }, [booking.loaded]);
+  if (!booking.loaded) return null;
+  return <SessionAndBillingHistory booking={booking} athleteId={athleteId} coachView />;
+}
+
 function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
   const taken = heldBookings(bookings, slot.id);
   const cap = openings?.[slot.id]?.capacity ?? slotCapacity(slot, type);
@@ -23224,7 +23905,7 @@ function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
   // How many are in it, from the server. An athlete cannot see other people's
   // booking rows, so counting `taken` would say nobody is here.
   const filled = openings?.[slot.id]?.taken ?? taken.length;
-  const delivery = DELIVERY_KINDS.find(d => d.key === type?.delivery) || DELIVERY_KINDS[0];
+  const delivery = deliveryFor(type);
   const accent = C[delivery.accentKey];
 
   return (
@@ -23241,6 +23922,9 @@ function SlotRow({ slot, type, bookings, openings, athletesById, right, dim }) {
             {delivery.label}
           </span>
           <span>{capacityLabel(cap)}</span>
+          {type?.priceCents != null && (
+            <span className="tabular-nums font-semibold" style={{ color: C.text }}>{formatMoney(type.priceCents)} / session</span>
+          )}
           {/* Spots left, not spots taken. It's the number that decides
               whether the athlete can have this one. */}
           <span style={{ color: left === 0 ? C.amber : C.faint }}>
@@ -23295,7 +23979,7 @@ function SessionTypeEditor({ types, onAdd, onArchive, busy }) {
           </div>
         )}
         {types.map(t => {
-          const delivery = DELIVERY_KINDS.find(d => d.key === t.delivery) || DELIVERY_KINDS[0];
+          const delivery = deliveryFor(t);
           const accent = C[delivery.accentKey];
           return (
             <div key={t.id} className="rounded-xl p-3.5 flex items-center gap-3" style={card({ borderRadius: 16 })}>
@@ -24763,6 +25447,10 @@ function AthleteBooking({ state, setState, nav }) {
             ))}
           </div>
         )}
+
+        <div className="mt-6">
+          <SessionAndBillingHistory booking={booking} athleteId={myId} />
+        </div>
       </div>
 
       {/* Said before it happens, not after. A client who discovers the charge
@@ -26068,6 +26756,7 @@ function AppInner() {
   }, []);
 
   const [generatingProgram, setGeneratingProgram] = useState(false);
+  const signupProgress = useBuildProgress();
   // Set only when a programme was actually generated and saved. A failed
   // generation leaves it null, so the athlete lands on the dashboard with the
   // retry the Program tab already offers, rather than on a screen announcing
@@ -26116,7 +26805,10 @@ function AppInner() {
   // a list of who is in it that is hours old.
   useEffect(() => {
     if (!authed || !authUserId) return;
-    if (view !== "coach-booking" && view !== "athlete-booking") return;
+    // The two Home screens too (26 Oct): both now show booked sessions, and a
+    // client told "Session today" about a session that was cancelled an hour
+    // ago would turn up for nothing.
+    if (!["coach-booking", "athlete-booking", "coach-dashboard", "athlete-dashboard"].includes(view)) return;
     loadBooking(setState);
   }, [view, authed, authUserId]);
 
@@ -26351,10 +27043,12 @@ function AppInner() {
         }
 
         setGeneratingProgram(true);
+        signupProgress.reset();
         try {
           const text = await callAI({
             messages: [{ role: "user", content: buildAIPrompt(data) }],
             maxTokens: 32000,
+            onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
           });
           const parsed = parseAIJson(text);
           parsed.days = attachWeekdays(parsed.days, data.trainingDays);
@@ -26552,9 +27246,8 @@ function AppInner() {
     if (generatingProgram) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
-          <Loader2 size={40} className="animate-spin mb-6" style={{ color: C.orange }} />
-          <h2 className="text-2xl font-bold text-center" style={{ fontFamily: DISPLAY, color: C.text }}>Building your program</h2>
-          <p className="text-[15px] mt-2 text-center" style={{ color: C.sub }}>AI is creating a personalized plan based on your goals, sport, schedule, and equipment.</p>
+          <LoadingPercent big fraction={signupProgress.fraction} label="Building your program"
+            detail="AI is creating a personalized plan based on your goals, sport, schedule and equipment. Usually two to four minutes." />
         </div>
       );
     }
@@ -26616,7 +27309,7 @@ function AppInner() {
     // which is where somebody about to train is already looking. The route
     // stays — eight places link to it — only the bar entry is gone, and that
     // takes the athlete bar from seven tabs to six.
-    { key: "athlete-program", label: "Program", icon: Dumbbell },
+    { key: "athlete-program", label: "My Workout", icon: Dumbbell },
     { key: "calendar", label: "Week", icon: Calendar },
     // Book and Coach are STATIC - they are here whether or not this athlete has
     // a coach yet.
@@ -26658,7 +27351,8 @@ function AppInner() {
     "coach-profile": <CoachProfile state={state} setState={setState} nav={nav} />,
     "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav}
       isCoach={authed === "coach"} onSwitchMode={authed === "coach" ? setTraining : null} />,
-    "athlete-program": <AthleteProgram state={state} setState={setState} nav={nav} />,
+    "athlete-program": <MyWorkoutTab state={state} setState={setState} nav={nav} />,
+    "athlete-program-edit": <AthleteProgram state={state} setState={setState} nav={nav} initialDayId={navParam} />,
     "athlete-workout": <Workout state={state} setState={setState} nav={nav} dayId={navParam} />,
     "athlete-progress": <AthleteProgress state={state} setState={setState} nav={nav} />,
     "athlete-ai": <AthleteMessages state={state} setState={setState} nav={nav} myUserId={authUserId} />,

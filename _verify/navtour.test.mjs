@@ -61,8 +61,9 @@ test("every existing way into a workout still points somewhere real", () => {
     `only ${links.length} links into the workout screen — entry points were lost with the tab`);
 });
 
-test("Program is still a tab, because it is now the way in", () => {
-  assert.ok(/\{ key: "athlete-program", label: "Program"/.test(src));
+test("My Workout is a tab, because it is the way in", () => {
+  // Renamed from Program on 26 Oct: the tab now opens today's workout.
+  assert.ok(/\{ key: "athlete-program", label: "My Workout"/.test(src));
 });
 
 test("running a workout lights up Program, not Home", () => {
@@ -81,14 +82,17 @@ test("an unknown screen still falls back rather than lighting nothing", () => {
 
 // ---------- today, pinned ----------
 
-test("My Workout, at the top of Program, opens today's session", () => {
-  // The pinned Today card was removed on 24 Oct at Isaiah's request; the
-  // My Workout tab is now the one-tap way into today's session.
-  const at = src.indexOf("function AthleteProgram");
+test("the My Workout tab opens today's session, or says there is none", () => {
+  // Isaiah, 26 Oct: no My Program | My Workout switch. The tab goes straight
+  // to today's workout; a day with nothing scheduled says so.
+  const at = src.indexOf("function MyWorkoutTab");
+  assert.ok(at > 0, "the My Workout tab is gone");
   const body = src.slice(at, src.indexOf("\n}\n", at));
   assert.ok(/isDayScheduledOn\(d, todayISO\(\)\)/.test(body), "nothing works out which session is today");
-  assert.ok(/nav\.go\("athlete-workout", today\?\.id\)/.test(body), "My Workout does not open today's session");
-  assert.ok(!/Rest day — nothing scheduled/.test(body), "the Today card is back");
+  assert.ok(/<Workout [^>]*dayId=\{today\.id\}/.test(body), "My Workout does not open today's session");
+  assert.ok(/You don't have a workout today/.test(body), "a rest day has no message");
+  assert.ok(/"athlete-program": <MyWorkoutTab /.test(src), "the tab does not route to My Workout");
+  assert.ok(!/function ProgramWorkoutTabs/.test(src), "the My Program | My Workout switch is back");
 });
 
 // ---------- the cards ----------

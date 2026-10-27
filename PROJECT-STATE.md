@@ -1,6 +1,6 @@
 # Trained.best: read this first
 
-**Last updated 23 Oct 2026.** Anyone picking this project up, in any chat, on
+**Last updated 26 Oct 2026.** Anyone picking this project up, in any chat, on
 any machine, starts here. Keep it current: if you change something in this
 repo or the database, update this file in the same commit.
 
@@ -8,6 +8,88 @@ It exists because context was lost between 7 and 15 Oct and a week of work
 had to be reconstructed from file timestamps.
 
 ---
+
+## 0d. Update, 24 to 26 Oct 2026 (read this first)
+
+- **Merged to main on 24 Oct:** the clean-up list (0c), timer and phone
+  notifications (0b), Program tab without the Today card or weekday picker,
+  Home without Recent Sessions, the simpler calendar (today, the month, the
+  day you tap), and starting a workout from the Week tab.
+- **Branch `session-and-billing-history`, 25 Oct, pushed, NOT merged:**
+  session types can be Virtual, priced separately from In person (private or
+  semi-private); the old live-in-app type reads as Virtual. Every session
+  card shows In person or Virtual and the price per session. The client's
+  Book page and the coach's client page show Session History and Billing
+  History (packs, paid or pending, total paid).
+- **Migration 008 is APPLIED** (approved by Isaiah 25 Oct). It only widens
+  the `session_types.delivery` check to allow `virtual`. No rows changed.
+- Preview: trained-best-git-session-and-billing-history-trainedbythebest.vercel.app
+- The 25 Oct chat: https://claude.ai/code/session_01U6FNotn3bEdFg16hv9knLr
+- **Still open:** QC and merge this branch; the third welcome-screen role
+  (4c, ask Isaiah); the two five-day athletes with no split (4c); the Vercel
+  function duration check (4c); deleting the v1 signup lists once a real
+  account has signed up on the new flow; 220 exercises still need demo media.
+- **Decided 26 Oct:** `groupAthletesBySession` is dropped, the roster does
+  not need it. What Isaiah wants instead: somewhere on the coach's account
+  that tells the coach which clients have a booked session today, and which
+  clients have upcoming sessions. Note the Dashboard's "Today" panel shows
+  program workouts scheduled today, NOT booked sessions with the coach.
+- **Branch `coach-sessions-today` (off `session-and-billing-history`), 26 Oct:**
+  coach Dashboard now opens with "Sessions Today" (booked clients, time,
+  In person or Virtual, finished ones dimmed) and "Upcoming Sessions" (next
+  7 days, by day). Tests: `_verify/coach-sessions.test.mjs`. Roster order
+  unchanged (soonest first). Bell shows the new `sessions_today` kind.
+- **Migration 009 is APPLIED** (approved by Isaiah 26 Oct, checked after:
+  job `coach-sessions-today` hourly and active, does nothing outside 7 AM,
+  not callable by signed-in users). Now also sends each client
+  "Session today at 5:30 PM" per booking (kind `session_today`). Was: pg_cron,
+  `notify_coaches_sessions_today()`, and an hourly job that, at 7 AM Toronto
+  only, adds one bell notification per coach with booked clients today
+  ("3 sessions today" / "9:00 AM Josiah, ..."). The 007 trigger sends it to
+  the phone. Once per coach per day.
+- **Branch `loading-percent` (off `coach-sessions-today`), 26 Oct:** Isaiah
+  wants every long wait to show a percentage. Program builds and imports read
+  it from the AI stream (`programBuildProgress`: days written vs days
+  expected); group assign and photo moves show done of total. Quick loads
+  keep the spinner, agreed with Isaiah. Tests: `_verify/loading-percent.test.mjs`.
+- **Branch `new-program-button` (off `loading-percent`), 26 Oct:** client
+  page Program tab has "Make new program" once a program exists. It opens
+  the same three starts as an empty tab (their answers, blank, import). The
+  old program row stays in the database; only active_program_id moves.
+  `coach-generate.test.mjs` now checks button/sentence pairs instead of a
+  fixed count of 3.
+- **Branch `client-session-card` (off `new-program-button`), 26 Oct:**
+  client Home shows "Session today" (time, type, coach, In person or
+  Virtual) or "Next session" at the top; nothing if nothing is booked; taps
+  through to Book. Booking data now also refreshes on both Home screens.
+- Coach is already told when a client completes a workout
+  (`session_completed`, bell + Dashboard Today panel). Isaiah's coach
+  account had Phone Notifications OFF on 26 Oct, so none reached his phone.
+- **Branch `program-board` (off `client-session-card`), 26 Oct, Part 1 of 2:**
+  `ProgramBoard`: the whole program like Relay, one column per training day,
+  one row per week, sections and movements with that week's sets x reps.
+  Wide screens: full grid. Phones: one week at a time with arrows (Isaiah's
+  choice). Week tab now opens on Program with a Program | Calendar switch
+  (calendar kept). Also on the coach's client page, Program tab, above the
+  editor. Display only; numbers from prescribeForWeek/buildSessionBlocks.
+- **Part 2, not built yet:** "Adjust with AI" on the board. Scope: whole
+  program, one week, one day, one section; typed request; before/after
+  preview; Save or Discard. Coaches and solo athletes only (coached athletes
+  view only). A one-week change becomes a byWeek entry (its own block).
+- **Branch `workout-tab-calendar-labels` (off `program-board`), 26 Oct:**
+  Isaiah's changes after seeing the board. Calendar squares name the session
+  in its colour (full name on wide screens, first word on phones, e.g.
+  "Squat"). The bottom-bar Program tab is now **My Workout**: today's workout
+  straight away, or "You don't have a workout today" with the next session.
+  The My Program | My Workout switch (ProgramWorkoutTabs) is deleted. The old
+  My Program screen (AthleteProgram) is now the editor, route
+  `athlete-program-edit`, reached from Edit on a day of the Week > Program
+  board (solo athletes only); it still owns the no-program states, print and
+  rest-timer sound. Tests updated: navtour, paused, program-board.
+- Isaiah wants a demo shown before anything is pushed to GitHub.
+- `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
+  Monday whatever the season", 21 vs 22) with or without this work. Date
+  based, not caused by these branches. Look at it separately.
 
 ## 0. Update, 23 Oct 2026 (read this before sections 4c and 8)
 
