@@ -86,6 +86,17 @@ had to be reconstructed from file timestamps.
   `athlete-program-edit`, reached from Edit on a day of the Week > Program
   board (solo athletes only); it still owns the no-program states, print and
   rest-timer sound. Tests updated: navtour, paused, program-board.
+- **27 Oct: everything above through `workout-tab-calendar-labels` is MERGED
+  to main (PR #4) and live.** Isaiah's phone icon had been saved from an old
+  Vercel preview link (Vercel toolbar visible), which is why it showed an old
+  build; re-added from trained-best.vercel.app. Clients who added the app
+  from a preview link need to re-add it the same way.
+- **Branch `workout-done-state` (off main), 27 Oct:** the Session Logged
+  button is "Done" (was "Back to My Program", which reopened the same
+  workout on the My Workout tab). My Workout shows "You're done for today"
+  once today's workout is logged, and "No workout today" on a rest day, each
+  with the next session and no buttons. `MyWorkoutTab` reads "logged today"
+  once on open so a workout finished there keeps its summary until Done.
 - Isaiah wants a demo shown before anything is pushed to GitHub.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date

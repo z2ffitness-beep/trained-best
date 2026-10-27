@@ -88,9 +88,14 @@ test("the My Workout tab opens today's session, or says there is none", () => {
   const at = src.indexOf("function MyWorkoutTab");
   assert.ok(at > 0, "the My Workout tab is gone");
   const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/isDayScheduledOn\(d, todayISO\(\)\)/.test(body), "nothing works out which session is today");
+  assert.ok(/isDayScheduledOn\(d, todayIso\)/.test(body), "nothing works out which session is today");
   assert.ok(/<Workout [^>]*dayId=\{today\.id\}/.test(body), "My Workout does not open today's session");
-  assert.ok(/You don't have a workout today/.test(body), "a rest day has no message");
+  assert.ok(/No workout today/.test(body), "a rest day has no message");
+  // 27 Oct: a workout already logged today is not reopened.
+  assert.ok(/You're done for today/.test(body), "a finished day has no message");
+  assert.ok(/today && !done/.test(body), "a finished workout would open again");
+  assert.ok(/onExit=\{\(\) => setDone\(true\)\}/.test(body), "Done on the summary does not lead to the done state");
+  assert.ok(!/Back to My Program/.test(src), "the summary still points at a screen that no longer exists");
   assert.ok(/"athlete-program": <MyWorkoutTab /.test(src), "the tab does not route to My Workout");
   assert.ok(!/function ProgramWorkoutTabs/.test(src), "the My Program | My Workout switch is back");
 });

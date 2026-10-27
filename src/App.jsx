@@ -18378,9 +18378,9 @@ function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted
         </p>
       )}
 
-      <Btn className="mt-8" onClick={onDone}>Back to My Program</Btn>
+      <Btn className="mt-8" onClick={onDone}>Done</Btn>
       <button onClick={onDone} className="mt-3 text-[12.5px]" style={{ color: C.faint }}>
-        Returning in {secondsLeft}s
+        Closing in {secondsLeft}s
       </button>
     </div>
   );
@@ -19107,38 +19107,48 @@ function nextScheduledSession(program, fromIso = todayISO(), lookAhead = 21) {
 
 function MyWorkoutTab({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
+  const todayIso = todayISO();
+  const loggedToday = (state.workoutLogs || []).some(l => l?.date === todayIso);
+  // Isaiah, 27 Oct: once today's workout is logged, this tab says so and
+  // offers nothing to start. Read once, when the tab opens: a workout finished
+  // on this screen keeps its summary until Done, and only then turns into
+  // the done state, instead of vanishing the moment the log saves.
+  const [done, setDone] = useState(loggedToday);
+
   if (!myProgram || !(myProgram.days || []).length) {
     return <AthleteProgram state={state} setState={setState} nav={nav} />;
   }
-  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayISO()));
-  if (today) return <Workout state={state} setState={setState} nav={nav} dayId={today.id} />;
+  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
+  if (today && !done) {
+    return <Workout state={state} setState={setState} nav={nav} dayId={today.id} onExit={() => setDone(true)} />;
+  }
 
-  const next = nextScheduledSession(myProgram);
+  const next = nextScheduledSession(myProgram, todayIso);
   const when = next
-    ? (next.inDays === 1 ? "Tomorrow" : next.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }))
+    ? (next.inDays === 1 ? "tomorrow" : next.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }))
     : null;
+  const finished = !!today && done;
+  const accent = finished ? C.olive : C.blue;
   return (
     <div className="pb-28">
       <TopBar title="My Workout" onLogout={nav.logout} />
-      <div className="px-5 pt-8">
-        <div className="rounded-2xl p-6 text-center" style={card({ borderRadius: 20 })}>
-          <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.blue}1f` }}>
-            <Calendar size={24} style={{ color: C.blue }} />
-          </div>
-          <div className="text-[19px] font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>You don't have a workout today</div>
-          {next && (
-            <p className="text-[15px] mt-2" style={{ color: C.sub }}>
-              Next: <span className="font-semibold" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</span>, {when}
-            </p>
-          )}
-          <Btn variant="secondary" className="w-full mt-5" icon={Calendar} onClick={() => nav.go("calendar")}>See your week</Btn>
+      <div className="px-5 pt-10 flex flex-col items-center text-center">
+        <div className="rounded-full w-16 h-16 flex items-center justify-center mb-5" style={{ background: `${accent}1f` }}>
+          {finished ? <Check size={30} strokeWidth={3} style={{ color: accent }} /> : <Calendar size={26} style={{ color: accent }} />}
         </div>
+        <div className="text-[22px] font-bold" style={{ fontFamily: DISPLAY, color: C.text, textWrap: "balance" }}>
+          {finished ? "You're done for today" : "No workout today"}
+        </div>
+        <p className="text-[15px] mt-2 max-w-xs" style={{ color: C.sub }}>
+          {finished ? `${calendarSessionLabel(today.name)} is logged.` : "Rest up."}
+          {next && <> Next up {when}: <span className="font-semibold" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</span>.</>}
+        </p>
       </div>
     </div>
   );
 }
 
-function Workout({ state, setState, nav, dayId }) {
+function Workout({ state, setState, nav, dayId, onExit = null }) {
   const wideWorkout = useIsWide();
   // Measured, not assumed — see useBarClearance.
   const [workoutBarRef, workoutBarPad] = useBarClearance();
@@ -20104,7 +20114,7 @@ function Workout({ state, setState, nav, dayId }) {
         effort={mood}
         queued={loggedSummary?.queued}
         counts={loggedSummary?.counts}
-        onDone={() => nav.go("athlete-program")}
+        onDone={() => (onExit ? onExit() : nav.go("athlete-program"))}
       />
     );
   }
