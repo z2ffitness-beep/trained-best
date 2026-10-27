@@ -19124,9 +19124,9 @@ function MyWorkoutTab({ state, setState, nav }) {
   }
 
   const next = nextScheduledSession(myProgram, todayIso);
-  const when = next
-    ? (next.inDays === 1 ? "tomorrow" : next.date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }))
-    : null;
+  // The date itself, always (Isaiah, 27 Oct): "Wednesday, October 28",
+  // not "tomorrow".
+  const when = next ? next.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : null;
   const finished = !!today && done;
   const accent = finished ? C.olive : C.blue;
   return (
@@ -19141,8 +19141,14 @@ function MyWorkoutTab({ state, setState, nav }) {
         </div>
         <p className="text-[15px] mt-2 max-w-xs" style={{ color: C.sub }}>
           {finished ? `${calendarSessionLabel(today.name)} is logged.` : "Rest up."}
-          {next && <> Next up {when}: <span className="font-semibold" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</span>.</>}
         </p>
+        {next && (
+          <div className="mt-6 w-full max-w-xs rounded-2xl px-4 py-3.5" style={card({ borderRadius: 16 })}>
+            <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Next session</div>
+            <div className="text-[17px] font-bold mt-1" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</div>
+            <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{when}</div>
+          </div>
+        )}
       </div>
     </div>
   );
