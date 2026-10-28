@@ -88,9 +88,14 @@ test("the My Workout tab opens today's session, or says there is none", () => {
   const at = src.indexOf("function MyWorkoutTab");
   assert.ok(at > 0, "the My Workout tab is gone");
   const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/isDayScheduledOn\(d, todayISO\(\)\)/.test(body), "nothing works out which session is today");
+  assert.ok(/isDayScheduledOn\(d, todayIso\)/.test(body), "nothing works out which session is today");
   assert.ok(/<Workout [^>]*dayId=\{today\.id\}/.test(body), "My Workout does not open today's session");
-  assert.ok(/You don't have a workout today/.test(body), "a rest day has no message");
+  assert.ok(/No workout today/.test(body), "a rest day has no message");
+  // 27 Oct: a workout already logged today is not reopened.
+  assert.ok(/You're done for today/.test(body), "a finished day has no message");
+  assert.ok(/today && !done/.test(body), "a finished workout would open again");
+  assert.ok(/onExit=\{\(\) => setDone\(true\)\}/.test(body), "Done on the summary does not lead to the done state");
+  assert.ok(!/Back to My Program/.test(src), "the summary still points at a screen that no longer exists");
   assert.ok(/"athlete-program": <MyWorkoutTab /.test(src), "the tab does not route to My Workout");
   assert.ok(!/function ProgramWorkoutTabs/.test(src), "the My Program | My Workout switch is back");
 });
@@ -253,16 +258,15 @@ test("Today's Workout is the first thing under the greeting", () => {
   assert.ok(stats > session, "the stat tiles come before the session");
 });
 
-test("the check-in moved below the session rather than being deleted", () => {
-  // It carries the Confirm button, and confirming is what tells the coach the
-  // athlete turned up. Losing it would quietly undo that.
+test("no check-in step on Home, and no Start Workout once today is logged", () => {
+  // Isaiah, 27 Oct: logging the workout IS the confirmation; the coach is
+  // told by the session_completed notice. A finished day shows "done".
   const body = dashboard();
-  assert.ok(/const checkinCard = accountabilityOn && todayDay \? \(/.test(body),
-    "the check-in card is gone, and with it the coach's record that anybody showed up");
-  assert.ok(/confirmCheckin/.test(body), "the Confirm button no longer confirms anything");
-  const decl = body.indexOf("const checkinCard");
-  const rendered = body.indexOf("{checkinCard}");
-  assert.ok(rendered > decl, "the card is never rendered");
+  assert.ok(!/\{checkinCard\}/.test(body), "the check-in box is back on Home");
+  assert.ok(/todayDay && \(state\.workoutLogs \|\| \[\]\)\.some\(l => l\?\.date === today\)/.test(body),
+    "Home no longer checks whether today's workout is already logged");
+  assert.ok(/You're done for today/.test(body), "Home has no done state");
+  assert.ok(!/<button onClick=\{onLogout\}/.test(src), "the log-out arrow is back in the header");
 });
 
 test("the check-in still only appears when the coach asked for it", () => {

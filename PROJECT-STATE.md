@@ -1,6 +1,6 @@
 # Trained.best: read this first
 
-**Last updated 26 Oct 2026.** Anyone picking this project up, in any chat, on
+**Last updated 27 Oct 2026.** Anyone picking this project up, in any chat, on
 any machine, starts here. Keep it current: if you change something in this
 repo or the database, update this file in the same commit.
 
@@ -9,7 +9,96 @@ had to be reconstructed from file timestamps.
 
 ---
 
-## 0d. Update, 24 to 26 Oct 2026 (read this first)
+## 00. Simplification plan, agreed with Isaiah 27 Oct 2026 (read this first)
+
+**First principle:** people track their workout and share it with their coach.
+Simple, minimal, aesthetically unified. Every flow has a beginning and an end.
+Focus on the END USER (athlete) side; Isaiah finds the coach side clear.
+**Show Isaiah a visual demo before anything is pushed to GitHub.**
+
+Status on 27 Oct: `workout-done-state` (Done button, "You're done for today",
+Next session card with date) is pushed, NOT merged yet.
+
+### Agreed changes (build in this order)
+1. **Workout flow**
+   - One finish screen instead of two (merge the Rewards screen and Session
+     Logged): sets, time, streak and any badges earned, then Done.
+   - Stop button sheet: two choices only, **Pause** and **Finish**.
+   - Remove the "confirm today's session" check-in step.
+2. **Coach tab (athlete side)**
+   - Everything between a client and their coach lives here, uncluttered:
+     **Messages**, **Sessions** (book, move, cancel), **History** (past
+     sessions, billing). Tabs at the top. The Book tab moves in here.
+   - AI Assistant removed for coached athletes; solo athletes keep it.
+   - Home keeps its sections, but **today's workout is first**, at the top.
+3. **Accounts**
+   - Delete account: one flow for coach and athlete, same words. Sends a
+     confirmation email, returns to the welcome screen (they may re-register),
+     and removes all their data from the coach's side too.
+   - Coach sign-up: account, **business name and logo**, invite code. Drop
+     background, specialties and coaching style.
+4. **Custom rest-timer sounds:** athletes can upload their own sound. Print
+   and the existing sound choices STAY.
+5. **Hidden features (FEATURES flags):** community, payments, program
+   templates, athlete groups, exercise library are built but switched off;
+   nutrition was never built. All are wanted. Isaiah picks which to turn on
+   first, one at a time.
+6. Coach side: remove the session-length alert and accountability switches.
+
+### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
+A coach can change ANYTHING in a client's program, en masse, by typing it in
+plain words. Solo athletes get the same on their own program.
+- Model it on Relay's program chat (Isaiah showed a screenshot, 27 Oct): an
+  AI CHAT that stays open beside the program board, not a one-off box.
+  On computer/tablet: a panel on the right of the Program board. On phone:
+  a full-screen sheet opened from an "Adjust with AI" button on the board.
+  Where: coach's client page (Program tab) and solo athletes' Week > Program.
+- Conversation, many turns: the coach keeps talking ("now make it two
+  phases", "fix week 12 pogo jumps back to 3x10") and the AI keeps editing.
+  The chat history is kept per program.
+- Any scope, in any combination: whole program, certain weeks, certain days,
+  certain phases/blocks, certain sections (Warm-Up, Power, Primary...),
+  certain exercises. Examples: "weeks 5-8: drop all main lifts to 3x5",
+  "every Tuesday: swap bike for rower", "make week 4 a deload",
+  "add a Nordic curl to every lower day", "make this 12-week program two
+  phases: weeks 1-6 Foundation and Aerobic Base, weeks 7-12 Speed-Strength".
+- Anything editable: sets, reps, effort (RPE), rest, loads, exercise swaps,
+  add or remove exercises/sections/days/weeks, weekdays, PHASES (how many,
+  where they start and end, their names), exercise notes/cues, program name.
+- Flow: the coach describes it, the AI DOES IT straight away (no manual
+  clicking, no Save step), then replies in plain words with what it did
+  and a change card under the reply, like Relay's "24 changes / 24 workouts
+  edited": tap to expand and see each workout changed. Every change card has
+  Undo. Logged results are never touched.
+- Implementation notes: send the current program JSON plus the request and
+  the chat so far to /api/chat (callAI, streams, loading percentage); the AI
+  returns the edited program plus a short summary, not free text alone.
+  Week-scoped changes must be written as byWeek entries so other weeks stay
+  untouched; phase changes need a stored phase list (name + start/end week),
+  since today blocks are inferred. Validate before applying (no empty days,
+  every exercise resolves); if it fails, apply nothing and say why. Save
+  through the same path as the manual editor so the client sees it at once.
+- Manual editing stays exactly as it is alongside this.
+
+### Coach can't edit today (asked 27 Oct, Isaiah to decide)
+A client's profile details (goals, injuries, body metrics, training days);
+a logged workout (wrong weight); a note back to the client on a session;
+the program name from the client page; exercise notes/cues. The last two
+are covered by Adjust with AI above.
+
+### Decided: leave as is
+- Home, My Workout and Week stay as three tabs.
+- Week keeps BOTH Program (plan in theory) and Calendar (plan over time).
+- Athlete Profile keeps every section (body metrics, stats, injuries, form
+  checks, progress, coach). Thorough capture beats frequency of use.
+- Streak, points and badges all stay (solo athletes need gamification too).
+- Print and rest-sound choice stay.
+- Coach Home keeps its overview (compliance, billing, issues at a glance).
+- Coach client page keeps all its sections; tweaks only, no removals.
+- Program editing stays manual and must show to the client seamlessly.
+- Athlete sign-up questions stay; the existing sign-up is fine.
+
+## 0d. Update, 24 to 26 Oct 2026
 
 - **Merged to main on 24 Oct:** the clean-up list (0c), timer and phone
   notifications (0b), Program tab without the Today card or weekday picker,
@@ -86,6 +175,17 @@ had to be reconstructed from file timestamps.
   `athlete-program-edit`, reached from Edit on a day of the Week > Program
   board (solo athletes only); it still owns the no-program states, print and
   rest-timer sound. Tests updated: navtour, paused, program-board.
+- **27 Oct: everything above through `workout-tab-calendar-labels` is MERGED
+  to main (PR #4) and live.** Isaiah's phone icon had been saved from an old
+  Vercel preview link (Vercel toolbar visible), which is why it showed an old
+  build; re-added from trained-best.vercel.app. Clients who added the app
+  from a preview link need to re-add it the same way.
+- **Branch `workout-done-state` (off main), 27 Oct:** the Session Logged
+  button is "Done" (was "Back to My Program", which reopened the same
+  workout on the My Workout tab). My Workout shows "You're done for today"
+  once today's workout is logged, and "No workout today" on a rest day, each
+  with the next session and no buttons. `MyWorkoutTab` reads "logged today"
+  once on open so a workout finished there keeps its summary until Done.
 - Isaiah wants a demo shown before anything is pushed to GitHub.
 - `_verify/last-time.test.mjs` fails 1 of 53 on 26 Oct ("rolls over on
   Monday whatever the season", 21 vs 22) with or without this work. Date
