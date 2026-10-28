@@ -12149,6 +12149,104 @@ function AthleteDetailTabs({ tab, onChange }) {
   );
 }
 
+// A coach updating a client's goals, injuries, training days and body
+// metrics (Isaiah, 28 Oct). The same questions the athlete answered at signup,
+// so the answers stay in the shape the program builder reads. Saved through
+// coach_update_athlete (migration 014), which allows exactly these fields.
+const CLIENT_DETAIL_TABS = [
+  { key: "goals", label: "Goals", steps: ["🎯 Goals"] },
+  { key: "injuries", label: "Injuries", steps: ["🩹 Injuries"] },
+  { key: "days", label: "Days", steps: ["📅 Training Schedule"] },
+  { key: "body", label: "Body", steps: ["📏 Height", "⚖️ Weight"] },
+];
+
+function clientDetailsDraft(a) {
+  const i = a?.intake || {};
+  return {
+    goals: a?.goals?.length ? a.goals : (i.goals || []),
+    injuries: i.injuries || a?.injuries || [],
+    injuryDetail: i.injuryDetail || {},
+    injuryNotes: i.injuryNotes || "",
+    trainingDays: i.trainingDays || [],
+    sessionMinutes: i.sessionMinutes ?? null,
+    heightCm: a?.heightCm ? Number(a.heightCm) : (i.heightCm || 178),
+    weightLb: a?.weightKg ? kgToLb(Number(a.weightKg)) : (i.weightLb || 175),
+    heightUnit: i.heightUnit || "imperial",
+    weightUnit: i.weightUnit || "lb",
+  };
+}
+
+function CoachClientDetailsModal({ athlete, open, onClose, onSaved }) {
+  const [data, setData] = useState(() => clientDetailsDraft(athlete));
+  const [tab, setTab] = useState("goals");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (open) { setData(clientDetailsDraft(athlete)); setTab("goals"); setError(null); setSaving(false); }
+  }, [open, athlete?.id]);
+  if (!open || !athlete) return null;
+
+  const first = (athlete.name || "Client").split(" ")[0];
+  const steps = CLIENT_DETAIL_TABS.find(t => t.key === tab)?.steps || [];
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    const injuries = (data.injuries || []).filter(x => x && x !== "None currently");
+    const weightKg = data.weightLb ? lbToKg(Number(data.weightLb)) : null;
+    const heightCm = data.heightCm ? Math.round(Number(data.heightCm)) : null;
+    const intake = {
+      goals: data.goals || [], injuries: data.injuries || [], injuryDetail: data.injuryDetail || {},
+      injuryNotes: data.injuryNotes || "", trainingDays: data.trainingDays || [], sessionMinutes: data.sessionMinutes ?? null,
+      heightCm, weightLb: data.weightLb ? Number(data.weightLb) : null,
+      heightUnit: data.heightUnit, weightUnit: data.weightUnit,
+    };
+    const { error: e } = await supabase.rpc("coach_update_athlete", {
+      p_athlete_id: athlete.id,
+      p_goals: data.goals || [],
+      p_injuries: injuries,
+      p_weight_kg: weightKg,
+      p_height_cm: heightCm,
+      p_intake: intake,
+    });
+    if (e) {
+      setSaving(false);
+      setError(e.message || "That didn't save. Check your connection and try again.");
+      return;
+    }
+    onSaved({
+      ...athlete,
+      goals: data.goals || [], injuries,
+      weightKg: weightKg ?? athlete.weightKg, heightCm: heightCm ?? athlete.heightCm,
+      intake: { ...(athlete.intake || {}), ...intake },
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} onClose={() => !saving && onClose()} title={`${first}'s details`}>
+      <div className="mb-4">
+        <SegmentedTabs value={tab} onChange={setTab} options={CLIENT_DETAIL_TABS.map(t => ({ key: t.key, label: t.label }))} />
+      </div>
+      {steps.map(step => (
+        <div key={step} className="mb-5">
+          {steps.length > 1 && (
+            <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>{step.replace(/^\S+\s/, "")}</div>
+          )}
+          <OnboardingStepBody role="athlete" stepName={step} data={data} setData={setData} />
+        </div>
+      ))}
+      {error && <div className="text-[12.5px] mb-2" style={{ color: C.red }}>{error}</div>}
+      <p className="text-[11px] mb-3" style={{ color: C.faint }}>
+        Saves all four tabs. The next program you build for {first} uses these answers. Their current program doesn't change.
+      </p>
+      <Btn className="w-full" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save details"}</Btn>
+    </Modal>
+  );
+}
+
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
@@ -12189,6 +12287,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const [tab, setTab] = useState("overview");
   // The logged session the coach is replying to or correcting.
   const [replyLog, setReplyLog] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   // Sessions and credits are loaded by the booking screens, which this page is
   // not. Without this the removal dialog would report zero unused sessions for
@@ -12553,14 +12652,36 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         <AthleteDetailTabs tab={tab} onChange={setTab} />
 
         {tab === "overview" && (<>
-          {(athlete.goals || []).length > 0 && (
-            <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
-              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
+          {/* Goals, training days and body metrics, with Edit (Isaiah, 28 Oct).
+              Always shown now, so a client who skipped their goals can have
+              them filled in by the coach. */}
+          <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Client Details</div>
+              <button onClick={() => setDetailsOpen(true)} className="text-[12.5px] font-semibold rounded-full px-3 py-1"
+                style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>Edit</button>
+            </div>
+            {(athlete.goals || []).length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
               </div>
+            ) : (
+              <div className="text-[12.5px]" style={{ color: C.faint }}>No goals set.</div>
+            )}
+            <div className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: C.sub }}>
+              {(() => {
+                const days = WEEKDAY_ORDER.filter(d => (athlete.intake?.trainingDays || []).includes(d));
+                const bits = [
+                  days.length ? `Trains ${days.map(d => d.slice(0, 3)).join(", ")}` : "No training days set",
+                  athlete.weightKg ? `${Math.round(kgToLb(Number(athlete.weightKg)))} lb` : null,
+                  athlete.heightCm ? (() => { const { ft, inch } = cmToFtIn(Number(athlete.heightCm)); return `${ft}'${inch}"`; })() : null,
+                ].filter(Boolean);
+                return bits.join(" · ");
+              })()}
             </div>
-          )}
+          </div>
+          <CoachClientDetailsModal athlete={athlete} open={detailsOpen} onClose={() => setDetailsOpen(false)}
+            onSaved={(updated) => setState(s => ({ ...s, athletes: s.athletes.map(a => (a.id === updated.id ? { ...a, ...updated } : a)) }))} />
 
           {/* Weekly accountability tracker */}
           {(() => {
