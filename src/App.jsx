@@ -551,7 +551,85 @@ const HERO = {
 };
 
 // The soft glow behind primary buttons and the "today" marker, both themes.
-const GLOW = "rgba(46,134,255,.35)";
+// `let` because a coach's brand colour replaces it (see setBrandAccent).
+let GLOW = "rgba(46,134,255,.35)";
+
+// ---------- the coach's colour across the whole app ----------
+//
+// Isaiah, 28 Oct: the app should look like the coach's or gym's own. Their
+// brand colour becomes the app's accent (buttons, highlights, today's
+// marker) for them and for every client on their roster. Any colour can be
+// picked, so it is nudged lighter or darker until white text on it and the
+// colour itself on the page are both readable, in light and dark mode.
+const GLOW_DEFAULT = GLOW;
+const HERO_DEFAULTS = { ...HERO };
+let brandAccentHex = null;
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex([r, g, b]) {
+  return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+function relativeLuminance(rgb) {
+  const [r, g, b] = rgb.map(v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function mixRgb(a, b, t) { return a.map((v, i) => v + (b[i] - v) * t); }
+function rgbaOf(hex, alpha) { const c = hexToRgb(hex) || [46, 134, 255]; return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`; }
+
+// White text on it needs luminance at most 0.30 (3:1). On a dark page it also
+// needs at least 0.118 to stand out (3:1 against the navy). A colour outside
+// that is blended toward black or white, keeping its hue, until it fits.
+function readableAccent(hex, theme) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+  const max = 0.30;
+  const min = theme === "dark" ? 0.118 : 0;
+  let L = relativeLuminance(rgb);
+  if (L > max) {
+    for (let t = 0.05; t <= 1; t += 0.05) {
+      const c = mixRgb(rgb, [0, 0, 0], t);
+      if (relativeLuminance(c) <= max) return rgbToHex(c);
+    }
+  }
+  if (L < min) {
+    for (let t = 0.05; t <= 1; t += 0.05) {
+      const c = mixRgb(rgb, [255, 255, 255], t);
+      if (relativeLuminance(c) >= min) return rgbToHex(c);
+    }
+  }
+  return rgbToHex(rgb);
+}
+
+// Applies (or, with null, removes) the brand colour and repaints.
+function setBrandAccent(hex) {
+  const next = hexToRgb(hex) ? String(hex).toUpperCase() : null;
+  if (next === brandAccentHex) return;
+  brandAccentHex = next;
+  applyTheme(storedTheme());
+  themeWatchers.forEach(fn => { try { fn(); } catch { /* unmounted */ } });
+}
+
+// The brand this phone last showed, so the sign-in screen can show it too:
+// a client opening their coach's app sees their coach's logo before they have
+// typed a password. Public information only (name, logo, colour).
+const LAST_BRAND_KEY = "tb_last_brand";
+function rememberedBrand() {
+  try {
+    const b = JSON.parse(localStorage.getItem(LAST_BRAND_KEY) || "null");
+    return b && b.name ? b : null;
+  } catch { return null; }
+}
+function rememberBrand(brand) {
+  try {
+    if (brand && brand.name) localStorage.setItem(LAST_BRAND_KEY, JSON.stringify({ name: brand.name, logoUrl: brand.logoUrl || null, color: brand.color || null, initials: brand.initials || null }));
+    else localStorage.removeItem(LAST_BRAND_KEY);
+  } catch { /* storage blocked */ }
+}
 
 const THEME_KEY = "trainedbest:theme";
 
@@ -607,6 +685,27 @@ const card = (extra = {}) => ({
 function applyTheme(mode) {
   const resolved = resolveTheme(mode);
   Object.assign(C, resolved === "light" ? LIGHT_PALETTE : DARK_PALETTE);
+  Object.assign(HERO, HERO_DEFAULTS);
+  GLOW = GLOW_DEFAULT;
+  if (brandAccentHex) {
+    const a = readableAccent(brandAccentHex, resolved);
+    const aRgb = hexToRgb(a);
+    C.orange = a;
+    C.gradTo = a;
+    C.gradFrom = rgbToHex(mixRgb(aRgb, [255, 255, 255], 0.18));
+    // The second accent (links, dates, small highlights) follows it too, or
+    // half the app stays the default blue. Lighter on dark, where it is text
+    // on navy.
+    C.blue = resolved === "dark"
+      ? rgbToHex(mixRgb(hexToRgb(readableAccent(brandAccentHex, "dark")), [255, 255, 255], 0.3))
+      : a;
+    GLOW = rgbaOf(a, 0.35);
+    // The navy feature panels are dark in both themes.
+    const h = readableAccent(brandAccentHex, "dark");
+    HERO.accent = h;
+    HERO.accentText = rgbToHex(mixRgb(hexToRgb(h), [255, 255, 255], 0.3));
+    HERO.glow = `radial-gradient(circle at 85% 0%, ${rgbaOf(h, 0.55)}, transparent 55%)`;
+  }
   // The page behind the app is painted by index.css, which can't see `C`. Both
   // are set so there's no dark gutter under a short page or behind the
   // rubber-band overscroll on iOS.
@@ -620,7 +719,9 @@ function applyTheme(mode) {
   return resolved;
 }
 
-// Applied at module load, before React mounts.
+// Applied at module load, before React mounts. The colour of the brand this
+// phone last showed comes first, so the sign-in screen is already theirs.
+brandAccentHex = hexToRgb(rememberedBrand()?.color) ? String(rememberedBrand().color).toUpperCase() : null;
 applyTheme(storedTheme());
 
 // System mode has to follow the device while the app is OPEN, not only at
@@ -6974,7 +7075,12 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
-      <Dumbbell size={40} style={{ color: C.orange }} />
+      {(() => {
+        const b = rememberedBrand();
+        return b
+          ? <CoachBrandMark name={b.name} logoUrl={b.logoUrl} color={b.color} initials={b.initials} size={56} />
+          : <Dumbbell size={40} style={{ color: C.orange }} />;
+      })()}
       <h1 className="mt-4 text-3xl tracking-tight text-center" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>WELCOME BACK</h1>
 
       <div className="mt-10 w-full max-w-sm">
@@ -7554,7 +7660,14 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           fontSize: wide ? "clamp(44px, 4.2vw, 58px)" : "clamp(26px, 7.5vw, 34px)",
           letterSpacing: "-.035em", color: HERO.text, lineHeight: 1, whiteSpace: "nowrap",
         }}>
-          TRAINED<span style={{ color: HERO.accent }}>.BEST</span>
+          {rememberedBrand() ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 14, fontStyle: "normal" }}>
+              {rememberedBrand().logoUrl && (
+                <img src={rememberedBrand().logoUrl} alt="" style={{ width: wide ? 72 : 48, height: wide ? 72 : 48, borderRadius: 14, objectFit: "cover" }} />
+              )}
+              <span style={{ fontSize: wide ? "clamp(32px, 3vw, 44px)" : "clamp(22px, 6.5vw, 28px)", whiteSpace: "normal" }}>{rememberedBrand().name}</span>
+            </div>
+          ) : (<>TRAINED<span style={{ color: HERO.accent }}>.BEST</span></>)}
         </div>
       </div>
     </HeroPanel>
@@ -15302,6 +15415,8 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
     // someone who asked to be forgotten.
     storageSet(SESSION_DRAFT_KEY, null);
     writeSessionTimer(null);
+    rememberBrand(null);
+    setBrandAccent(null);
     // Only this account's queued sessions. The queue is one list shared by
     // everyone who has signed in on the device, and clearing it wholesale
     // destroyed a different athlete's unsent training.
@@ -15615,6 +15730,24 @@ function CoachProfile({ state, setState, nav }) {
                     boxShadow: coach.brandColor === hex ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${hex}` : `0 0 0 1px ${C.border}`,
                   }} />
               ))}
+              {/* Any colour (28 Oct): the exact one from their logo. */}
+              {(() => {
+                const custom = coach.brandColor && !BRAND_COLORS.includes(coach.brandColor) ? coach.brandColor : null;
+                return (
+                  <label aria-label="Pick your own brand colour" className="relative cursor-pointer flex items-center justify-center"
+                    style={{
+                      width: 32, height: 32, borderRadius: "50%",
+                      background: custom || "conic-gradient(#FF5D6E, #F0A93C, #2BC47A, #2E86FF, #7C5CFC, #FF5D6E)",
+                      boxShadow: custom ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${custom}` : `0 0 0 1px ${C.border}`,
+                    }}>
+                    <input type="color" value={custom || "#2E86FF"} onChange={e => saveBrandColor(e.target.value.toUpperCase())}
+                      className="absolute inset-0 opacity-0 cursor-pointer" style={{ width: 32, height: 32 }} />
+                  </label>
+                );
+              })()}
+            </div>
+            <div className="text-[11.5px] mt-1.5" style={{ color: C.faint }}>
+              Becomes the colour of buttons and highlights in your app and your clients' apps. The last one picks any colour.
             </div>
           </div>
 
@@ -15631,7 +15764,7 @@ function CoachProfile({ state, setState, nav }) {
                 />
               </div>
               <div className="text-[11.5px] mt-2" style={{ color: C.faint }}>
-                Their app header, sign-up screen and printed workouts show your name and logo. "by Trained.Best" stays small underneath.
+                Their app header, sign-in screen, home-screen icon and printed workouts show your name and logo, in your colour. "by Trained.Best" stays small underneath.
               </div>
             </div>
           )}
@@ -19492,6 +19625,32 @@ function nextScheduledSession(program, fromIso = todayISO(), lookAhead = 21) {
   return null;
 }
 
+// Sessions still coming up, nearest first, leaving out any that have already
+// been moved, skipped or pulled to another day.
+function upcomingSessions(program, moves, fromIso = todayISO(), lookAhead = 21) {
+  const out = [];
+  for (let i = 1; i <= lookAhead; i++) {
+    const iso = shiftDays(fromIso, i);
+    for (const day of program?.days || []) {
+      if (isDayScheduledOn(day, iso) && !moveFor(moves, day.name, iso)) out.push({ day, iso, inDays: i });
+    }
+  }
+  return out;
+}
+
+// The session today, by the program or because one was pulled to today.
+// A pulled one wins: the athlete chose it on purpose.
+function sessionForToday(program, moves, logs, todayIso = todayISO()) {
+  const days = program?.days || [];
+  const pull = (moves || []).find(m => m?.kind === "pull" && m?.toDate === todayIso
+    && !(logs || []).some(l => l?.date === todayIso && l?.programDay === m.programDay));
+  const pulled = pull ? days.find(d => d.name === pull.programDay) : null;
+  if (pulled) return pulled;
+  return days.find(d => isDayScheduledOn(d, todayIso) && !moveFor(moves, d.name, todayIso)) || null;
+}
+
+const longDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
 function MyWorkoutTab({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const todayIso = todayISO();
@@ -19501,19 +19660,34 @@ function MyWorkoutTab({ state, setState, nav }) {
   // on this screen keeps its summary until Done, and only then turns into
   // the done state, instead of vanishing the moment the log saves.
   const [done, setDone] = useState(loggedToday);
+  // A future session the athlete chose to do today (Isaiah, 28 Oct): a
+  // wedding on the Saturday, so Saturday's workout gets done on Thursday.
+  const [earlyDayId, setEarlyDayId] = useState(null);
+  const [showMore, setShowMore] = useState(false);
 
   if (!myProgram || !(myProgram.days || []).length) {
     return <AthleteProgram state={state} setState={setState} nav={nav} />;
   }
-  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
+  const moves = state.sessionMoves || [];
+  const exit = () => { setEarlyDayId(null); setDone(true); };
+  if (earlyDayId) {
+    return <Workout state={state} setState={setState} nav={nav} dayId={earlyDayId} onExit={exit} />;
+  }
+  const today = sessionForToday(myProgram, moves, state.workoutLogs, todayIso);
   if (today && !done) {
-    return <Workout state={state} setState={setState} nav={nav} dayId={today.id} onExit={() => setDone(true)} />;
+    return <Workout state={state} setState={setState} nav={nav} dayId={today.id} onExit={exit} />;
   }
 
-  const next = nextScheduledSession(myProgram, todayIso);
-  // The date itself, always (Isaiah, 27 Oct): "Wednesday, October 28",
-  // not "tomorrow".
-  const when = next ? next.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : null;
+  // A pull, the same kind "Do it today" on a missed session uses: the session
+  // leaves its own day and shows on today, and if they stop part way it goes
+  // back to its day.
+  const doToday = (item) => {
+    saveSessionMove(setState, state.me.id, { programDay: item.day.name, fromDate: item.iso, toDate: todayIso, kind: "pull" });
+    setEarlyDayId(item.day.id);
+  };
+
+  const upcoming = upcomingSessions(myProgram, moves, todayIso);
+  const next = upcoming[0] || null;
   const finished = !!today && done;
   const accent = finished ? C.olive : C.blue;
   return (
@@ -19533,8 +19707,35 @@ function MyWorkoutTab({ state, setState, nav }) {
           <div className="mt-6 w-full max-w-xs rounded-2xl px-4 py-3.5" style={card({ borderRadius: 16 })}>
             <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Next session</div>
             <div className="text-[17px] font-bold mt-1" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</div>
-            <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{when}</div>
+            <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{longDate(next.iso)}</div>
+            <Btn size="sm" variant="secondary" className="w-full mt-3" onClick={() => doToday(next)}>Do it today instead</Btn>
           </div>
+        )}
+        {upcoming.length > 1 && (
+          <div className="mt-3 w-full max-w-xs text-left">
+            <button onClick={() => setShowMore(v => !v)} className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+              {showMore ? "Hide other workouts" : "Do a different upcoming workout today"}
+            </button>
+            {showMore && (
+              <div className="space-y-2 mt-1">
+                {upcoming.slice(1, 8).map(item => (
+                  <div key={`${item.iso}-${item.day.id}`} className="rounded-xl px-3.5 py-2.5 flex items-center gap-3" style={card({ borderRadius: 14 })}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{calendarSessionLabel(item.day.name)}</div>
+                      <div className="text-[12.5px]" style={{ color: C.sub }}>{longDate(item.iso)}</div>
+                    </div>
+                    <button onClick={() => doToday(item)} className="text-[12.5px] font-semibold rounded-full px-3 py-1.5 shrink-0"
+                      style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>Do today</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {upcoming.length > 0 && (
+          <p className="text-[11px] mt-4 max-w-xs" style={{ color: C.faint }}>
+            Doing one early takes it off its own day, so you won't be asked about it twice.
+          </p>
         )}
       </div>
     </div>
@@ -24556,7 +24757,21 @@ function CalendarViewPage({ state, setState, nav }) {
   const dateStrFor = (day) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   // Program days recur weekly by their assigned weekday (optionally bounded to
   // a start date + N weeks) — not tied to a single calendar week.
-  const scheduledDayFor = (ds) => (myProgram?.days || []).find(d => isDayScheduledOn(d, ds));
+  // Moves count here too (28 Oct): a session pulled to today, or moved, shows
+  // on the day it will actually happen, and not on the day it left.
+  const calMoves = state.sessionMoves || [];
+  const scheduledDayFor = (ds) => {
+    const days = myProgram?.days || [];
+    const arriving = calMoves.find(m => m?.toDate === ds && m?.kind !== "skip");
+    const moved = arriving ? days.find(d => d.name === arriving.programDay) : null;
+    if (moved) return moved;
+    return days.find(d => isDayScheduledOn(d, ds) && !moveFor(calMoves, d.name, ds));
+  };
+  const doToday = (day, ds) => {
+    saveSessionMove(setState, state.me.id, { programDay: day.name, fromDate: ds, toDate: todayISO(), kind: "pull" });
+    setOpenDate(null);
+    nav.go("athlete-program");
+  };
 
   const cells = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
@@ -24678,6 +24893,7 @@ function CalendarViewPage({ state, setState, nav }) {
         onAddSkip={addSkip}
         onRemoveSkip={removeSkip}
         colorOf={(id) => programDayColor(myProgram, id)}
+        onDoToday={openDate && openDate > todayISO() && scheduledDayFor(openDate) ? () => doToday(scheduledDayFor(openDate), openDate) : null}
       />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
@@ -24687,7 +24903,7 @@ function CalendarViewPage({ state, setState, nav }) {
 }
 
 
-function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip, colorOf }) {
+function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip, colorOf, onDoToday = null }) {
   const [clearStart, setClearStart] = useState("");
   const [clearEnd, setClearEnd] = useState("");
 
@@ -24724,6 +24940,10 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
             <div className="mt-1.5">
               <SessionModeTag mode={sessionModeFor(day, date)} overridden={sessionModeIsOverridden(day, date)} />
             </div>
+            {/* Busy that day? Do it today instead (Isaiah, 28 Oct). */}
+            {onDoToday && (
+              <Btn size="sm" className="mt-3" icon={Play} onClick={onDoToday}>Do it today instead</Btn>
+            )}
           </div>
 
           {/* What actually happened, when this day has already been trained.
@@ -28487,6 +28707,30 @@ function AppInner() {
     [unreadNotifications]
   );
 
+  // The brand everywhere it can go (Isaiah, 28 Oct): the app's colour, the
+  // name in the browser tab and under the home-screen icon, the icon itself,
+  // and the sign-in screen next time. Only once the coach's row has loaded,
+  // so a client is never flashed back to the default and forth again.
+  // Up here, above the early returns, like every other hook in this shell.
+  const cp = state.coachProfile || {};
+  const liveBrand = (cp.id && (cp.businessName || cp.logoPath))
+    ? { name: cp.businessName || cp.name || "Coach", color: cp.brandColor, logoUrl: coachLogoUrl(cp.logoPath), initials: cp.avatar }
+    : null;
+  const brandKey = liveBrand ? `${liveBrand.name}|${liveBrand.color}|${liveBrand.logoUrl}` : "";
+  const brandReady = !!authed && (authed === "coach" || !state.me?.coachId || !!cp.id);
+  useEffect(() => {
+    if (!brandReady) return;
+    setBrandAccent(liveBrand?.color || null);
+    rememberBrand(liveBrand);
+    try {
+      const name = liveBrand?.name || "Trained.best";
+      document.title = name;
+      document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute("content", name);
+      const icon = document.querySelector('link[rel="apple-touch-icon"]');
+      if (icon) icon.setAttribute("href", liveBrand?.logoUrl || "/apple-touch-icon.png");
+    } catch { /* no document */ }
+  }, [brandKey, brandReady]);
+
   // Sessions that were finished with no connection send themselves from here:
   // on launch, whenever the connection returns, and on a slow poll for the
   // phones that never fire an online event at all.
@@ -28695,9 +28939,11 @@ function AppInner() {
   // print sheet. `coachProfile` already holds the right row either way - a
   // coach's own data when signed in as a coach, their linked coach's data
   // when signed in as an athlete - so one check covers both.
-  const coachBrand = (state.coachProfile?.id && state.coachProfile?.businessName)
+  // A logo on its own is branding too (28 Oct): it used to need a business
+  // name before anything showed. Without a name, the coach's own name is used.
+  const coachBrand = (state.coachProfile?.id && (state.coachProfile?.businessName || state.coachProfile?.logoPath))
     ? {
-        name: state.coachProfile.businessName,
+        name: state.coachProfile.businessName || state.coachProfile.name || "Coach",
         color: state.coachProfile.brandColor,
         logoUrl: coachLogoUrl(state.coachProfile.logoPath),
         initials: state.coachProfile.avatar,
@@ -28735,7 +28981,7 @@ function AppInner() {
                   background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
                   borderBottom: `1px solid ${C.border}`,
                 }}>
-                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={26} />
+                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={32} />
               </div>
             )}
             {screen}

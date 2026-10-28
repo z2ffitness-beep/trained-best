@@ -95,7 +95,7 @@ test("the tab bar is rendered, and is driven by the list", () => {
 
 const SECTIONS = {
   // needle in the source            -> the tab it belongs behind
-  "Client Goals": "overview",
+  "Client Details": "overview",
   "Weekly accountability tracker": "overview",
   '<ChalkDivider label="End Coaching" />': "overview",
   '<ChalkDivider label="Assigned Program — Edit" />': "program",
