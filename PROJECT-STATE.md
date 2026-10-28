@@ -45,6 +45,20 @@ Next session card with date) is pushed, NOT merged yet.
    first, one at a time.
 6. Coach side: remove the session-length alert and accountability switches.
 
+### Progress (28 Oct)
+- DONE, live: #10 check-in step removed; Done button; "You're done for
+  today" on Home and My Workout; log-out arrow removed from headers (Log Out
+  is in Profile only); streak pill no longer logs out.
+- Branch `simplify-batch-1` (28 Oct): #6 one finish screen (RewardsScreen is
+  the only one, summary folded in, SessionLoggedScreen deleted); #9 Stop
+  sheet = Pause / Finish; #1 today's workout first on Home, then booked
+  sessions, then missed cards; #4 coached athletes get coach thread only, no
+  AI tab, self-guided get AI only; #16 Accountability and Session-Length
+  switches removed from coach Profile, Session Length panel always on,
+  "Today's Check-ins" became "Today's Workouts" (logged today = done).
+- Next: batch 2 Coach tab (#3), batch 3 accounts (#19, #18), batch 4 custom
+  sound (#8), batch 5 Adjust with AI.
+
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
 plain words. Solo athletes get the same on their own program.

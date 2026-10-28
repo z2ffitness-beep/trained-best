@@ -12576,12 +12576,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             );
           })()}
 
-          {state.coachProfile?.complianceAlerts !== false && (
-            <>
-              <ChalkDivider label="Session Length" />
-              <CompliancePanel logs={athleteLogs} />
-            </>
-          )}
+          {/* Always on now the Session-Length Alerts switch is gone (28 Oct). */}
+          <ChalkDivider label="Session Length" />
+          <CompliancePanel logs={athleteLogs} />
 
           {/* At the very bottom, on its own, the way a destructive action should
               be: reachable when wanted, never beside something routine.
@@ -15427,23 +15424,6 @@ function CoachProfile({ state, setState, nav }) {
           )}
         </div>
 
-        {/* Accountability Toggle */}
-        <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${accountabilityOn ? C.orange : C.border}` }}>
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="text-[15px] font-semibold" style={{ color: C.text }}>Accountability Mode</div>
-              <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                {accountabilityOn ? "Athletes must check off sessions · Reminders active" : "Session check-offs disabled · No reminders"}
-              </div>
-            </div>
-            <button onClick={toggleAccountability} className="relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors"
-              style={{ background: accountabilityOn ? C.orange : C.border }}>
-              <span className="inline-block h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5"
-                style={{ transform: accountabilityOn ? "translateX(22px)" : "translateX(2px)" }} />
-            </button>
-          </div>
-        </div>
-
         {/* Cancellation notice period. A number, because a dropdown of hours is
             a worse way to say "24". */}
         <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
@@ -15472,36 +15452,12 @@ function CoachProfile({ state, setState, nav }) {
           </p>
         </div>
 
-        {/* Session-Length Alerts Toggle */}
-        <div className="rounded-xl p-4 mb-5" style={{ ...card(), border: `1px solid ${complianceOn ? C.orange : C.border}` }}>
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="text-[15px] font-semibold" style={{ color: C.text }}>Session-Length Alerts</div>
-              <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                {complianceOn
-                  ? "Flags a session taking about twice an athlete's normal"
-                  : "Off — no session-length flags on athlete pages"}
-              </div>
-            </div>
-            <button onClick={toggleCompliance} aria-label="Toggle session-length alerts"
-              className="relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors"
-              style={{ background: complianceOn ? C.orange : C.border }}>
-              <span className="inline-block h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5"
-                style={{ transform: complianceOn ? "translateX(22px)" : "translateX(2px)" }} />
-            </button>
-          </div>
-          {complianceOn && (
-            <p className="text-[11px] mt-2.5 leading-relaxed" style={{ color: C.faint }}>
-              An athlete can switch their own timer off. Their sessions then read
-              "not timed" rather than disappearing, so you can ask them why.
-            </p>
-          )}
-        </div>
-
-        {/* Checkin status — today's roster */}
-        {accountabilityOn && (
+        {/* Today's roster. Was "check-ins", which athletes no longer do (28 Oct):
+            a workout logged today is what marks someone done. Always shown now
+            the Accountability switch is gone. */}
+        {(
           <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
-            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>Today's Check-ins</div>
+            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>Today's Workouts</div>
             {state.athletes.length === 0 ? (
               <div className="text-[15px] text-center py-3" style={{ color: C.faint }}>No athletes yet.</div>
             ) : (
@@ -15517,7 +15473,7 @@ function CoachProfile({ state, setState, nav }) {
                   // was `confirmedToday` — the COACH's personal check-in state,
                   // shared across the whole roster and always empty on a coach
                   // account, so everyone showed as Pending forever.
-                  const checked = !!a.checkins?.[today]?.confirmed;
+                  const checked = (a.workoutLogs || []).some(l => l?.date === today);
                   return (
                     <div key={a.id} className="flex items-center gap-3 rounded-lg p-2.5" style={{ background: C.bg }}>
                       <Avatar initials={a.avatar} size={32} photoUrl={a.photoUrl} />
@@ -15985,109 +15941,10 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         </div>
       </div>
 
-      {/* Booked sessions with the coach. Clients only: a coach in their own
-          training mode is the one running the sessions. */}
-      {FEATURES.booking && !isCoach && state.coachProfile && (
-        <div className="px-5 pt-3"><AthleteSessionCard state={state} setState={setState} nav={nav} /></div>
-      )}
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
-
-        {/* Above today's workout, and on every day including rest days,
-            because a session somebody stopped half way through is the most
-            urgent thing on this screen until they decide what to do with it.
-            Silence is how an hour of work gets lost. */}
-        {pausedWorkout && pausedDay && (
-          <div className="rounded-2xl p-4 mb-5" style={{ ...card(), border: `1px solid ${C.blue}` }}>
-            <div className="flex items-start gap-2.5">
-              <Pause size={16} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
-              <div className="min-w-0 flex-1">
-                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
-                  Do you want to finish your {sessionLabel(pausedWorkout.dayName)} workout?
-                </div>
-                <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
-                  You stopped at exercise {(Number(pausedWorkout.exIdx) || 0) + 1}
-                  {pausedWhenLabel(pausedWorkout.date, today) ? ` ${pausedWhenLabel(pausedWorkout.date, today)}` : ""}.
-                  {" "}Your sets are saved.
-                </p>
-                {confirmDrop ? (
-                  <>
-                    {/* Two steps, because this is the one button here that
-                        destroys something and a mis-tap on a phone in a gym
-                        bag is a real way to lose a session. */}
-                    <p className="text-[12.5px] mt-3" style={{ color: C.red }}>
-                      Drop it? The sets you logged in that session are deleted.
-                    </p>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <Btn size="sm" variant="confirm" onClick={dropPaused}>Yes, drop it</Btn>
-                      <Btn size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>Keep it</Btn>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    <Btn size="sm" variant="primary" onClick={resumePaused}>Yes, finish it</Btn>
-                    <Btn size="sm" variant="ghost" onClick={keepPausedForNow}>No, save it as is</Btn>
-                    <Btn size="sm" variant="danger" onClick={() => setConfirmDrop(true)}>Drop it</Btn>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* What did not happen, and the three things that can be done about
-            it. Above today's workout, because an athlete with a missed
-            Wednesday is deciding between catching it up and carrying on, and
-            that decision belongs before the card that assumes carrying on.
-
-            Capped at two. The whole list is on the Plan; a home screen that
-            leads with five red cards is a home screen people stop opening. */}
-        {missed.slice(0, 2).map(item => (
-          <div key={`${item.date}-${item.day.name}`} className="rounded-2xl p-4 mb-4"
-            style={{ ...card(), border: `1px solid ${C.red}66` }}>
-            <div className="flex items-start gap-2.5">
-              <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: C.red }} />
-              <div className="min-w-0 flex-1">
-                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
-                  You missed {sessionLabel(item.day.name)}
-                </div>
-                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>
-                  It was due {pausedWhenLabel(item.date, today) || "earlier"}. Catch it up, move it, or let it go.
-                </p>
-                <div className="flex flex-wrap gap-2 mt-3">
-                  <Btn size="sm" variant="primary"
-                    onClick={() => {
-                      // A pull, not a move: if they start it and stop part
-                      // way, it goes back to the day it was due rather than
-                      // quietly rewriting the week.
-                      saveSessionMove(setState, state.me.id, {
-                        programDay: item.day.name, fromDate: item.date, toDate: today, kind: "pull",
-                      });
-                      const target = (myProgram?.days || []).find(d => d.name === item.day.name);
-                      if (target) nav.go("athlete-workout", target.id);
-                    }}>Do it today</Btn>
-                  {/* The wording from the design, with the real weekday in
-                      it. "Log it" on its own invites the question "log what,
-                      when" - naming the day answers both. */}
-                  <Btn size="sm" variant="secondary"
-                    onClick={() => logSessionAsDone({
-                      setState, userId: state.me.id, day: item.day, program: myProgram,
-                      date: item.date, week: programWeekFor(myProgram, item.date) || 1,
-                    })}>
-                    I did it on {new Date(`${item.date}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })}, log it
-                  </Btn>
-                  <Btn size="sm" variant="ghost" onClick={() => nav.go("athlete-program")}>Move it</Btn>
-                  <Btn size="sm" variant="danger"
-                    onClick={() => saveSessionMove(setState, state.me.id, {
-                      programDay: item.day.name, fromDate: item.date, toDate: null, kind: "skip",
-                    })}>Let it go</Btn>
-                </div>
-              </div>
-            </div>
-          </div>
-        ))}
-
+        {/* Today's workout first, above everything else (Isaiah, 28 Oct). */}
         {todayDay && (state.workoutLogs || []).some(l => l?.date === today) ? (
           // Done for today (Isaiah, 27 Oct): no Start Workout once it is logged.
           (() => {
@@ -16206,6 +16063,106 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
             )}
           </div>
         )}
+
+        {/* Booked sessions with the coach, under today's workout. Clients only:
+            a coach in their own training mode is the one running them. */}
+        {FEATURES.booking && !isCoach && state.coachProfile && (
+          <AthleteSessionCard state={state} setState={setState} nav={nav} />
+        )}
+
+        {/* Above today's workout, and on every day including rest days,
+            because a session somebody stopped half way through is the most
+            urgent thing on this screen until they decide what to do with it.
+            Silence is how an hour of work gets lost. */}
+        {pausedWorkout && pausedDay && (
+          <div className="rounded-2xl p-4 mb-5" style={{ ...card(), border: `1px solid ${C.blue}` }}>
+            <div className="flex items-start gap-2.5">
+              <Pause size={16} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  Do you want to finish your {sessionLabel(pausedWorkout.dayName)} workout?
+                </div>
+                <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
+                  You stopped at exercise {(Number(pausedWorkout.exIdx) || 0) + 1}
+                  {pausedWhenLabel(pausedWorkout.date, today) ? ` ${pausedWhenLabel(pausedWorkout.date, today)}` : ""}.
+                  {" "}Your sets are saved.
+                </p>
+                {confirmDrop ? (
+                  <>
+                    {/* Two steps, because this is the one button here that
+                        destroys something and a mis-tap on a phone in a gym
+                        bag is a real way to lose a session. */}
+                    <p className="text-[12.5px] mt-3" style={{ color: C.red }}>
+                      Drop it? The sets you logged in that session are deleted.
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <Btn size="sm" variant="confirm" onClick={dropPaused}>Yes, drop it</Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>Keep it</Btn>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <Btn size="sm" variant="primary" onClick={resumePaused}>Yes, finish it</Btn>
+                    <Btn size="sm" variant="ghost" onClick={keepPausedForNow}>No, save it as is</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => setConfirmDrop(true)}>Drop it</Btn>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* What did not happen, and the three things that can be done about
+            it. Above today's workout, because an athlete with a missed
+            Wednesday is deciding between catching it up and carrying on, and
+            that decision belongs before the card that assumes carrying on.
+
+            Capped at two. The whole list is on the Plan; a home screen that
+            leads with five red cards is a home screen people stop opening. */}
+        {missed.slice(0, 2).map(item => (
+          <div key={`${item.date}-${item.day.name}`} className="rounded-2xl p-4 mb-4"
+            style={{ ...card(), border: `1px solid ${C.red}66` }}>
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: C.red }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+                  You missed {sessionLabel(item.day.name)}
+                </div>
+                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>
+                  It was due {pausedWhenLabel(item.date, today) || "earlier"}. Catch it up, move it, or let it go.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Btn size="sm" variant="primary"
+                    onClick={() => {
+                      // A pull, not a move: if they start it and stop part
+                      // way, it goes back to the day it was due rather than
+                      // quietly rewriting the week.
+                      saveSessionMove(setState, state.me.id, {
+                        programDay: item.day.name, fromDate: item.date, toDate: today, kind: "pull",
+                      });
+                      const target = (myProgram?.days || []).find(d => d.name === item.day.name);
+                      if (target) nav.go("athlete-workout", target.id);
+                    }}>Do it today</Btn>
+                  {/* The wording from the design, with the real weekday in
+                      it. "Log it" on its own invites the question "log what,
+                      when" - naming the day answers both. */}
+                  <Btn size="sm" variant="secondary"
+                    onClick={() => logSessionAsDone({
+                      setState, userId: state.me.id, day: item.day, program: myProgram,
+                      date: item.date, week: programWeekFor(myProgram, item.date) || 1,
+                    })}>
+                    I did it on {new Date(`${item.date}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })}, log it
+                  </Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => nav.go("athlete-program")}>Move it</Btn>
+                  <Btn size="sm" variant="danger"
+                    onClick={() => saveSessionMove(setState, state.me.id, {
+                      programDay: item.day.name, fromDate: item.date, toDate: null, kind: "skip",
+                    })}>Let it go</Btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
 
         {/* The "confirm today's session" check-in is gone (27 Oct): logging
             the workout is the confirmation. */}
@@ -18030,7 +17987,13 @@ function useCountUp(target, run, ms = 800) {
 // Someone who has asked their device for less movement gets the whole thing
 // at once, still. That is both halves of the promise: the stylesheet stops
 // the animation, and this stops the waiting.
-function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, onDone }) {
+// The one finish screen (Isaiah, 28 Oct). It used to be two: this celebration,
+// then a separate "Session logged" summary. Now the summary sits under the
+// title and the celebration follows it, and Done is there from the first
+// frame. Steps with nothing in them are left out, so a session that earned
+// nothing is simply the summary and Done.
+function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, onDone,
+  dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, counts }) {
   const [still] = useState(prefersReducedMotion);
   const sections = useMemo(() => ([
     "medal",
@@ -18107,8 +18070,35 @@ function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, o
       </div>
 
       <h2 className="text-2xl font-bold mt-5 text-center rw-pop" style={{ fontFamily: DISPLAY, color: C.text }}>
-        SESSION DONE
+        WORKOUT DONE
       </h2>
+      {dayName && <p className="text-[15px] mt-1 text-center" style={{ color: C.sub, zIndex: 1 }}>{dayName}</p>}
+
+      {queued && (
+        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66`, zIndex: 1 }}>
+          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Saved on this phone</div>
+          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
+            No connection right now. It sends itself as soon as you're back online. Nothing is lost.
+          </p>
+        </div>
+      )}
+      {counts === false && (
+        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66`, zIndex: 1 }}>
+          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Logged as a part session</div>
+          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
+            You ticked {setsCompleted} of {setsPrescribed} sets, under half, so it doesn't count toward your streak.
+            It's saved, and your coach can see it.
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2.5 mt-6" style={{ zIndex: 1 }}>
+        <PlateBadge
+          value={timedSeconds != null ? formatClock(timedSeconds) : durationMin ? `${durationMin}` : "-"}
+          label={timedSeconds != null ? "Timed" : "Minutes"} />
+        <PlateBadge value={setsPrescribed ? `${setsCompleted}/${setsPrescribed}` : "-"} label="Sets" accent={C.olive} />
+        <PlateBadge value={EFFORT_LABEL(effort)} label="Effort" accent={C.blue} />
+      </div>
 
       {seen("points") && (
         <div className="rw-rise mt-5 rounded-2xl px-5 py-3 text-center" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
@@ -18194,9 +18184,7 @@ function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, o
 
       {/* Always there, from the first frame. A sequence an athlete cannot get
           out of is a sequence they resent by the third session. */}
-      <Btn className="mt-8" variant={finished ? "primary" : "ghost"} onClick={onDone}>
-        {finished ? "See summary" : "Skip"}
-      </Btn>
+      <Btn className="mt-8" onClick={onDone}>Done</Btn>
     </div>
   );
 }
@@ -18322,92 +18310,6 @@ function PrintSheet({ day, exercises, programName, week, athleteName, onClose })
   );
 }
 
-function SessionLoggedScreen({ dayName, durationMin, timedSeconds, setsCompleted, setsPrescribed, effort, queued, counts, onDone }) {
-  // A queued session gets longer on screen. It is the one case where the
-  // athlete has something to read: their work is safe, but it is safe HERE,
-  // and they should know that before the screen moves on.
-  const [secondsLeft, setSecondsLeft] = useState(queued ? 9 : 4);
-
-  useEffect(() => {
-    if (secondsLeft <= 0) { onDone?.(); return; }
-    const t = setTimeout(() => setSecondsLeft(n => n - 1), 1000);
-    return () => clearTimeout(t);
-  }, [secondsLeft]);
-
-  const adherence = setsPrescribed ? Math.round((setsCompleted / setsPrescribed) * 100) : null;
-  const earned = sessionPoints({ setsCompleted, setsPrescribed });
-
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
-      <Trophy size={48} style={{ color: C.orange }} />
-      <h2 className="text-2xl font-bold mt-4 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>SESSION LOGGED</h2>
-      <p className="text-[15px] mt-1 text-center" style={{ color: C.sub }}>{dayName} complete. Nice work.</p>
-
-      {queued && (
-        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
-          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Saved on this phone</div>
-          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
-            No connection right now, so this session is stored here and will send itself the
-            moment you are back online. Nothing is lost, and you don’t need to do anything.
-          </p>
-        </div>
-      )}
-
-      {/* Saved either way. An athlete who managed two sets of a hard session
-          has not failed at using the app, and a screen that behaves as if
-          nothing happened is how someone decides not to open it next time.
-          What is withheld is the score, and the reason is stated. */}
-      {counts === false && (
-        <div className="rounded-xl px-4 py-3 mt-5 max-w-sm" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
-          <div className="text-[15px] font-semibold text-center" style={{ color: C.amber }}>Logged as a part session</div>
-          <p className="text-[12.5px] mt-1 text-center leading-relaxed" style={{ color: C.sub }}>
-            You ticked {setsCompleted} of {setsPrescribed} sets, which is under half, so this one is recorded as a
-            part session rather than a full one. It is saved either way, and your coach can see it.
-          </p>
-        </div>
-      )}
-
-      <div className="flex items-center gap-2.5 mt-7">
-        {/* The stopwatch figure wins when there is one. `durationMin` is only
-            how long this screen was open, which counts the twenty minutes the
-            phone sat in a locker. */}
-        <PlateBadge
-          value={timedSeconds != null ? formatClock(timedSeconds) : durationMin ? `${durationMin}` : "—"}
-          label={timedSeconds != null ? "Timed" : "Minutes"} />
-        <PlateBadge value={setsPrescribed ? `${setsCompleted}/${setsPrescribed}` : "—"} label="Sets" accent={C.olive} />
-        <PlateBadge value={EFFORT_LABEL(effort)} label="Effort" accent={C.blue} />
-      </div>
-
-      {/* The score, where it was earned. A number that only ever appears on a
-          profile screen is a number nobody connects to anything they did. */}
-      <div className="rounded-full px-4 py-2 mt-5 flex items-center gap-2"
-        style={{ background: `${C.amber}1A`, border: `1px solid ${C.amber}66` }}>
-        <Trophy size={14} style={{ color: C.amber }} />
-        <span className="text-[15px] font-bold tabular-nums" style={{ color: C.amber }}>+{earned}</span>
-        <span className="text-[12.5px]" style={{ color: C.sub }}>
-          points{setsPrescribed ? ` · ${setsCompleted}/${setsPrescribed} sets` : ""}
-        </span>
-      </div>
-
-      {timedSeconds != null && (
-        <p className="text-[15px] mt-4 text-center" style={{ color: C.text }}>
-          You trained for <span className="font-bold" style={{ color: C.olive }}>{describeElapsed(timedSeconds)}</span>.
-        </p>
-      )}
-
-      {adherence !== null && adherence < 100 && (
-        <p className="text-[12.5px] mt-4 text-center" style={{ color: C.sub }}>
-          {adherence}% of the prescribed sets. Your coach sees this too.
-        </p>
-      )}
-
-      <Btn className="mt-8" onClick={onDone}>Done</Btn>
-      <button onClick={onDone} className="mt-3 text-[12.5px]" style={{ color: C.faint }}>
-        Closing in {secondsLeft}s
-      </button>
-    </div>
-  );
-}
 
 // ============================================================
 // SESSION TIMER
@@ -19269,7 +19171,6 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
   // would take the place of, worked out when the sheet is opened rather than
   // read out of storage on every render.
   const [stopOpen, setStopOpen] = useState(null);
-  const [showRewards, setShowRewards] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -19331,7 +19232,6 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     setRestDone(false);
     setPendingDay(null);
     setFinished(false);
-    setShowRewards(false);
     setMood(null);
     setNotes(draft?.notes || "");
     setSaveError(null);
@@ -20043,13 +19943,6 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     // It is logged, so it is no longer waiting to be finished.
     clearPausedWorkout(state.me.id);
     setLoggedSummary({ durationMin, timedSeconds, setsCompleted, setsPrescribed, counts: row.counts, queued, rewards });
-    // The rewards sequence first, then the summary - but only when there is
-    // something to celebrate. A session that scored nothing and earned
-    // nothing gets a medal and six seconds of waiting for a blank screen,
-    // which is worse than no sequence at all.
-    setShowRewards(
-      rewards.points > 0 || rewards.levelUp || rewards.badges.length > 0 || rewards.bests.length > 0
-    );
     setSaving(false);
     setFinished(true);
   };
@@ -20116,25 +20009,17 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     finishWorkout();
   };
 
-  if (finished && showRewards && loggedSummary?.rewards) {
-    const r = loggedSummary.rewards;
+  if (finished) {
+    const r = loggedSummary?.rewards || {};
     return (
       <RewardsScreen
-        points={r.points}
+        points={r.points || 0}
         level={r.level}
         levelUp={r.levelUp}
         perfect={r.perfect}
-        badges={r.badges}
-        bests={r.bests}
+        badges={r.badges || []}
+        bests={r.bests || []}
         unit={weightUnit}
-        onDone={() => setShowRewards(false)}
-      />
-    );
-  }
-
-  if (finished) {
-    return (
-      <SessionLoggedScreen
         dayName={day.name}
         durationMin={loggedSummary?.durationMin}
         timedSeconds={loggedSummary?.timedSeconds}
@@ -20740,26 +20625,19 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           : <Btn className="flex-1" disabled={!dayIsScheduled} onClick={() => setFinishOpen(true)}>Finish Workout</Btn>}
       </div>
 
-      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Workout options">
-        {timerIsLive && (
-          <Btn variant="primary" className="w-full mb-2"
-            onClick={() => { if (timerMode === "running") pauseTimer(); else resumeTimer(); setStopOpen(null); }}>
-            {timerMode === "running" ? "Pause timer" : "Resume timer"}
-          </Btn>
-        )}
-        <Btn variant="secondary" className="w-full mb-4" onClick={() => setStopOpen(null)}>Keep going</Btn>
-        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>Stop for today</div>
-        <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
+      {/* Two choices (Isaiah, 28 Oct). Pausing the clock lives on the timer
+          strip itself; closing this sheet is "keep going". */}
+      <Modal open={!!stopOpen} onClose={() => setStopOpen(null)} title="Stop workout">
+        <Btn variant="primary" className="w-full" onClick={stopAndSave}>Pause</Btn>
+        <p className="text-[12.5px] mt-1.5 mb-4 text-center" style={{ color: C.sub }}>
           {stopOpen?.replaces
-            ? `Your sets, where you are in the session and the time so far are all kept. You already have a paused ${sessionLabel(stopOpen.replaces)} workout, and saving this one replaces it.`
-            : "Your sets, where you are in the session and the time so far are all kept. Nothing is logged until you finish."}
+            ? `Keeps your sets and time so you can pick up later. This replaces your paused ${sessionLabel(stopOpen.replaces)} workout.`
+            : "Keeps your sets and time so you can pick up later. Nothing is logged yet."}
         </p>
-        <Btn variant={timerIsLive ? "secondary" : "primary"} className="w-full" onClick={stopAndSave}>Stop and save my progress</Btn>
-        {/* Separate from the two above, because this one writes a session to
-            the record and the other two do not. */}
-        <Btn variant="secondary" className="w-full mt-2" onClick={stopAndLog} disabled={saving}>
-          {saving ? "Saving\u2026" : "I'm done for good, count what I did"}
+        <Btn variant="secondary" className="w-full" onClick={stopAndLog} disabled={saving}>
+          {saving ? "Saving\u2026" : "Finish"}
         </Btn>
+        <p className="text-[12.5px] mt-1.5 text-center" style={{ color: C.sub }}>Logs what you've done and ends the workout.</p>
       </Modal>
 
       <Modal open={!!pendingDay} onClose={() => setPendingDay(null)} title="Switch session?">
@@ -21438,6 +21316,8 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   // assistant parked, "coach" is the only thread there is — landing on "ai"
   // would show an input wired to a screen that no longer exists.
   const [tab, setTab] = useState(hasCoach || !FEATURES.aiAssistant ? "coach" : "ai");
+  // Joining or leaving a coach changes which single thread this is.
+  useEffect(() => { setTab(hasCoach || !FEATURES.aiAssistant ? "coach" : "ai"); }, [hasCoach]);
   // The draft lives in MessageComposer, keyed by tab, with the attachment
   // beside it - so the two cannot get out of step on a failed send, and a
   // half-typed question to the AI is not sitting in the box when you switch
@@ -21533,14 +21413,8 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
   return (
     <div className="flex flex-col app-screen">
       <TopBar title="Messages" onLogout={nav.logout} />
-      {/* With the AI assistant parked there is only one thread, so a tab strip
-          with a single tab is just a label. */}
-      {FEATURES.aiAssistant && (
-        <div className="flex gap-2 px-4 py-3 shrink-0" style={{ borderBottom: `1px solid ${C.border}` }}>
-          <Pill active={tab === "coach"} onClick={() => setTab("coach")}>Coach Chat</Pill>
-          <Pill active={tab === "ai"} onClick={() => setTab("ai")}><span className="flex items-center gap-1"><Bot size={12} />AI Assistant</span></Pill>
-        </div>
-      )}
+      {/* One thread, no tab strip (Isaiah, 28 Oct): a coached athlete talks to
+          their coach only; a self-guided athlete gets the AI assistant. */}
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {tab === "coach" && !hasCoach && (

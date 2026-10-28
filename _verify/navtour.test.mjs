@@ -275,6 +275,21 @@ test("the check-in still only appears when the coach asked for it", () => {
     "it now shows to athletes whose coach switched check-offs off");
 });
 
+test("coached athletes get their coach only, no AI tab", () => {
+  // Isaiah, 28 Oct: a coached athlete talks to their coach; a self-guided
+  // athlete gets the AI assistant. No tab strip either way.
+  const at = src.indexOf("function AthleteMessages(");
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10));
+  assert.ok(!/>AI Assistant</.test(body), "the AI Assistant tab is back");
+  assert.ok(/useState\(hasCoach \|\| !FEATURES\.aiAssistant \? "coach" : "ai"\)/.test(body), "a coached athlete does not land on the coach thread");
+});
+
+test("no Accountability or Session-Length switches on the coach profile", () => {
+  assert.ok(!/>Accountability Mode</.test(src), "the Accountability switch is back");
+  assert.ok(!/>Session-Length Alerts</.test(src), "the Session-Length Alerts switch is back");
+  assert.ok(/<CompliancePanel logs=\{athleteLogs\} \/>/.test(src), "the session-length panel went with the switch");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }

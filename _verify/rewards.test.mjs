@@ -402,7 +402,7 @@ test("no level, badge or streak column is written to the database", () => {
 const screen = (() => {
   const at = src.indexOf("function RewardsScreen(");
   assert.ok(at > 0, "the rewards screen is gone");
-  return src.slice(at, src.indexOf("\nfunction SessionLoggedScreen", at));
+  return src.slice(at, src.indexOf("\n// The session on paper.", at));
 })();
 
 test("the sequence is in the order the design asks for", () => {
@@ -462,11 +462,10 @@ test("the clipping is on the confetti layer, never on the column", () => {
 
 test("there is always a way out, from the first frame", () => {
   // A sequence an athlete cannot leave is a sequence they resent by the
-  // third session.
-  assert.ok(/\{finished \? "See summary" : "Skip"\}/.test(screen),
-    "the button only appears at the end, or never says Skip");
-  const at = screen.indexOf("<Btn className=\"mt-8\"");
-  assert.ok(at > 0, "the button is gone");
+  // third session. Since 28 Oct it is the only finish screen, so the way out
+  // is Done, and it is there from the start.
+  const at = screen.indexOf("<Btn className=\"mt-8\" onClick={onDone}>Done</Btn>");
+  assert.ok(at > 0, "Done is gone, or behind something");
   const before = screen.slice(0, at);
   assert.ok(!/\{finished && \(\s*$/.test(before.trim()), "the button is behind a condition");
 });
@@ -482,14 +481,14 @@ test("the points number climbs rather than appearing", () => {
     "the count-up is gone, or runs before the step it belongs to is visible");
 });
 
-test("a session that earned nothing skips the whole sequence", () => {
-  // A medal and six seconds of waiting for a blank screen is worse than no
-  // sequence at all.
-  const at = src.indexOf("setShowRewards(\n      rewards.points");
-  assert.ok(at > 0, "nothing decides whether to show the sequence");
-  const decision = src.slice(at, src.indexOf(");", at));
-  for (const part of ["rewards.points > 0", "rewards.levelUp", "rewards.badges.length > 0", "rewards.bests.length > 0"]) {
-    assert.ok(decision.includes(part), `the decision ignores ${part}`);
+test("one finish screen, with the session summary on it", () => {
+  // Isaiah, 28 Oct: one finish screen instead of two. The summary (sets,
+  // time, effort, part session, offline) sits on the rewards screen, and a
+  // session that earned nothing simply shows the summary and Done.
+  assert.ok(!/function SessionLoggedScreen\(/.test(src), "the second finish screen is back");
+  assert.ok(!/setShowRewards/.test(src), "something decides to skip the finish screen again");
+  for (const bit of ['label="Sets"', 'label="Effort"', "Logged as a part session", "Saved on this phone"]) {
+    assert.ok(screen.includes(bit), `the finish screen is missing ${bit}`);
   }
 });
 
@@ -581,7 +580,7 @@ test("both panels are actually on the profile, with the programme's week", () =>
 const sheet = (() => {
   const at = src.indexOf("function PrintSheet(");
   assert.ok(at > 0, "there is no print sheet");
-  return src.slice(at, src.indexOf("\nfunction SessionLoggedScreen", at));
+  return src.slice(at, src.indexOf("\n}\n", at));
 })();
 
 test("the sheet carries everything the design asks for", () => {
