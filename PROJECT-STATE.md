@@ -45,6 +45,36 @@ Next session card with date) is pushed, NOT merged yet.
    first, one at a time.
 6. Coach side: remove the session-length alert and accountability switches.
 
+### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
+A coach can change ANYTHING in a client's program, en masse, by typing it in
+plain words. Solo athletes get the same on their own program.
+- Where: an "Adjust with AI" button on the Program board (coach's client page,
+  Program tab, and the athlete's Week > Program for solo athletes).
+- Any scope, in any combination: whole program, certain weeks, certain days,
+  certain phases/blocks, certain sections (Warm-Up, Power, Primary...),
+  certain exercises. Examples: "weeks 5-8: drop all main lifts to 3x5",
+  "every Tuesday: swap bike for rower", "make week 4 a deload",
+  "add a Nordic curl to every lower day", "rename the program".
+- Anything editable: sets, reps, effort (RPE), rest, exercise swaps, add or
+  remove exercises/sections/days/weeks, weekdays, exercise notes/cues,
+  program name.
+- Flow (beginning and end): type the change -> AI proposes it -> before/after
+  preview on the board, changed items highlighted -> Save or Discard. Nothing
+  is written until Save. Undo after Save.
+- Implementation notes: send the current program JSON plus the request to
+  /api/chat (callAI, streams, loading percentage); the AI returns the edited
+  program, not free text. Week-scoped changes must be written as byWeek
+  entries so other weeks stay untouched. Validate before showing the preview
+  (no empty days, every exercise resolves). Save through the same path as
+  the manual editor so the client sees it at once.
+- Manual editing stays exactly as it is alongside this.
+
+### Coach can't edit today (asked 27 Oct, Isaiah to decide)
+A client's profile details (goals, injuries, body metrics, training days);
+a logged workout (wrong weight); a note back to the client on a session;
+the program name from the client page; exercise notes/cues. The last two
+are covered by Adjust with AI above.
+
 ### Decided: leave as is
 - Home, My Workout and Week stay as three tabs.
 - Week keeps BOTH Program (plan in theory) and Calendar (plan over time).
