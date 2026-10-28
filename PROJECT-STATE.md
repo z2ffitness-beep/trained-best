@@ -48,25 +48,36 @@ Next session card with date) is pushed, NOT merged yet.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
 plain words. Solo athletes get the same on their own program.
-- Where: an "Adjust with AI" button on the Program board (coach's client page,
-  Program tab, and the athlete's Week > Program for solo athletes).
+- Model it on Relay's program chat (Isaiah showed a screenshot, 27 Oct): an
+  AI CHAT that stays open beside the program board, not a one-off box.
+  On computer/tablet: a panel on the right of the Program board. On phone:
+  a full-screen sheet opened from an "Adjust with AI" button on the board.
+  Where: coach's client page (Program tab) and solo athletes' Week > Program.
+- Conversation, many turns: the coach keeps talking ("now make it two
+  phases", "fix week 12 pogo jumps back to 3x10") and the AI keeps editing.
+  The chat history is kept per program.
 - Any scope, in any combination: whole program, certain weeks, certain days,
   certain phases/blocks, certain sections (Warm-Up, Power, Primary...),
   certain exercises. Examples: "weeks 5-8: drop all main lifts to 3x5",
   "every Tuesday: swap bike for rower", "make week 4 a deload",
-  "add a Nordic curl to every lower day", "rename the program".
-- Anything editable: sets, reps, effort (RPE), rest, exercise swaps, add or
-  remove exercises/sections/days/weeks, weekdays, exercise notes/cues,
-  program name.
-- Flow (beginning and end): type the change -> AI proposes it -> before/after
-  preview on the board, changed items highlighted -> Save or Discard. Nothing
-  is written until Save. Undo after Save.
-- Implementation notes: send the current program JSON plus the request to
-  /api/chat (callAI, streams, loading percentage); the AI returns the edited
-  program, not free text. Week-scoped changes must be written as byWeek
-  entries so other weeks stay untouched. Validate before showing the preview
-  (no empty days, every exercise resolves). Save through the same path as
-  the manual editor so the client sees it at once.
+  "add a Nordic curl to every lower day", "make this 12-week program two
+  phases: weeks 1-6 Foundation and Aerobic Base, weeks 7-12 Speed-Strength".
+- Anything editable: sets, reps, effort (RPE), rest, loads, exercise swaps,
+  add or remove exercises/sections/days/weeks, weekdays, PHASES (how many,
+  where they start and end, their names), exercise notes/cues, program name.
+- Flow: the coach describes it, the AI DOES IT straight away (no manual
+  clicking, no Save step), then replies in plain words with what it did
+  and a change card under the reply, like Relay's "24 changes / 24 workouts
+  edited": tap to expand and see each workout changed. Every change card has
+  Undo. Logged results are never touched.
+- Implementation notes: send the current program JSON plus the request and
+  the chat so far to /api/chat (callAI, streams, loading percentage); the AI
+  returns the edited program plus a short summary, not free text alone.
+  Week-scoped changes must be written as byWeek entries so other weeks stay
+  untouched; phase changes need a stored phase list (name + start/end week),
+  since today blocks are inferred. Validate before applying (no empty days,
+  every exercise resolves); if it fails, apply nothing and say why. Save
+  through the same path as the manual editor so the client sees it at once.
 - Manual editing stays exactly as it is alongside this.
 
 ### Coach can't edit today (asked 27 Oct, Isaiah to decide)
