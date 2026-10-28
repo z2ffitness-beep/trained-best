@@ -1,6 +1,6 @@
 # Trained.best: read this first
 
-**Last updated 26 Oct 2026.** Anyone picking this project up, in any chat, on
+**Last updated 27 Oct 2026.** Anyone picking this project up, in any chat, on
 any machine, starts here. Keep it current: if you change something in this
 repo or the database, update this file in the same commit.
 
@@ -9,7 +9,55 @@ had to be reconstructed from file timestamps.
 
 ---
 
-## 0d. Update, 24 to 26 Oct 2026 (read this first)
+## 00. Simplification plan, agreed with Isaiah 27 Oct 2026 (read this first)
+
+**First principle:** people track their workout and share it with their coach.
+Simple, minimal, aesthetically unified. Every flow has a beginning and an end.
+Focus on the END USER (athlete) side; Isaiah finds the coach side clear.
+**Show Isaiah a visual demo before anything is pushed to GitHub.**
+
+Status on 27 Oct: `workout-done-state` (Done button, "You're done for today",
+Next session card with date) is pushed, NOT merged yet.
+
+### Agreed changes (build in this order)
+1. **Workout flow**
+   - One finish screen instead of two (merge the Rewards screen and Session
+     Logged): sets, time, streak and any badges earned, then Done.
+   - Stop button sheet: two choices only, **Pause** and **Finish**.
+   - Remove the "confirm today's session" check-in step.
+2. **Coach tab (athlete side)**
+   - Everything between a client and their coach lives here, uncluttered:
+     **Messages**, **Sessions** (book, move, cancel), **History** (past
+     sessions, billing). Tabs at the top. The Book tab moves in here.
+   - AI Assistant removed for coached athletes; solo athletes keep it.
+   - Home keeps its sections, but **today's workout is first**, at the top.
+3. **Accounts**
+   - Delete account: one flow for coach and athlete, same words. Sends a
+     confirmation email, returns to the welcome screen (they may re-register),
+     and removes all their data from the coach's side too.
+   - Coach sign-up: account, **business name and logo**, invite code. Drop
+     background, specialties and coaching style.
+4. **Custom rest-timer sounds:** athletes can upload their own sound. Print
+   and the existing sound choices STAY.
+5. **Hidden features (FEATURES flags):** community, payments, program
+   templates, athlete groups, exercise library are built but switched off;
+   nutrition was never built. All are wanted. Isaiah picks which to turn on
+   first, one at a time.
+6. Coach side: remove the session-length alert and accountability switches.
+
+### Decided: leave as is
+- Home, My Workout and Week stay as three tabs.
+- Week keeps BOTH Program (plan in theory) and Calendar (plan over time).
+- Athlete Profile keeps every section (body metrics, stats, injuries, form
+  checks, progress, coach). Thorough capture beats frequency of use.
+- Streak, points and badges all stay (solo athletes need gamification too).
+- Print and rest-sound choice stay.
+- Coach Home keeps its overview (compliance, billing, issues at a glance).
+- Coach client page keeps all its sections; tweaks only, no removals.
+- Program editing stays manual and must show to the client seamlessly.
+- Athlete sign-up questions stay; the existing sign-up is fine.
+
+## 0d. Update, 24 to 26 Oct 2026
 
 - **Merged to main on 24 Oct:** the clean-up list (0c), timer and phone
   notifications (0b), Program tab without the Today card or weekday picker,
