@@ -258,16 +258,15 @@ test("Today's Workout is the first thing under the greeting", () => {
   assert.ok(stats > session, "the stat tiles come before the session");
 });
 
-test("the check-in moved below the session rather than being deleted", () => {
-  // It carries the Confirm button, and confirming is what tells the coach the
-  // athlete turned up. Losing it would quietly undo that.
+test("no check-in step on Home, and no Start Workout once today is logged", () => {
+  // Isaiah, 27 Oct: logging the workout IS the confirmation; the coach is
+  // told by the session_completed notice. A finished day shows "done".
   const body = dashboard();
-  assert.ok(/const checkinCard = accountabilityOn && todayDay \? \(/.test(body),
-    "the check-in card is gone, and with it the coach's record that anybody showed up");
-  assert.ok(/confirmCheckin/.test(body), "the Confirm button no longer confirms anything");
-  const decl = body.indexOf("const checkinCard");
-  const rendered = body.indexOf("{checkinCard}");
-  assert.ok(rendered > decl, "the card is never rendered");
+  assert.ok(!/\{checkinCard\}/.test(body), "the check-in box is back on Home");
+  assert.ok(/todayDay && \(state\.workoutLogs \|\| \[\]\)\.some\(l => l\?\.date === today\)/.test(body),
+    "Home no longer checks whether today's workout is already logged");
+  assert.ok(/You're done for today/.test(body), "Home has no done state");
+  assert.ok(!/<button onClick=\{onLogout\}/.test(src), "the log-out arrow is back in the header");
 });
 
 test("the check-in still only appears when the coach asked for it", () => {

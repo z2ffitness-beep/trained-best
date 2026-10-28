@@ -8693,7 +8693,8 @@ function TopBar({ title, onLogout, right, hideBell = false, below = null }) {
       <div className="flex items-center gap-3 shrink-0">
         {right}
         {!hideBell && notif?.open && <NotificationBell count={notif.count} onClick={notif.open} />}
-        {onLogout && <button onClick={onLogout} style={{ color: C.sub }}><LogOut size={18} /></button>}
+        {/* No log-out arrow here (Isaiah, 27 Oct): one tap from every
+            screen dropped people at the welcome page. Log Out is in Profile. */}
       </div>
      </div>
       {below}
@@ -15976,11 +15977,11 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
               on, which made it the one place the bell could least afford to be
               missing. */}
           <DashboardBell />
-          <button onClick={nav.logout} className="flex items-center gap-1.5 rounded-full px-3 py-2" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+          <div className="flex items-center gap-1.5 rounded-full px-3 py-2" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
             <Flame size={14} style={{ color: C.amber }} />
             <span className="text-[15px] font-bold tabular-nums" style={{ color: C.text }}>{state.me.streak}</span>
             <span className="text-[12.5px]" style={{ color: C.sub }}>day streak</span>
-          </button>
+          </div>
         </div>
       </div>
 
@@ -16087,7 +16088,28 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         ))}
 
-        {todayDay ? (
+        {todayDay && (state.workoutLogs || []).some(l => l?.date === today) ? (
+          // Done for today (Isaiah, 27 Oct): no Start Workout once it is logged.
+          (() => {
+            const next = nextScheduledSession(myProgram, today);
+            return (
+              <div className="rounded-3xl p-6 mb-6 text-center" style={card({ borderRadius: 24 })}>
+                <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-3" style={{ background: `${C.olive}1f` }}>
+                  <Check size={26} strokeWidth={3} style={{ color: C.olive }} />
+                </div>
+                <div className="text-[19px] font-bold" style={{ fontFamily: DISPLAY, color: C.text }}>You're done for today</div>
+                <p className="text-[15px] mt-1" style={{ color: C.sub }}>{calendarSessionLabel(todayDay.name)} is logged.</p>
+                {next && (
+                  <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${C.border}` }}>
+                    <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Next session</div>
+                    <div className="text-[17px] font-bold mt-1" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</div>
+                    <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{next.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })()
+        ) : todayDay ? (
           (() => {
             // The first movement with a photo, shown as a tilted tile in the
             // corner. It says what today actually IS faster than the title
@@ -16160,8 +16182,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           <div className="rounded-3xl p-6 mb-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
             <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>Rest day</div>
             <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>Nothing scheduled today. Recovery is part of the program.</p>
-            <button onClick={() => nav.go("athlete-program")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>
-              View my program →
+            <button onClick={() => nav.go("calendar")} className="text-[12.5px] font-semibold" style={{ color: C.orange }}>
+              See your week →
             </button>
           </div>
         ) : (
@@ -16185,7 +16207,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         )}
 
-        {checkinCard}
+        {/* The "confirm today's session" check-in is gone (27 Oct): logging
+            the workout is the confirmation. */}
 
         {/* Calories and Protein were hardcoded to 0 with nothing anywhere in
             the app able to change them — a permanent "you've eaten nothing"
