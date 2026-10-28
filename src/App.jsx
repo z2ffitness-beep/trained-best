@@ -7183,10 +7183,11 @@ const SIGNUP_KEYS = {
   // they land on, and showing the coach's card before anything else is what
   // makes the rest of the signup feel like joining something.
   coached: ["inviteCode", "inviteCoachId"],
-  // The coach path. Background, specialties and style were three screens and
-  // are now one, and the business name goes in beside them because it is what
-  // an athlete sees on the coach card the moment they type the invite code.
-  coach: ["🏅 Background", "⚡ Specialties", "🎯 Coaching Style", "businessName"],
+  // The coach path (Isaiah, 28 Oct): the account, the brand, the invite code.
+  // Background, specialties and style are gone - nothing read them. The
+  // business name and logo are what an athlete sees on the coach card the
+  // moment they type the invite code.
+  coach: ["businessName", "logoFile", "logoPreview"],
 };
 
 // The screens, in order, per path.
@@ -7243,10 +7244,8 @@ const SIGNUP_V2_SECTIONS = {
     { step: "🏋️ Equipment", label: "What you can train with" },
   ],
   "🏅 Your Coaching Business": [
-    { step: "🏅 Background", label: "How long you have coached" },
-    { step: "⚡ Specialties", label: "What you specialise in" },
-    { step: "🎯 Coaching Style", label: "How you coach" },
     { step: "💼 Business Name", label: "Your business name" },
+    { step: "🖼️ Logo", label: "Your logo" },
   ],
 };
 
@@ -7280,6 +7279,7 @@ function stepComplete(stepName, data, role) {
       // Optional by design. A coach with no business name is just a coach,
       // and the athlete's card falls back to their own name.
       case "💼 Business Name": return true;
+      case "🖼️ Logo": return true; // optional, and changeable under Settings
       case "📩 Invite Athletes": return true; // optional by design
       case "📩 Invite Your Athletes": return true; // nothing to fill in
       case "📸 Profile Photo": return true; // optional by design
@@ -7366,7 +7366,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // mind and signed up as an athlete carried their coaching answers into
   // their athlete intake, where buildAIPrompt would never read them and
   // nothing would ever clear them.
-  const COACH_ONLY_KEYS = [...SIGNUP_KEYS.coach, "📩 Invite Athletes"];
+  const COACH_ONLY_KEYS = [...SIGNUP_KEYS.coach, "📩 Invite Athletes", "🏅 Background", "⚡ Specialties", "🎯 Coaching Style"];
 
   const chooseRole = (next) => {
     setData(d => {
@@ -7933,7 +7933,48 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           />
           <p className="text-[12.5px] mt-2" style={{ color: C.faint }}>
             Optional. This is the name your athletes see when they enter your invite code. Leave it
-            blank to use your own name, and you can add a logo and colour later under Settings.
+            blank to use your own name.
+          </p>
+        </div>
+      );
+    }
+    // The logo is held as the picked file until the account exists, then
+    // uploaded under the coach's own folder (the bucket only allows that).
+    // Optional: skip it and the card shows initials, and it can be added or
+    // changed any time under Settings.
+    if (stepName === "🖼️ Logo") {
+      const pick = (e) => {
+        const f = e.target.files?.[0];
+        e.target.value = "";
+        if (!f || !f.type.startsWith("image/")) return;
+        setData(d => {
+          if (d.logoPreview) { try { URL.revokeObjectURL(d.logoPreview); } catch { /* ignore */ } }
+          return { ...d, logoFile: f, logoPreview: URL.createObjectURL(f) };
+        });
+      };
+      return (
+        <div>
+          {/* How athletes will see it on the coach card. */}
+          <div className="rounded-xl p-3" style={{ background: C.card, border: `1px solid ${C.border}` }}>
+            <CoachBrandMark name={data.businessName || data.name || "Coach"} logoUrl={data.logoPreview || null}
+              initials={((data.businessName || data.name || "C").split(" ").map(w => w[0]).join("").slice(0, 2) || "C").toUpperCase()}
+              size={48} />
+          </div>
+          <div className="flex items-center gap-4 mt-3">
+            <label className="inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-[15px] font-semibold cursor-pointer"
+              style={{ background: C.card, border: `1px solid ${C.border}`, color: C.text }}>
+              {data.logoFile ? "Change logo" : "Upload logo"}
+              <input type="file" accept="image/*" className="hidden" onChange={pick} />
+            </label>
+            {data.logoFile && (
+              <button type="button" className="text-[15px] font-semibold" style={{ color: C.sub }}
+                onClick={() => setData(d => ({ ...d, logoFile: null, logoPreview: null }))}>
+                Remove
+              </button>
+            )}
+          </div>
+          <p className="text-[12.5px] mt-3" style={{ color: C.faint }}>
+            Optional. A square image works best. Your athletes see it beside your business name.
           </p>
         </div>
       );
@@ -15059,6 +15100,28 @@ function FormChecksPage({ state, nav, isCoach }) {
 // that could be tapped while putting the phone in a pocket.
 const DELETE_CONFIRM_WORD = "DELETE";
 
+// Files the user owns in storage, removed before the account goes. The
+// database rows cascade on their own; files do not, and Storage has to be
+// asked through its own API. Each bucket keeps a user's files in a folder
+// named after their id. Best effort: a file that will not go does not stop
+// the account being deleted.
+const OWN_FILE_BUCKETS = ["form-checks", "message-media", "progress-photos", "coach-logos"];
+async function removeMyFiles(userId) {
+  if (!userId) return;
+  for (const bucket of OWN_FILE_BUCKETS) {
+    try {
+      for (let round = 0; round < 20; round++) {
+        const { data, error } = await supabase.storage.from(bucket).list(userId, { limit: 1000 });
+        if (error || !data?.length) break;
+        const paths = data.filter(f => f.id).map(f => `${userId}/${f.name}`);
+        if (!paths.length) break;
+        const { error: rmErr } = await supabase.storage.from(bucket).remove(paths);
+        if (rmErr) break;
+      }
+    } catch { /* keep going */ }
+  }
+}
+
 function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDeleted }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -15075,6 +15138,8 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
     setBusy(true);
     setError(null);
     try {
+      // Files first, while the session that owns them still exists.
+      await removeMyFiles(userId);
       const { error: rpcError } = await supabase.rpc("delete_my_account");
       if (rpcError) {
         setBusy(false);
@@ -15115,8 +15180,9 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>What gets deleted</div>
         <ul className="text-[12.5px] space-y-1" style={{ color: C.sub }}>
           <li>Your profile, sign-in and every session you have logged</li>
-          <li>Your programs, body metrics, messages and bookings</li>
-          {isCoach && <li>Your session types, availability and rates</li>}
+          <li>Your programs, body metrics, messages, photos and bookings</li>
+          {isCoach && <li>Your logo, session types, availability and rates</li>}
+          {!isCoach && <li>Everything your coach could see about you</li>}
         </ul>
       </div>
 
@@ -26930,7 +26996,7 @@ function AppInner() {
       // photoUrl is stripped too: it's a multi-megabyte base64 data URL that
       // already has its own column, and storing it twice in one row risked
       // blowing the request size and failing the write outright.
-      const { password, confirmPassword, signupError, showPassword, photoUrl, inviteCoachId, ...rest } = data;
+      const { password, confirmPassword, signupError, showPassword, photoUrl, inviteCoachId, logoFile, logoPreview, ...rest } = data;
       // Second line of defence behind chooseRole(): whatever route the answers
       // took to get here, an account that isn't on the coached path must not
       // ship an invite code in its intake. hydrateFromProfile's repair step
@@ -27043,6 +27109,13 @@ function AppInner() {
         setGeneratingProgram(false);
         setView("athlete-dashboard");
       } else {
+        // The logo picked during signup. Uploaded now that the account exists.
+        // A failed upload does not stop the signup: the coach is in, and the
+        // logo can be added again under Settings.
+        let logoPath = savedProfile?.logo_path || null;
+        if (userId && logoFile) {
+          try { logoPath = (await uploadCoachLogo(userId, logoFile)).path; } catch { /* add later in Settings */ }
+        }
         setState(s => ({
           ...s,
           coachProfile: {
@@ -27059,7 +27132,7 @@ function AppInner() {
             // login re-read the row.
             businessName: (data.businessName || "").trim() || null,
             brandColor: null,
-            logoPath: null,
+            logoPath,
           },
         }));
         setAuthed(role);

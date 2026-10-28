@@ -76,6 +76,7 @@ const OUT_OF_LINE = {
   "🔑 Coach Invite Code": ["inviteCode", "inviteCoachId"],
   "🔐 Create Account": ["name", "email", "password"],
   "💼 Business Name": ["businessName"],
+  "🖼️ Logo": ["logoFile", "logoPreview"],
 };
 
 // The keys a leaf step writes, read out of its body in the source.
@@ -337,7 +338,7 @@ test("a coach who changes their mind does not carry coaching answers across", ()
   // The hand-written list missed two of the four, so "⚡ Specialties" and
   // "🎯 Coaching Style" rode into an athlete's intake where nothing reads
   // them and nothing clears them.
-  assert.ok(/const COACH_ONLY_KEYS = \[\.\.\.SIGNUP_KEYS\.coach, "📩 Invite Athletes"\];/.test(src),
+  assert.ok(/const COACH_ONLY_KEYS = \[\.\.\.SIGNUP_KEYS\.coach, "📩 Invite Athletes"/.test(src),
     "the coach-only keys are listed by hand again and will drift from the contract");
   assert.ok(/for \(const k of COACH_ONLY_KEYS\) delete cleaned\[k\];/.test(src),
     "nothing clears the coach's answers when the role changes");
@@ -412,13 +413,12 @@ test("the invite code must resolve to a real coach, not just be six long", () =>
   assert.equal(stepComplete("🔑 Coach Invite Code", { inviteCode: "AAA", inviteCoachId: "u1" }, "athlete_coached"), false);
 });
 
-test("the coach screen needs the one answer it actually needs", () => {
+test("the coach brand screen never blocks", () => {
+  // Business name and logo are both optional (Isaiah, 28 Oct): a coach who
+  // trains under their own name skips both and the card shows their name.
   const coach = { name: "Casey Lin", email: "c@d.com", password: "abcdefgh", confirmPassword: "abcdefgh" };
-  assert.equal(stepComplete("🏅 Your Coaching Business", coach, "coach"), false,
-    "a coach can skip every question about their coaching");
-  const withBackground = { ...coach, "🏅 Background": "10+ years coaching" };
-  assert.ok(stepComplete("🏅 Your Coaching Business", withBackground, "coach"),
-    "specialties, style and business name are optional and should not block");
+  assert.ok(stepComplete("🏅 Your Coaching Business", coach, "coach"));
+  assert.ok(stepComplete("🏅 Your Coaching Business", { ...coach, businessName: "Lin Strength" }, "coach"));
   assert.ok(stepComplete("📩 Invite Your Athletes", coach, "coach"));
 });
 
@@ -500,3 +500,11 @@ for (const [name, fn] of tests) {
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
 }
 console.log(`${passed}/${tests.length} passed`);
+
+test("the coach signup is the account, the brand and the invite code", () => {
+  // Isaiah, 28 Oct: business name and logo, nothing about years coached.
+  assert.deepEqual(SIGNUP_V2_STEPS.coach, ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"]);
+  assert.deepEqual(SIGNUP_V2_SECTIONS["🏅 Your Coaching Business"].map(x => x.step), ["💼 Business Name", "🖼️ Logo"]);
+  assert.ok(/logoFile, logoPreview, \.\.\.rest \} = data;/.test(src), "the picked logo file would be written into the intake");
+  assert.ok(/uploadCoachLogo\(userId, logoFile\)/.test(src), "the logo picked at signup is never uploaded");
+});
