@@ -65,6 +65,29 @@ Next session card with date) is pushed, NOT merged yet.
 - Next: batch 3 accounts (#19, #18), batch 4 custom sound (#8), batch 5
   Adjust with AI.
 
+- Branch `simplify-batch-3` (28 Oct): #18 coach signup step 2 is business
+  name + logo (both optional; logo uploaded once the account exists);
+  Background/Specialties/Style removed. #19 delete account removes the
+  user's storage files (form-checks, message-media, progress-photos,
+  coach-logos) before the RPC. Migration 010 (delete notices about the user
+  from the coach's list) written; Isaiah approved, first apply attempt timed
+  out on the approval prompt, NOT applied yet. Deletion email waits on an
+  email provider (suggested Resend; Isaiah to supply the key).
+- Branch `simplify-batch-4` (28 Oct): #8 upload your own rest sound in
+  Settings. Kept on the phone (IndexedDB), checked before saving, cut off at
+  8 seconds, falls back to Beep on a phone without the file. No DB change.
+- Branch `simplify-batch-5` (28 Oct): Adjust with AI. Chat beside the
+  Program board (coach client page; solo athlete Week > Program), full-screen
+  sheet on phones. AI returns operations (update/remove/add exercises with
+  optional weeks, set_phases, rename, update/add/remove day, add/remove
+  weeks); the app applies them with applyExerciseEdit etc., validates, saves
+  days+weeks+name+phases, shows a change card (workouts edited, per day and
+  weeks) with Undo of the newest change. A program the app progresses
+  itself is written out first so untouched weeks keep their numbers.
+  Exercise `note` field added (board + workout). Migration 011 (programs.
+  phases column + program_ai_messages table with RLS) written, NOT applied;
+  needs Isaiah's approval. Tests: _verify/adjust-ai.test.mjs.
+- Still open: #20 hidden features, Isaiah to pick the order.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
 plain words. Solo athletes get the same on their own program.
