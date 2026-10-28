@@ -8,7 +8,7 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone, Minus, Printer
+  Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -3845,6 +3845,10 @@ function describeNotification(n) {
   }
   if (n?.kind === "sessions_today") {
     return { title: n.title, detail: n.body || "Open the Dashboard to see who", accent: C.orange, icon: Calendar };
+  }
+  // A coach's reply on a logged session, or a number they corrected (012).
+  if (n?.kind === "session_note") {
+    return { title: n.title, detail: n.body || "", accent: C.blue, icon: MessageCircle };
   }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
@@ -12183,6 +12187,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Which tab. Overview first: the coach opening an athlete most often wants
   // to know how they are doing, not to edit their programme.
   const [tab, setTab] = useState("overview");
+  // The logged session the coach is replying to or correcting.
+  const [replyLog, setReplyLog] = useState(null);
 
   // Sessions and credits are loaded by the booking screens, which this page is
   // not. Without this the removal dialog would report zero unused sessions for
@@ -12894,9 +12900,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             </div>
           ) : (
             <div className="space-y-2.5">
-              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
+              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} onCoachEdit={setReplyLog} />)}
             </div>
           )}
+          <CoachSessionModal log={replyLog} onClose={() => setReplyLog(null)}
+            onSaved={(updated) => setState(s => ({
+              ...s,
+              athletes: s.athletes.map(a => a.id !== athlete.id ? a : {
+                ...a, workoutLogs: (a.workoutLogs || []).map(l => (l.id === updated.id ? updated : l)),
+              }),
+            }))} />
         </>)}
       </div>
 
@@ -16143,6 +16156,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         )}
 
+        {!isCoach && <CoachReplyCard logs={state.workoutLogs} />}
         {/* Booked sessions with the coach, under today's workout. Clients only:
             a coach in their own training mode is the one running them. */}
         {FEATURES.booking && !isCoach && state.coachProfile && (
@@ -16346,7 +16360,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 // One session row, used by the athlete's own history and by the coach's view of
 // an athlete. Shows effort and the athlete's note — the note is the whole point
 // of collecting it, and a coach who never sees it may as well not have asked.
-function SessionLogRow({ log, showNote = true }) {
+function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
   const [showLifts, setShowLifts] = useState(false);
   const adherence = log.setsPrescribed ? `${log.setsCompleted}/${log.setsPrescribed} sets` : null;
   // The lifts that had a weight recorded. This is what a coach opens a session
@@ -16416,7 +16430,167 @@ function SessionLogRow({ log, showNote = true }) {
           <span style={{ color: C.faint }}>Note: </span>{log.notes}
         </div>
       )}
+      {/* The coach's side of it (Isaiah, 28 Oct): a reply, and a mark when
+          the coach corrected a number, so neither side wonders why a weight
+          changed. */}
+      {(log.coachNote || log.coachEditedAt) && (
+        <div className="mt-2.5 rounded-lg px-3 py-2 text-[12.5px] leading-relaxed" style={{ background: `${C.blue}12`, border: `1px solid ${C.blue}33`, color: C.text }}>
+          {log.coachNote && <div><span className="font-semibold" style={{ color: C.blue }}>Coach: </span>{log.coachNote}</div>}
+          {log.coachEditedAt && <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>A number in this session was corrected by the coach.</div>}
+        </div>
+      )}
+      {onCoachEdit && (
+        <button onClick={() => onCoachEdit(log)} className="mt-2.5 text-[12.5px] font-semibold rounded-full px-3 py-1.5"
+          style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>
+          {log.coachNote ? "Edit reply or fix a number" : "Reply or fix a number"}
+        </button>
+      )}
     </div>
+  );
+}
+
+// The newest reply from the coach in the last week, on Home, until the athlete
+// closes it. The full history keeps every reply; this is just the one they
+// have not seen yet.
+const COACH_REPLY_DAYS = 7;
+const COACH_REPLY_SEEN_KEY = "tb_coach_reply_seen";
+function CoachReplyCard({ logs }) {
+  const [seen, setSeen] = useState(() => storageGet(COACH_REPLY_SEEN_KEY) || null);
+  const cutoff = Date.now() - COACH_REPLY_DAYS * 86400000;
+  const latest = (logs || [])
+    .filter(l => l?.coachNote && l.coachNoteAt && Date.parse(l.coachNoteAt) >= cutoff)
+    .sort((a, b) => Date.parse(b.coachNoteAt) - Date.parse(a.coachNoteAt))[0];
+  if (!latest) return null;
+  const stamp = `${latest.id}:${latest.coachNoteAt}`;
+  if (seen === stamp) return null;
+  return (
+    <div className="rounded-2xl p-4 mb-4" style={{ ...card(), border: `1px solid ${C.blue}55` }}>
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg p-2 shrink-0" style={{ background: `${C.blue}1f` }}><MessageCircle size={16} style={{ color: C.blue }} /></div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12.5px] font-semibold" style={{ color: C.blue }}>Your coach on {latest.programDay || "your session"}</div>
+          <div className="text-[15px] mt-1 leading-relaxed" style={{ color: C.text }}>{latest.coachNote}</div>
+          <div className="text-[11px] mt-1" style={{ color: C.faint }}>{formatLogDate(latest.date)}</div>
+        </div>
+        <button onClick={() => { storageSet(COACH_REPLY_SEEN_KEY, stamp); setSeen(stamp); }} aria-label="Close" className="shrink-0">
+          <X size={16} style={{ color: C.faint }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// What a coach can change in a logged session: their note on it, and the
+// weight or reps of a set that was logged. Everything goes through one
+// database function that allows exactly that and tells the athlete.
+function CoachSessionModal({ log, onClose, onSaved }) {
+  const [note, setNote] = useState(log?.coachNote || "");
+  const [values, setValues] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => { setNote(log?.coachNote || ""); setValues({}); setError(null); setSaving(false); }, [log?.id]);
+  if (!log) return null;
+
+  // Every set that was ticked off, with its place in the stored session.
+  const lifts = (log.exercises || []).map((e, ei) => ({
+    name: e.name, ei,
+    sets: (e.sets || []).map((st, si) => ({ ...st, si })).filter(st => st.done === true),
+  })).filter(x => x.sets.length);
+
+  const keyOf = (ei, si) => `${ei}:${si}`;
+  const valueOf = (ei, si, field, fallback) => {
+    const v = values[keyOf(ei, si)];
+    return v && v[field] !== undefined ? v[field] : (fallback ?? "");
+  };
+  const setValue = (ei, si, field, v) => setValues(prev => ({ ...prev, [keyOf(ei, si)]: { ...(prev[keyOf(ei, si)] || {}), [field]: v } }));
+
+  const edits = [];
+  lifts.forEach(x => x.sets.forEach(st => {
+    const v = values[keyOf(x.ei, st.si)];
+    if (!v) return;
+    const weight = v.weight !== undefined ? (String(v.weight).trim() === "" ? null : Number(v.weight)) : (st.weight ?? null);
+    const reps = v.reps !== undefined ? (String(v.reps).trim() === "" ? null : Math.round(Number(v.reps))) : (st.reps ?? null);
+    if (weight === (st.weight ?? null) && reps === (st.reps ?? null)) return;
+    edits.push({ e: x.ei, s: st.si, weight, reps });
+  }));
+  const badNumber = edits.some(ed => (ed.weight !== null && !Number.isFinite(ed.weight)) || (ed.reps !== null && !Number.isFinite(ed.reps)));
+  const noteChanged = note.trim() !== (log.coachNote || "");
+  const canSave = !saving && !badNumber && (noteChanged || edits.length > 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    const { error: e } = await supabase.rpc("coach_update_session", {
+      p_log_id: log.id,
+      p_note: noteChanged ? note.trim() : null,
+      p_edits: edits.length ? edits : null,
+    });
+    if (e) {
+      setSaving(false);
+      setError(e.message || "That didn't save. Check your connection and try again.");
+      return;
+    }
+    const exercises = (log.exercises || []).map((ex, ei) => ({
+      ...ex,
+      sets: (ex.sets || []).map((st, si) => {
+        const ed = edits.find(x => x.e === ei && x.s === si);
+        return ed ? { ...st, weight: ed.weight, reps: ed.reps } : st;
+      }),
+    }));
+    const now = new Date().toISOString();
+    onSaved({
+      ...log, exercises,
+      coachNote: noteChanged ? (note.trim() || null) : log.coachNote,
+      coachNoteAt: noteChanged ? now : log.coachNoteAt,
+      coachEditedAt: edits.length ? now : log.coachEditedAt,
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  const input = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "8px 10px", fontSize: 15, width: "100%" };
+  return (
+    <Modal open={!!log} onClose={() => !saving && onClose()} title={log.programDay || "Session"}>
+      <div className="text-[12.5px] mb-3" style={{ color: C.sub }}>{formatLogDate(log.date)}</div>
+      {log.notes && (
+        <div className="rounded-lg px-3 py-2 mb-4 text-[12.5px]" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}>
+          <span style={{ color: C.faint }}>Their note: </span>{log.notes}
+        </div>
+      )}
+      <Field label="Your reply">
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Great work on the squats. Keep the bar path tight next week."
+          style={{ ...input, resize: "none" }} />
+      </Field>
+
+      {lifts.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Fix a number</div>
+          <div className="space-y-3">
+            {lifts.map(x => (
+              <div key={x.ei}>
+                <div className="text-[13px] font-semibold mb-1.5" style={{ color: C.text }}>{x.name}</div>
+                {x.sets.map(st => (
+                  <div key={st.si} className="flex items-center gap-2 mb-1.5">
+                    <div className="text-[12.5px] w-12 shrink-0" style={{ color: C.faint }}>Set {st.set || st.si + 1}</div>
+                    <input inputMode="decimal" aria-label={`${x.name} set ${st.si + 1} weight`} value={valueOf(x.ei, st.si, "weight", st.weight)}
+                      onChange={e => setValue(x.ei, st.si, "weight", e.target.value)} style={input} />
+                    <div className="text-[12.5px] shrink-0" style={{ color: C.sub }}>{st.unit || "lb"} ×</div>
+                    <input inputMode="numeric" aria-label={`${x.name} set ${st.si + 1} reps`} value={valueOf(x.ei, st.si, "reps", st.reps)}
+                      onChange={e => setValue(x.ei, st.si, "reps", e.target.value)} style={{ ...input, width: 64, flex: "0 0 64px" }} />
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {badNumber && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>Use numbers only for weight and reps.</div>}
+      {error && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</div>}
+      <p className="text-[11px] mt-3" style={{ color: C.faint }}>They get a notification with your reply. A fixed number is marked as corrected by you.</p>
+      <Btn className="w-full mt-3" disabled={!canSave} onClick={save}>{saving ? "Saving\u2026" : "Send"}</Btn>
+    </Modal>
   );
 }
 
@@ -26668,6 +26842,8 @@ function NotificationsPage({ state, setState, nav, notifications, onMarkAllRead,
                     // you can only read is a notification you have to act on
                     // somewhere else, from memory.
                     if (isCoach && n.data?.athleteId) nav.go("coach-athlete-detail", n.data.athleteId);
+                    // A coach's reply shows at the top of Home.
+                    else if (!isCoach && n.kind === "session_note") nav.go("athlete-dashboard");
                   }}
                   className="flex-1 min-w-0 text-left">
                   <div className="text-[15px] font-semibold" style={{ color: C.text }}>{d.title}</div>
@@ -27571,7 +27747,7 @@ function AppInner() {
             groupId: a.group_id || null,
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
-            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })),
+            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })),
             checkins: checkinsByAthlete[a.id] || {},
             // Same shape as state.sessionMoves, so planForWeek and
             // missedSessions read an athlete exactly as they read the
@@ -27703,7 +27879,7 @@ function AppInner() {
           })),
         };
         if (logRows?.length) {
-          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })) };
+          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -27864,6 +28040,7 @@ function AppInner() {
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
             setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
+            coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null,
           })),
         };
       }),
