@@ -56,8 +56,14 @@ Next session card with date) is pushed, NOT merged yet.
   AI tab, self-guided get AI only; #16 Accountability and Session-Length
   switches removed from coach Profile, Session Length panel always on,
   "Today's Check-ins" became "Today's Workouts" (logged today = done).
-- Next: batch 2 Coach tab (#3), batch 3 accounts (#19, #18), batch 4 custom
-  sound (#8), batch 5 Adjust with AI.
+- Branch `simplify-batch-2` (off batch 1, 28 Oct): #3 Coach tab. New
+  `CoachTab`: Messages | Sessions | History under one header (the coach's
+  name). AthleteMessages and AthleteBooking take a `header` prop; Sessions
+  hides the history (it has its own tab). Book is no longer a bottom-bar
+  tab (5 tabs now); route `athlete-booking` renders CoachTab on Sessions.
+  Self-guided athletes see the AI thread only.
+- Next: batch 3 accounts (#19, #18), batch 4 custom sound (#8), batch 5
+  Adjust with AI.
 
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in

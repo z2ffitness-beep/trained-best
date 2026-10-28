@@ -8867,6 +8867,7 @@ function FirstRunTour({ hasCoach, onDone }) {
 const NAV_PARENT = {
   "athlete-workout": "athlete-program",
   "athlete-program-edit": "calendar",
+  "athlete-booking": "athlete-ai",
 };
 
 function BottomNav({ items, active, onChange }) {
@@ -21309,7 +21310,7 @@ function AthleteMessageRow({ m, coachName, onHold }) {
   );
 }
 
-function AthleteMessages({ state, setState, nav, myUserId }) {
+function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
   const myId = myUserId || state.me.id;
   const hasCoach = !!state.me.coachId;
   // Open on the Coach tab when there's actually a coach to talk to. With the AI
@@ -21412,7 +21413,7 @@ function AthleteMessages({ state, setState, nav, myUserId }) {
 
   return (
     <div className="flex flex-col app-screen">
-      <TopBar title="Messages" onLogout={nav.logout} />
+      {header || <TopBar title="Messages" onLogout={nav.logout} />}
       {/* One thread, no tab strip (Isaiah, 28 Oct): a coached athlete talks to
           their coach only; a self-guided athlete gets the AI assistant. */}
 
@@ -25107,7 +25108,54 @@ function SellPackForm({ athletes, types, onSell, busy }) {
 
 // The client's booking screen. Credits first, because that is the question
 // they open it with, then what's open, then what they've already got booked.
-function AthleteBooking({ state, setState, nav }) {
+// The Coach tab (Isaiah, 28 Oct): everything between a client and their coach
+// in one place. Messages, Sessions (book, move, cancel) and History (past
+// sessions and billing), as three tabs under one header so it stays clean.
+// A self-guided athlete has no coach to book with, so they get the AI
+// assistant thread on its own.
+function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
+  const hasCoach = !!state.me.coachId;
+  const [tab, setTab] = useState(initialTab);
+  const booking = state.booking || EMPTY_BOOKING;
+  useEffect(() => {
+    if (hasCoach && !state.booking?.loaded) loadBooking(setState);
+  }, [hasCoach, state.booking?.loaded, setState]);
+
+  if (!hasCoach || !FEATURES.booking) {
+    return <AthleteMessages state={state} setState={setState} nav={nav} myUserId={myUserId}
+      header={<TopBar title="Coach" />} />;
+  }
+
+  const tabs = (
+    <div className="mt-3">
+      <SegmentedTabs value={tab} onChange={setTab} options={[
+        { key: "messages", label: "Messages" },
+        { key: "sessions", label: "Sessions" },
+        { key: "history", label: "History" },
+      ]} />
+    </div>
+  );
+  const header = <TopBar title={state.coachProfile?.name || "Coach"} below={tabs} />;
+
+  if (tab === "messages") {
+    return <AthleteMessages state={state} setState={setState} nav={nav} myUserId={myUserId} header={header} />;
+  }
+  if (tab === "sessions") {
+    return <AthleteBooking state={state} setState={setState} nav={nav} header={header} showHistory={false} />;
+  }
+  return (
+    <div className="pb-28">
+      {header}
+      <div className="px-5 pt-5">
+        {booking.loaded
+          ? <SessionAndBillingHistory booking={booking} athleteId={state.me.id} />
+          : <div className="pt-12 text-center"><Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>}
+      </div>
+    </div>
+  );
+}
+
+function AthleteBooking({ state, setState, nav, header = null, showHistory = true }) {
   const [busy, setBusy] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -25160,7 +25208,7 @@ function AthleteBooking({ state, setState, nav }) {
   if (!coachId) {
     return (
       <div className="pb-28">
-        <TopBar title="Book" onLogout={nav.logout} />
+        {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-10 text-center">
           <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No coach yet</div>
           <p className="text-[12.5px]" style={{ color: C.sub }}>Booking opens up once you've joined a coach with their invite code.</p>
@@ -25175,7 +25223,7 @@ function AthleteBooking({ state, setState, nav }) {
   if (booking.error) {
     return (
       <div className="pb-28">
-        <TopBar title="Book" onLogout={nav.logout} />
+        {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-10 text-center">
           <AlertCircle size={24} style={{ color: C.amber }} className="mx-auto mb-3" />
           <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>Couldn't load your sessions</div>
@@ -25191,7 +25239,7 @@ function AthleteBooking({ state, setState, nav }) {
   if (!booking.loaded) {
     return (
       <div className="pb-28">
-        <TopBar title="Book" onLogout={nav.logout} />
+        {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-16 text-center">
           <Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} />
         </div>
@@ -25201,7 +25249,7 @@ function AthleteBooking({ state, setState, nav }) {
 
   return (
     <div className="pb-28">
-      <TopBar title="Book" onLogout={nav.logout} />
+      {header || <TopBar title="Book" onLogout={nav.logout} />}
       <div className="px-5 pt-5">
         {err && (
           <div className="rounded-lg p-3 mb-4 text-[12.5px] flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
@@ -25361,9 +25409,11 @@ function AthleteBooking({ state, setState, nav }) {
           </div>
         )}
 
-        <div className="mt-6">
-          <SessionAndBillingHistory booking={booking} athleteId={myId} />
-        </div>
+        {showHistory && (
+          <div className="mt-6">
+            <SessionAndBillingHistory booking={booking} athleteId={myId} />
+          </div>
+        )}
       </div>
 
       {/* Said before it happens, not after. A client who discovers the charge
@@ -26721,7 +26771,7 @@ function AppInner() {
     // The two Home screens too (26 Oct): both now show booked sessions, and a
     // client told "Session today" about a session that was cancelled an hour
     // ago would turn up for nothing.
-    if (!["coach-booking", "athlete-booking", "coach-dashboard", "athlete-dashboard"].includes(view)) return;
+    if (!["coach-booking", "athlete-booking", "athlete-ai", "coach-dashboard", "athlete-dashboard"].includes(view)) return;
     loadBooking(setState);
   }, [view, authed, authUserId]);
 
@@ -27239,7 +27289,6 @@ function AppInner() {
     // Book explains it needs a coach, and the Coach thread points at
     // Profile > Join your coach. So the empty case is handled, and the bar
     // stays the same shape for everybody.
-    ...(FEATURES.booking ? [{ key: "athlete-booking", label: "Book", icon: ClipboardList }] : []),
     ...(FEATURES.community ? [{ key: "community", label: "Community", icon: MessageSquare }] : []),
     { key: "athlete-ai", label: "Coach", icon: MessageSquare, badge: unreadCount },
     { key: "athlete-profile", label: "Profile", icon: User },
@@ -27268,12 +27317,13 @@ function AppInner() {
     "athlete-program-edit": <AthleteProgram state={state} setState={setState} nav={nav} initialDayId={navParam} />,
     "athlete-workout": <Workout state={state} setState={setState} nav={nav} dayId={navParam} />,
     "athlete-progress": <AthleteProgress state={state} setState={setState} nav={nav} />,
-    "athlete-ai": <AthleteMessages state={state} setState={setState} nav={nav} myUserId={authUserId} />,
+    "athlete-ai": <CoachTab state={state} setState={setState} nav={nav} myUserId={authUserId} />,
     "athlete-profile": <AthleteProfile state={state} setState={setState} nav={nav} />,
     "calendar": <CalendarViewPage state={state} setState={setState} nav={nav} />,
     ...(FEATURES.booking ? {
       "coach-booking": <CoachBooking state={state} setState={setState} nav={nav} myUserId={authUserId} />,
-      "athlete-booking": <AthleteBooking state={state} setState={setState} nav={nav} />,
+      // Links that used to open the Book tab land on Coach, on Sessions.
+      "athlete-booking": <CoachTab state={state} setState={setState} nav={nav} myUserId={authUserId} initialTab="sessions" />,
     } : {}),
     "form-checks": <FormChecksPage state={state} nav={nav} isCoach={authed === "coach"} />,
     "privacy": <PrivacyPolicyPage nav={nav} onBack={() => nav.go(authed === "coach" ? "coach-profile" : "athlete-profile")} />,
