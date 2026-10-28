@@ -17926,7 +17926,7 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
 const ALERT_SOUNDS = [
   { key: "beep",  label: "Beep",  hint: "Short and sharp",       tones: [[880, 0.10], [0, 0.06], [880, 0.10]] },
   { key: "chime", label: "Chime", hint: "Soft, rising",          tones: [[587.33, 0.16], [783.99, 0.16], [1046.5, 0.30]] },
-  { key: "alarm", label: "Alarm", hint: "Insistent — loud gyms", tones: [[1046.5, 0.09], [0, 0.05], [1046.5, 0.09], [0, 0.05], [1046.5, 0.09], [0, 0.05], [1046.5, 0.22]] },
+  { key: "alarm", label: "Alarm", hint: "Insistent, for loud gyms", tones: [[1046.5, 0.09], [0, 0.05], [1046.5, 0.09], [0, 0.05], [1046.5, 0.09], [0, 0.05], [1046.5, 0.22]] },
 ];
 const DEFAULT_ALERT = "beep";
 
@@ -17954,6 +17954,11 @@ function playAlert(soundKey) {
   // without the API ignore it.
   try { navigator.vibrate?.([120, 60, 120]); } catch { /* unsupported */ }
 
+  if (soundKey === CUSTOM_ALERT) { playCustomAlert(); return; }
+  playTones(soundKey);
+}
+
+function playTones(soundKey) {
   const ctx = getAudioContext();
   if (!ctx) return;
   const sound = ALERT_SOUNDS.find(s => s.key === soundKey) || ALERT_SOUNDS[0];
@@ -17975,6 +17980,89 @@ function playAlert(soundKey) {
     }
     at += dur;
   }
+}
+
+// ---------- the athlete's own rest sound ----------
+//
+// Isaiah, 28 Oct: people should be able to use their own sound. It is kept on
+// the phone (IndexedDB), not uploaded: the alert has to play at the exact
+// moment rest ends, often in a gym with no signal, so it cannot depend on a
+// download. The choice "custom" is saved with the other settings; on a phone
+// that does not have the file, the alert falls back to Beep.
+const CUSTOM_ALERT = "custom";
+const CUSTOM_SOUND_MAX_BYTES = 3 * 1024 * 1024;
+const CUSTOM_SOUND_MAX_SECONDS = 8;
+const SOUND_DB = "tb-sounds";
+const SOUND_KEY = "rest";
+
+function soundDb() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(SOUND_DB, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("sounds");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) { reject(e); }
+  });
+}
+async function soundDbOp(mode, fn) {
+  const db = await soundDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("sounds", mode);
+    const req = fn(tx.objectStore("sounds"));
+    tx.oncomplete = () => { db.close(); resolve(req?.result); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+const readCustomSound = () => soundDbOp("readonly", st => st.get(SOUND_KEY)).catch(() => null);
+const writeCustomSound = (rec) => soundDbOp("readwrite", st => st.put(rec, SOUND_KEY));
+const clearCustomSound = () => soundDbOp("readwrite", st => st.delete(SOUND_KEY)).catch(() => {});
+
+let customBuffer = null;
+async function decodeSound(bytes) {
+  const ctx = getAudioContext();
+  if (!ctx) throw new Error("no audio");
+  // decodeAudioData takes ownership of the buffer it is given, so it gets a copy.
+  return await new Promise((resolve, reject) => {
+    const p = ctx.decodeAudioData(bytes.slice(0), resolve, reject);
+    if (p && p.then) p.then(resolve, reject);
+  });
+}
+async function loadCustomBuffer() {
+  if (customBuffer) return customBuffer;
+  const rec = await readCustomSound();
+  if (!rec?.bytes) return null;
+  customBuffer = await decodeSound(rec.bytes);
+  return customBuffer;
+}
+function playBuffer(buffer) {
+  const ctx = getAudioContext();
+  if (!ctx || !buffer) return false;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.start();
+  // A whole song would play over the next set, so it is cut off.
+  src.stop(ctx.currentTime + Math.min(buffer.duration, CUSTOM_SOUND_MAX_SECONDS));
+  return true;
+}
+function playCustomAlert() {
+  if (customBuffer) { playBuffer(customBuffer); return; }
+  loadCustomBuffer()
+    .then(b => { if (!playBuffer(b)) playTones(DEFAULT_ALERT); })
+    .catch(() => playTones(DEFAULT_ALERT));
+}
+// Checks the file really plays before keeping it, then stores it.
+async function saveCustomSound(file) {
+  if (!file) throw new Error("No file picked.");
+  if (file.size > CUSTOM_SOUND_MAX_BYTES) throw new Error("That file is too big. Pick one under 3 MB.");
+  const bytes = await file.arrayBuffer();
+  let buffer;
+  try { buffer = await decodeSound(bytes); }
+  catch { throw new Error("That file can't be played here. Try an MP3, M4A or WAV."); }
+  await writeCustomSound({ name: file.name, bytes, savedAt: Date.now() });
+  customBuffer = buffer;
+  return { name: file.name, seconds: buffer.duration };
 }
 
 function RestTimer({ seconds, restKey, onDone, alertSound }) {
@@ -22183,6 +22271,38 @@ function ThemePicker({ state, setState }) {
 function AthletePreferences({ state, setState }) {
   const alert = state.me.intake?.restAlert || DEFAULT_ALERT;
   const [previewing, setPreviewing] = useState(null);
+  // The athlete's own sound, if this phone has one.
+  const [customName, setCustomName] = useState(null);
+  const [soundBusy, setSoundBusy] = useState(false);
+  const [soundError, setSoundError] = useState(null);
+  const soundInputRef = useRef(null);
+  useEffect(() => {
+    let live = true;
+    readCustomSound().then(rec => { if (live) setCustomName(rec?.name || null); });
+    return () => { live = false; };
+  }, []);
+
+  const pickSound = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setSoundBusy(true);
+    setSoundError(null);
+    try {
+      const { name } = await saveCustomSound(f);
+      setCustomName(name);
+      chooseAlert(CUSTOM_ALERT);
+    } catch (err) {
+      setSoundError(err?.message || "Couldn't use that file.");
+    }
+    setSoundBusy(false);
+  };
+  const removeSound = async () => {
+    await clearCustomSound();
+    customBuffer = null;
+    setCustomName(null);
+    if (alert === CUSTOM_ALERT) saveSetting("restAlert", DEFAULT_ALERT);
+  };
 
   const saveSetting = (key, value) => saveProfileSetting(setState, state.me.id, key, value);
 
@@ -22252,7 +22372,11 @@ function AthletePreferences({ state, setState }) {
       <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-1" style={{ color: C.sub }}>Rest Timer Alert</div>
       <p className="text-[12.5px] mb-2.5" style={{ color: C.faint }}>Plays when your rest between sets is up. Tap one to hear it.</p>
       <div className="space-y-2 mb-5">
-        {[...ALERT_SOUNDS, { key: "off", label: "Off", hint: "No sound — the on-screen notice still shows" }].map(o => {
+        {[
+          ...ALERT_SOUNDS,
+          ...(customName ? [{ key: CUSTOM_ALERT, label: "Your sound", hint: `${customName}. Saved on this phone.` }] : []),
+          { key: "off", label: "Off", hint: "No sound. The on-screen notice still shows." },
+        ].map(o => {
           const active = alert === o.key;
           return (
             <button key={o.key} onClick={() => chooseAlert(o.key)} className="w-full rounded-2xl p-3.5 flex items-center gap-3 text-left"
@@ -22272,6 +22396,21 @@ function AthletePreferences({ state, setState }) {
             </button>
           );
         })}
+        <input ref={soundInputRef} type="file" accept="audio/*" className="hidden" onChange={pickSound} />
+        <div className="flex items-center gap-4 pt-1">
+          <button onClick={() => { getAudioContext(); soundInputRef.current?.click(); }} disabled={soundBusy}
+            className="rounded-xl px-4 py-2.5 text-[15px] font-semibold"
+            style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }}>
+            {soundBusy ? "Checking\u2026" : customName ? "Replace your sound" : "Upload your own sound"}
+          </button>
+          {customName && (
+            <button onClick={removeSound} className="text-[15px] font-semibold" style={{ color: C.sub }}>Remove</button>
+          )}
+        </div>
+        <p className="text-[11px]" style={{ color: C.faint }}>
+          MP3, M4A or WAV, under 3 MB. Plays for up to {CUSTOM_SOUND_MAX_SECONDS} seconds.
+        </p>
+        {soundError && <p className="text-[12.5px]" style={{ color: C.red }}>{soundError}</p>}
       </div>
     </>
   );
