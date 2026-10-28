@@ -6650,7 +6650,7 @@ function blockSummaryFor(exercise, blocks, field = "name") {
   return (blocks || []).map(b => {
     const at = resolveExerciseForWeek(exercise, b.startWeek);
     return {
-      startWeek: b.startWeek, endWeek: b.endWeek, index: b.index,
+      startWeek: b.startWeek, endWeek: b.endWeek, index: b.index, name: b.name || null,
       skipped: at === null,
       value: at ? at[field] : null,
     };
@@ -6817,6 +6817,14 @@ function authoredBlocksLookReal(blocks) {
 }
 
 function programBlocks(program) {
+  // Phases a coach named (Adjust with AI, 28 Oct) come first: they are the
+  // coach saying where each phase starts and ends, not a guess.
+  if (storedPhasesValid(program?.phases, program?.weeks)) {
+    const list = program.phases;
+    return list.map((ph, i) => ({
+      index: i + 1, startWeek: ph.startWeek, endWeek: ph.endWeek, isFinal: i === list.length - 1, name: ph.name,
+    }));
+  }
   const generated = buildProgramPlan(program?.weeks).blocks;
   if (!programHasWeeklyPlan(program)) return generated;
   const authored = authoredBlocks(program);
@@ -9046,7 +9054,7 @@ function EditScopeModal({ open, onClose, onConfirm, exercise, blocks, week, tota
                   {on ? <CheckCircle2 size={16} style={{ color: C.orange }} className="shrink-0" />
                       : <Circle size={16} style={{ color: C.faint }} className="shrink-0" />}
                   <span className="text-[15px] font-semibold shrink-0" style={{ color: on ? C.orange : C.text }}>
-                    Block {r.index}
+                    {r.name || `Block ${r.index}`}
                   </span>
                   <span className="text-[11px] shrink-0" style={{ color: C.faint }}>wk {r.startWeek}–{r.endWeek}</span>
                   {/* What that block holds today, so ticking it is an informed
@@ -9483,6 +9491,8 @@ function buildDaysWithExerciseIds(rawDays, state, { sortByPhase = false } = {}) 
         // row for a single squat and none of them reaching the screen. It is
         // why a 26-week program looked like it had no progression in it.
         byWeek: byWeek,
+        // A coach's note or cue on this exercise (Adjust with AI, 28 Oct).
+        note: x.note || null,
       };
     }).sort((a, b) => (sortByPhase ? phaseIndex(a.phase) - phaseIndex(b.phase) : 0))
   }));
@@ -9529,6 +9539,7 @@ function denormalizeDays(days, state) {
         // resolves to nothing tomorrow, and a per-block movement swap would
         // quietly revert or go blank the next time the program was opened.
         byWeek: denormalizeByWeek(x.byWeek, state),
+        note: x.note || null,
       };
     })
   }));
@@ -12644,7 +12655,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             <>
               <ChalkDivider label="Whole Program" />
               <div className="mb-5">
-                <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={setDetailExercise} />
+                <ProgramBoardWithAI state={state} setState={setState} program={program}
+                  authorId={state.coachProfile?.id} onExerciseClick={setDetailExercise} />
               </div>
             </>
           )}
@@ -12742,7 +12754,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                             <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
                               className="shrink-0 rounded-lg px-3 py-2 text-left"
                               style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
-                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>Block {b.index}</div>
+                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>{b.name || `Block ${b.index}`}</div>
                               <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
                             </button>
                           );
@@ -17557,7 +17569,7 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
                     border: `1px solid ${isActive ? C.orange : C.border}`,
                   }}>
                   <div className="text-[15px] font-bold whitespace-nowrap" style={{ color: isActive ? "#fff" : C.text }}>
-                    Phase {b.index}
+                    {b.name || `Phase ${b.index}`}
                     {holdsToday && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: isActive ? "#ffffffcc" : C.olive }}>NOW</span>}
                   </div>
                   {/* Weeks AND the dates they actually cover. "Weeks 5–8" is
@@ -17705,7 +17717,7 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
 
         {/* ---- sub tabs: the days inside the block ---- */}
         <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>
-          Sessions in {plan.blocks.length > 1 ? `Phase ${activeBlock?.index}` : "this program"}
+          Sessions in {plan.blocks.length > 1 ? (activeBlock?.name || `Phase ${activeBlock?.index}`) : "this program"}
         </div>
         <div className="flex gap-2 overflow-x-auto pb-2 mb-4">
           {myProgram.days.map((d, i) => (
@@ -20312,6 +20324,11 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               <span>{x.sets} {tracked && metricMode === "load" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
+            {x.note && (
+              <p className="text-[13px] mt-2 leading-relaxed rounded-lg px-3 py-2" style={{ color: C.text, background: C.bg, border: `1px solid ${C.border}` }}>
+                <span className="font-semibold" style={{ color: C.sub }}>Note: </span>{x.note}
+              </p>
+            )}
             {/* The number that decides how much weight goes on the bar, in
                 words. "RPE 8" told a first-time lifter nothing at all. Not
                 shown for a warm-up or cool-down, where there is no bar. */}
@@ -23253,6 +23270,483 @@ function ExerciseLibraryPage({ state, setState, nav, isCoach, myUserId }) {
   );
 }
 
+// ---------- Adjust with AI: the engine ----------
+//
+// Isaiah, 27 Oct: a coach (or a solo athlete on their own program) changes
+// anything in a program by describing it, Relay style. The AI does NOT send
+// back a whole new program. It sends a short list of operations ("these
+// exercises, these weeks, these values"), and the app applies them with the
+// same functions the manual editor uses. That keeps the reply small and fast,
+// keeps every week the AI was not asked about exactly as it was, and means a
+// bad reply fails validation instead of quietly mangling a program.
+//
+// Logged workouts live in their own table and are never part of a program, so
+// nothing here can touch them.
+
+// Stored phases: [{ name, startWeek, endWeek }], covering week 1 to the last
+// week with no gaps. Before this, phases were only ever inferred from where
+// movements changed, so a coach could not name them or move where one ends.
+function storedPhasesValid(phases, totalWeeks) {
+  const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
+  if (!Array.isArray(phases) || !phases.length) return false;
+  let next = 1;
+  for (const ph of phases) {
+    if (!ph || !String(ph.name || "").trim()) return false;
+    const s = Number(ph.startWeek);
+    const e = Number(ph.endWeek);
+    if (!Number.isInteger(s) || !Number.isInteger(e) || s !== next || e < s) return false;
+    next = e + 1;
+  }
+  return next - 1 === total;
+}
+
+// After weeks are added or removed, stretch or trim the stored phases to fit.
+// The last phase takes up the difference. If that cannot work, the names are
+// dropped and the app goes back to inferring phases, rather than keeping a
+// list that no longer lines up with the weeks.
+function fitPhasesToWeeks(phases, totalWeeks) {
+  if (!Array.isArray(phases) || !phases.length) return null;
+  const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
+  const kept = phases.filter(ph => Number(ph.startWeek) <= total).map(ph => ({ ...ph }));
+  if (!kept.length) return null;
+  kept[kept.length - 1].endWeek = total;
+  return storedPhasesValid(kept, total) ? kept : null;
+}
+
+const ADJUST_FIELDS = ["sets", "reps", "rpe", "rest"];
+const ADJUST_SECTION_KEYS = SESSION_BLOCKS.flatMap(b => b.phases);
+const ADJUST_MAX_WEEKS = 52;
+const newAdjustId = (prefix) => prefix + Math.random().toString(36).slice(2, 9);
+
+// A program the generator wrote has no per-week plan: the app works out each
+// week's numbers from the program's length (ramping, then a deload). The first
+// time a change is made to SOME weeks only, the program becomes a written-out
+// one, and that automatic progression switches off for every week. So before
+// the first week-scoped change, the numbers the athlete is already being shown
+// are written into the weeks, and nothing they see moves except what was asked.
+function bakeGeneratedProgression(program) {
+  if (!program || programHasWeeklyPlan(program)) return program;
+  const total = Math.max(1, Math.round(Number(program.weeks) || 0) || 1);
+  const plan = buildProgramPlan(total);
+  return {
+    ...program,
+    days: (program.days || []).map(d => ({
+      ...d,
+      exercises: (d.exercises || []).map(x => {
+        let out = { ...x };
+        let shown = { sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest };
+        for (let w = 1; w <= total; w++) {
+          const item = prescribeForWeek(x, plan, w, false);
+          if (!item || typeof item !== "object") continue;
+          const patch = {};
+          ADJUST_FIELDS.forEach(f => { if (item[f] !== undefined && item[f] !== shown[f]) patch[f] = item[f]; });
+          if (Object.keys(patch).length) {
+            // An entry names every field, so it does not fall back to the
+            // base for the ones that did not change this week.
+            out = setWeekEntry(out, w, { sets: item.sets, reps: item.reps, rpe: item.rpe, rest: item.rest });
+            shown = { sets: item.sets, reps: item.reps, rpe: item.rpe, rest: item.rest };
+          }
+        }
+        return tidyByWeek(out);
+      }),
+    })),
+  };
+}
+
+// Drop an exercise from weeks `from` to `to` only. Every week after the span
+// shows exactly what it showed before.
+function skipExerciseInRange(exercise, from, to, totalWeeks) {
+  const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
+  const after = to + 1;
+  const keepAfter = after <= total && !exercise.byWeek?.[String(after)]
+    ? (weekEntryFor(exercise, after) ? { ...weekEntryFor(exercise, after) } : { skip: false })
+    : null;
+  let out = exercise;
+  out = setWeekEntry(out, from, { skip: true });
+  weekKeys(out).filter(w => w > from && w <= to).forEach(w => { out = setWeekEntry(out, w, { skip: true }); });
+  if (keepAfter) out = setWeekEntry(out, after, { ...keepAfter, skip: keepAfter.skip === true ? true : false });
+  return tidyByWeek(out);
+}
+
+// A new exercise that only exists in weeks `from` to `to`.
+function limitNewExerciseToRange(exercise, from, to, totalWeeks) {
+  const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
+  const map = {};
+  if (from > 1) map["1"] = { skip: true };
+  if (from > 1) map[String(from)] = { skip: false };
+  if (to < total) map[String(to + 1)] = { skip: true };
+  return Object.keys(map).length ? { ...exercise, byWeek: map } : exercise;
+}
+
+// The program as the AI reads it. Names rather than library references, ids
+// the AI must hand back exactly, and only the fields that mean something.
+function programForAI(program, exercises, { withWeeks = true } = {}) {
+  const byId = new Map((exercises || []).map(e => [e.id, e]));
+  const nameOf = (id) => byId.get(id)?.name;
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const blocks = programBlocks(program);
+  return {
+    name: program?.name || "Program",
+    weeks: total,
+    phases: blocks.map(b => ({ name: b.name || `Phase ${b.index}`, startWeek: b.startWeek, endWeek: b.endWeek })),
+    phasesNamedByCoach: storedPhasesValid(program?.phases, total),
+    weeksWrittenOut: programHasWeeklyPlan(program),
+    days: (program?.days || []).map(d => ({
+      id: d.id, name: d.name || "Session", weekday: d.weekday || null,
+      exercises: (d.exercises || []).map(x => {
+        const o = { id: x.id, name: nameOf(x.exerciseId) || x.name || "Exercise", section: x.phase || null, sets: x.sets, reps: x.reps };
+        if (x.rpe !== undefined && x.rpe !== null && x.rpe !== "") o.rpe = x.rpe;
+        if (x.rest !== undefined && x.rest !== null && x.rest !== "") o.rest = x.rest;
+        if (x.note) o.note = x.note;
+        if (withWeeks && x.byWeek) {
+          o.byWeek = Object.fromEntries(Object.entries(x.byWeek).filter(([, e]) => e).map(([w, e]) => {
+            const { exerciseId, ...rest } = e;
+            const n = exerciseId ? (nameOf(exerciseId) || e.name) : e.name;
+            return [w, n ? { ...rest, name: n } : rest];
+          }));
+        }
+        return o;
+      }),
+    })),
+  };
+}
+
+// Applies the AI's operations. Throws with a plain reason on anything it
+// cannot do exactly, so the caller applies nothing at all.
+function applyAdjustOps(program, ops, { exercises = [] } = {}) {
+  if (!program) throw new Error("There is no program to change.");
+  if (!Array.isArray(ops)) throw new Error("The AI's reply had no list of changes.");
+  let p = JSON.parse(JSON.stringify(program));
+  const known = [...(exercises || [])];
+  const newExercises = [];
+  const byName = new Map(known.map(e => [String(e.name || "").trim().toLowerCase(), e]));
+  const libFind = (id) => known.find(e => e.id === id) || newExercises.find(e => e.id === id);
+  const nameFor = (id) => libFind(id)?.name;
+  const resolveName = (name, phase) => {
+    const clean = String(name || "").trim();
+    if (!clean) throw new Error("An exercise was given with no name.");
+    const key = clean.toLowerCase();
+    let hit = byName.get(key);
+    if (!hit) {
+      hit = { id: newAdjustId("eai"), name: clean, phase: phase || "compound", pattern: "AI-Generated", hasMedia: false };
+      byName.set(key, hit);
+      newExercises.push(hit);
+    }
+    return hit;
+  };
+  const total = () => Math.max(1, Math.round(Number(p.weeks) || 0) || 1);
+  const span = (weeks) => {
+    if (weeks === undefined || weeks === null) return null;
+    const pair = Array.isArray(weeks) ? weeks : [weeks.from ?? weeks.start, weeks.to ?? weeks.end];
+    const a = Math.round(Number(pair[0]));
+    const b = Math.round(Number(pair[1] ?? pair[0]));
+    if (!(a >= 1) || !(b >= a) || b > total()) throw new Error(`Weeks ${a} to ${b} are outside this ${total()}-week program.`);
+    return (a === 1 && b === total()) ? null : [a, b];
+  };
+  const findEx = (id) => {
+    for (const d of p.days || []) {
+      const i = (d.exercises || []).findIndex(x => x.id === id);
+      if (i >= 0) return { d, i };
+    }
+    throw new Error(`One of the exercises it named isn't in this program (${id}).`);
+  };
+  const findDay = (id) => {
+    const d = (p.days || []).find(x => x.id === id);
+    if (!d) throw new Error(`One of the days it named isn't in this program (${id}).`);
+    return d;
+  };
+  const section = (s) => {
+    if (s === undefined || s === null || s === "") return undefined;
+    if (!ADJUST_SECTION_KEYS.includes(s)) throw new Error(`"${s}" isn't a section this app knows.`);
+    return s;
+  };
+  const anyWeekScoped = ops.some(o => o && o.weeks && ["update_exercises", "remove_exercises", "add_exercise"].includes(o.op));
+  if (anyWeekScoped) p = bakeGeneratedProgression(p);
+
+  for (const op of ops) {
+    if (!op || typeof op !== "object") throw new Error("The AI sent a change it couldn't describe.");
+    switch (op.op) {
+      case "update_exercises": {
+        const ids = Array.isArray(op.exercises) ? op.exercises : [];
+        if (!ids.length) throw new Error("A change named no exercises.");
+        const set = op.set || {};
+        const sp = span(op.weeks);
+        for (const id of ids) {
+          const { d, i } = findEx(id);
+          let x = d.exercises[i];
+          const patch = {};
+          ADJUST_FIELDS.forEach(f => { if (set[f] !== undefined && set[f] !== null) patch[f] = set[f]; });
+          const ph = section(set.section);
+          if (ph) patch.phase = ph;
+          let swappedName = null;
+          if (set.name) {
+            const e = resolveName(set.name, ph || x.phase);
+            patch.exerciseId = e.id;
+            swappedName = e.name;
+          }
+          if (set.note !== undefined) {
+            if (sp) throw new Error("A note applies to every week of an exercise, not some weeks.");
+            x = { ...x, note: String(set.note || "").trim() || null };
+          }
+          if (Object.keys(patch).length) {
+            // The name rides along with a swap in both cases. Per-week entries
+            // are saved by NAME, so clearing only the reference would leave
+            // the old name behind and the swap would undo itself on reload.
+            const full = swappedName ? { ...patch, name: swappedName } : patch;
+            x = sp
+              ? applyExerciseEdit(x, full, {
+                  scope: "blocks", blocks: [{ startWeek: sp[0], endWeek: sp[1] }], selected: [sp[0]], totalWeeks: total(), nameFor,
+                })
+              : applyExerciseEdit(x, full, { scope: "all", totalWeeks: total(), nameFor });
+          }
+          d.exercises[i] = x;
+        }
+        break;
+      }
+      case "remove_exercises": {
+        const ids = Array.isArray(op.exercises) ? op.exercises : [];
+        if (!ids.length) throw new Error("A removal named no exercises.");
+        const sp = span(op.weeks);
+        for (const id of ids) {
+          const { d, i } = findEx(id);
+          if (sp) d.exercises[i] = skipExerciseInRange(d.exercises[i], sp[0], sp[1], total());
+          else d.exercises.splice(i, 1);
+        }
+        break;
+      }
+      case "add_exercise": {
+        const dayIds = Array.isArray(op.days) ? op.days : (op.day ? [op.day] : []);
+        if (!dayIds.length) throw new Error("An added exercise named no day.");
+        const spec = op.exercise || {};
+        const ph = section(spec.section) || "compound";
+        const e = resolveName(spec.name, ph);
+        const sp = span(op.weeks);
+        for (const dayId of dayIds) {
+          const d = findDay(dayId);
+          let x = {
+            id: newAdjustId("x"), exerciseId: e.id, phase: ph,
+            sets: spec.sets ?? 3, reps: spec.reps ?? "8", rpe: spec.rpe ?? null, rest: spec.rest ?? null,
+            groupId: null, groupKind: null, groupRounds: null, byWeek: null,
+            note: String(spec.note || "").trim() || null,
+          };
+          if (sp) x = limitNewExerciseToRange(x, sp[0], sp[1], total());
+          const at = op.after ? d.exercises.findIndex(y => y.id === op.after) : -1;
+          if (at >= 0) d.exercises.splice(at + 1, 0, x); else d.exercises.push(x);
+        }
+        break;
+      }
+      case "set_phases": {
+        if (op.phases === null || (Array.isArray(op.phases) && !op.phases.length)) { p.phases = null; break; }
+        const list = (op.phases || []).map(ph => ({
+          name: String(ph?.name || "").trim(),
+          startWeek: Math.round(Number(ph?.startWeek)),
+          endWeek: Math.round(Number(ph?.endWeek)),
+        }));
+        if (!storedPhasesValid(list, total())) {
+          throw new Error(`Phases have to run from week 1 to week ${total()} with no gaps or overlaps, and each needs a name.`);
+        }
+        p.phases = list;
+        break;
+      }
+      case "rename_program": {
+        const n = String(op.name || "").trim();
+        if (!n) throw new Error("A new program name can't be blank.");
+        p.name = n;
+        break;
+      }
+      case "update_day": {
+        const d = findDay(op.day);
+        if (op.name !== undefined) {
+          const n = String(op.name || "").trim();
+          if (!n) throw new Error("A day name can't be blank.");
+          d.name = n;
+        }
+        if (op.weekday !== undefined) {
+          if (op.weekday !== null && !WEEKDAY_ORDER.includes(op.weekday)) throw new Error(`"${op.weekday}" isn't a day of the week.`);
+          p.days = reassignWeekday(p.days, d.id, op.weekday);
+        }
+        break;
+      }
+      case "add_day": {
+        const n = String(op.name || "").trim() || "Session";
+        if (op.weekday && !WEEKDAY_ORDER.includes(op.weekday)) throw new Error(`"${op.weekday}" isn't a day of the week.`);
+        const id = String(op.id || newAdjustId("d"));
+        if ((p.days || []).some(d => d.id === id)) throw new Error(`There is already a day with the id ${id}.`);
+        const from = op.copyFrom ? findDay(op.copyFrom) : null;
+        const day = {
+          id, name: n, weekday: null, why: null, scheduleStart: null, scheduleWeeks: null, skipRanges: [], mode: null, modeByDate: {},
+          exercises: from ? from.exercises.map(x => ({ ...JSON.parse(JSON.stringify(x)), id: newAdjustId("x") })) : [],
+        };
+        p.days = [...(p.days || []), day];
+        if (op.weekday) p.days = reassignWeekday(p.days, id, op.weekday);
+        break;
+      }
+      case "remove_day": {
+        findDay(op.day);
+        if ((p.days || []).length <= 1) throw new Error("A program needs at least one day.");
+        p.days = p.days.filter(d => d.id !== op.day);
+        break;
+      }
+      case "add_weeks": {
+        const count = Math.round(Number(op.count));
+        const at = op.at === undefined ? total() + 1 : Math.round(Number(op.at));
+        if (!(count >= 1) || total() + count > ADJUST_MAX_WEEKS) throw new Error(`A program can be at most ${ADJUST_MAX_WEEKS} weeks.`);
+        if (!(at >= 1) || at > total() + 1) throw new Error(`Week ${at} isn't a place weeks can go.`);
+        const phases = p.phases;
+        p = insertProgramWeeks(p, at, count);
+        p.phases = fitPhasesToWeeks(phases, p.weeks);
+        break;
+      }
+      case "remove_weeks": {
+        const from = Math.round(Number(op.from));
+        const count = Math.round(Number(op.count));
+        if (!(from >= 1) || !(count >= 1) || from + count - 1 > total()) throw new Error(`Weeks ${from} to ${from + count - 1} aren't all in this program.`);
+        if (count >= total()) throw new Error("That would remove every week.");
+        const phases = p.phases;
+        p = removeProgramWeeks(p, from, count);
+        p.phases = fitPhasesToWeeks(phases, p.weeks);
+        break;
+      }
+      default:
+        throw new Error(`The AI asked for a change the app can't make ("${op.op}").`);
+    }
+  }
+  return { program: p, newExercises };
+}
+
+// The last check before anything is saved. A reply that would leave a day
+// with nothing in it, or a week with an empty session, is refused whole.
+function validateAdjustedProgram(program, exercises) {
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const ids = new Set((exercises || []).map(e => e.id));
+  const days = program?.days || [];
+  if (!days.length) return "That would leave the program with no days.";
+  if (total > ADJUST_MAX_WEEKS) return `A program can be at most ${ADJUST_MAX_WEEKS} weeks.`;
+  for (const d of days) {
+    if (!(d.exercises || []).length) return `${d.name || "A day"} would have no exercises.`;
+    for (const x of d.exercises) {
+      if (!ids.has(x.exerciseId)) return `An exercise on ${d.name || "a day"} doesn't match anything in the library.`;
+      for (const e of Object.values(x.byWeek || {})) {
+        if (e && e.exerciseId && !ids.has(e.exerciseId)) return `An exercise on ${d.name || "a day"} doesn't match anything in the library.`;
+      }
+    }
+    for (let w = 1; w <= total; w++) {
+      if (!(resolveDayForWeek(d, w).exercises || []).length) return `Week ${w} of ${d.name || "a day"} would have no exercises.`;
+    }
+  }
+  if (program.phases && !storedPhasesValid(program.phases, total)) return "The phases no longer line up with the weeks.";
+  return null;
+}
+
+// What changed, workout by workout, for the change card. A workout is one
+// day in one week, which is what Relay counts too.
+function adjustDiff(before, after, exercises) {
+  const byId = new Map((exercises || []).map(e => [e.id, e]));
+  // What the athlete is SHOWN that week, the same way the board and the
+  // workout work it out. Comparing stored values instead counted every week
+  // of a program the app progresses itself as "edited" the moment its weeks
+  // were written out, when nothing on screen had moved.
+  const shownBy = (prog) => {
+    const authored = programHasWeeklyPlan(prog);
+    const plan = buildProgramPlan(prog?.weeks);
+    return (d, w) => JSON.stringify((d?.exercises || [])
+      .map(x => prescribeForWeek(x, plan, w, authored))
+      .filter(Boolean)
+      .map(x => [byId.get(x.exerciseId)?.name || x.exerciseId, x.sets, x.reps, x.rpe, x.rest, x.phase, x.note || null]));
+  };
+  const shapeBefore = shownBy(before);
+  const shapeAfter = shownBy(after);
+  const bTotal = Math.max(1, Math.round(Number(before?.weeks) || 0) || 1);
+  const aTotal = Math.max(1, Math.round(Number(after?.weeks) || 0) || 1);
+  const bDays = new Map((before?.days || []).map(d => [d.id, d]));
+  const rows = [];
+  for (const d of after?.days || []) {
+    const old = bDays.get(d.id);
+    const weeks = [];
+    for (let w = 1; w <= aTotal; w++) {
+      const was = old && w <= bTotal ? shapeBefore(old, w) : null;
+      if (was !== shapeAfter(d, w) || (old && old.name !== d.name) || (old && old.weekday !== d.weekday)) weeks.push(w);
+    }
+    if (weeks.length) rows.push({ dayId: d.id, dayName: d.name || "Session", weeks, added: !old });
+  }
+  for (const d of before?.days || []) {
+    if (!(after?.days || []).some(x => x.id === d.id)) rows.push({ dayId: d.id, dayName: d.name || "Session", weeks: [], removed: true });
+  }
+  const other = [];
+  if ((before?.name || "") !== (after?.name || "")) other.push(`Renamed to ${after.name}`);
+  if (bTotal !== aTotal) other.push(`${aTotal} weeks long (was ${bTotal})`);
+  if (JSON.stringify(before?.phases || null) !== JSON.stringify(after?.phases || null)) {
+    other.push(after?.phases?.length ? `Phases: ${after.phases.map(ph => `${ph.name} (weeks ${ph.startWeek} to ${ph.endWeek})`).join(", ")}` : "Phase names cleared");
+  }
+  const workouts = rows.reduce((n, r) => n + (r.removed ? 1 : r.weeks.length), 0);
+  return { rows, other, workouts };
+}
+
+// "Weeks 5 to 8, 10" from [5, 6, 7, 8, 10].
+function formatWeekList(weeks) {
+  const list = [...new Set(weeks || [])].sort((a, b) => a - b);
+  if (!list.length) return "";
+  const parts = [];
+  let s = list[0];
+  let prev = list[0];
+  for (let i = 1; i <= list.length; i++) {
+    const w = list[i];
+    if (w === prev + 1) { prev = w; continue; }
+    parts.push(s === prev ? `${s}` : `${s} to ${prev}`);
+    s = w;
+    prev = w;
+  }
+  return `${list.length === 1 ? "Week" : "Weeks"} ${parts.join(", ")}`;
+}
+
+const ADJUST_SYSTEM = `You edit one strength and conditioning program inside the Trained.best app, for a coach or for an athlete who programs for themselves. They describe a change in plain words and you make it.
+
+You will get the current program as JSON and their request. Reply with ONLY a JSON object, no other text:
+{"reply": "...", "ops": [ ... ]}
+
+"reply": one to three short sentences in plain words saying what you changed (or what you need to know). No em dashes. No markdown.
+"ops": the changes, applied in order. Use ids exactly as given. Leave "weeks" out to mean every week of the program. "weeks": [from, to] is inclusive and 1-based; [4, 4] is week 4 only. Week numbers in later ops refer to the program after earlier ops have run.
+
+Operations:
+{"op":"update_exercises","exercises":[exercise ids],"set":{"sets":3,"reps":"5","rpe":7,"rest":"90s","name":"new exercise name to swap to","section":"compound","note":"cue text"},"weeks":[5,8]}
+  Only include the fields that change. "note" applies to every week, so never combine it with "weeks".
+{"op":"remove_exercises","exercises":[exercise ids],"weeks":[5,8]}
+{"op":"add_exercise","days":[day ids],"exercise":{"name":"Nordic Curl","section":"hypertrophy","sets":3,"reps":"5","rpe":7,"rest":"90s","note":"optional"},"after":"optional exercise id to place it after","weeks":[1,6]}
+{"op":"set_phases","phases":[{"name":"Foundation","startWeek":1,"endWeek":6},{"name":"Speed-Strength","startWeek":7,"endWeek":12}]}
+  Phases must run from week 1 to the last week with no gaps or overlaps.
+{"op":"rename_program","name":"..."}
+{"op":"update_day","day":"day id","name":"...","weekday":"Monday"}   (weekday is Monday to Sunday, or null to unschedule)
+{"op":"add_day","id":"new-day-1","name":"...","weekday":"Friday","copyFrom":"optional day id"}   then add_exercise to "new-day-1" if it is not a copy
+{"op":"remove_day","day":"day id"}
+{"op":"add_weeks","at":13,"count":4}   (at = the week number the new weeks start at; new weeks carry on the week before them)
+{"op":"remove_weeks","from":11,"count":2}
+
+Sections (the "section" field): warmup_general and warmup_specific (Warm-Up), explosive (Power), compound (Primary Movements), hypertrophy (Secondary Movements), lactic and aerobic (Conditioning), cooldown (Cool-Down).
+
+How to work:
+- Do exactly what was asked, to exactly the weeks, days, sections, phases and exercises asked about. Everything else stays as it is.
+- "byWeek" on an exercise shows how it changes from that week on (an entry applies until the next one). Read it so you know what a week actually shows today.
+- "Every Tuesday" means the days whose weekday is Tuesday. "Lower days" means days whose name or exercises make them lower body days. "Main lifts" means the compound section.
+- A deload week: about 60 percent of the sets (rounded, at least 1) and RPE about 2 lower, same movements.
+- If the request is unclear, would remove everything from a day, or you can't do it with these operations, return "ops": [] and ask one short question in "reply".
+- Never invent ids. New days get a new id you choose, as in add_day.`;
+
+// The conversation as the model gets it: earlier turns as plain text, and the
+// program as it is right now attached to the newest request only, so it
+// always edits the current version rather than one from three turns ago.
+function buildAdjustMessages(history, program, exercises, request) {
+  const turns = (history || [])
+    .filter(m => (m.role === "user" || m.role === "assistant") && m.text)
+    .slice(-8)
+    .map(m => ({ role: m.role, content: m.text }));
+  while (turns.length && turns[0].role !== "user") turns.shift();
+  let json = JSON.stringify(programForAI(program, exercises));
+  // The server refuses bodies over 100 KB. A long written-out program can get
+  // close, so the per-week detail goes first if it has to.
+  if (json.length > 80000) json = JSON.stringify(programForAI(program, exercises, { withWeeks: false }));
+  return [...turns, { role: "user", content: `Current program:\n${json}\n\nRequest: ${request}` }];
+}
+
 // ---------- the program board ----------
 //
 // Isaiah, 26 Oct: the whole program at a glance, the way Relay shows one.
@@ -23315,6 +23809,7 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
                 <div className="min-w-0 flex-1">
                   <div className="text-[13px] font-medium leading-snug truncate" style={{ color: C.text }}>{name}</div>
                   <div className="text-[11px] tabular-nums" style={{ color: C.sub }}>{x.sets}×{x.reps}</div>
+                  {x.note && <div className="text-[11px] italic truncate" style={{ color: C.faint }}>{x.note}</div>}
                 </div>
               </button>
             );
@@ -23343,7 +23838,9 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
   const byId = new Map((exercises || []).map(e => [e.id, e]));
   const exById = (id) => byId.get(id);
   const nowWeek = currentProgramWeek(program);
-  const weekLabel = (w) => `Week ${w}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
+  const named = storedPhasesValid(program.phases, total) ? program.phases : null;
+  const phaseName = (w) => named?.find(ph => w >= ph.startWeek && w <= ph.endWeek)?.name || null;
+  const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
   const shared = { program, plan, authored, exById, onExerciseClick, onEditDay };
 
   if (!wide) {
@@ -23355,8 +23852,8 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
             style={{ opacity: shown <= 1 ? 0.3 : 1 }}><ChevronLeft size={20} style={{ color: C.sub }} /></button>
           <div className="text-center">
             <div className="font-semibold text-[15px]" style={{ fontFamily: DISPLAY, color: C.text }}>Week {shown} of {total}</div>
-            {(deloads.has(shown) || shown === nowWeek) && (
-              <div className="text-[11px]" style={{ color: C.orange }}>{[deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
+            {(phaseName(shown) || deloads.has(shown) || shown === nowWeek) && (
+              <div className="text-[11px]" style={{ color: C.orange }}>{[phaseName(shown), deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
             )}
           </div>
           <button onClick={() => setWeek(w => Math.min(total, w + 1))} disabled={shown >= total} aria-label="Next week"
@@ -23383,6 +23880,333 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ---------- Adjust with AI: saving, the chat, and where it sits ----------
+
+// Saves a whole program at once: days, length, name and phases. The manual
+// editor saves days on their own, which is right for one typed number; an AI
+// change can touch all four in one go.
+async function saveWholeProgram(state, setState, updated, newExercises = [], summary = null) {
+  const isLocal = state.me?.customProgram?.id === updated.id;
+  setState(s => ({
+    ...s,
+    exercises: newExercises.length ? [...s.exercises, ...newExercises] : s.exercises,
+    programs: (s.programs || []).map(p => (p.id === updated.id ? updated : p)),
+    me: s.me?.customProgram?.id === updated.id ? { ...s.me, customProgram: updated } : s.me,
+  }));
+  if (isLocal) return true;
+  // A typed edit still waiting to save would land after this and undo it.
+  cancelQueuedProgramSaves([updated.id]);
+  const withLib = { ...state, exercises: [...(state.exercises || []), ...newExercises] };
+  const patch = {
+    days: denormalizeDays(updated.days, withLib),
+    weeks: updated.weeks,
+    name: updated.name,
+    phases: updated.phases || null,
+  };
+  let { error } = await supabase.from("programs").update(patch).eq("id", updated.id);
+  // Until the phases column exists (migration 011), save everything else
+  // rather than nothing.
+  if (error && /phases/i.test(error.message || "")) {
+    const { phases, ...rest } = patch;
+    ({ error } = await supabase.from("programs").update(rest).eq("id", updated.id));
+  }
+  if (!error) notifyAthleteOfProgramChange(updated.id, summary);
+  return !error;
+}
+
+// The chat is kept per program and per person, so the coach comes back to the
+// same conversation. If the table isn't there yet (migration 011), the chat
+// still works for this visit and simply isn't kept.
+const ADJUST_TABLE = "program_ai_messages";
+
+function adjustRowToMessage(r) {
+  return {
+    id: r.id, role: r.role, text: r.content, createdAt: r.created_at,
+    changes: r.changes || null,
+  };
+}
+
+function ChangeCard({ changes, canUndo, undoHint, onUndo, busy }) {
+  const [open, setOpen] = useState(false);
+  if (!changes) return null;
+  const { rows = [], other = [], workouts = 0, undone } = changes;
+  return (
+    <div className="rounded-xl mt-2" style={{ background: C.bg, border: `1px solid ${undone ? C.border : C.blue + "55"}` }}>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left">
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold" style={{ color: undone ? C.faint : C.text, textDecoration: undone ? "line-through" : "none" }}>
+            {workouts > 0 ? `${workouts} workout${workouts === 1 ? "" : "s"} edited` : other.length ? "Program details changed" : "Nothing changed"}
+          </div>
+          {other.length > 0 && <div className="text-[11px] mt-0.5 truncate" style={{ color: C.sub }}>{other.join(" · ")}</div>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {undone
+            ? <span className="text-[11px] font-semibold" style={{ color: C.faint }}>Undone</span>
+            : canUndo && (
+              <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); if (!busy) onUndo(); }}
+                className="text-[11px] font-semibold rounded-full px-2.5 py-1" style={{ color: C.blue, border: `1px solid ${C.blue}55`, opacity: busy ? 0.5 : 1 }}>
+                Undo
+              </span>
+            )}
+          <ChevronRight size={16} style={{ color: C.faint, transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+        </div>
+      </button>
+      {open && (
+        <div className="px-3 pb-3" style={{ borderTop: `1px solid ${C.border}` }}>
+          {rows.map(r => (
+            <div key={r.dayId} className="flex items-baseline justify-between gap-3 pt-2">
+              <div className="text-[12.5px] font-semibold truncate" style={{ color: C.text }}>{r.dayName}</div>
+              <div className="text-[11px] shrink-0 text-right" style={{ color: C.sub }}>
+                {r.removed ? "Removed" : `${r.added ? "New day. " : ""}${formatWeekList(r.weeks)}`}
+              </div>
+            </div>
+          ))}
+          {other.map(o => <div key={o} className="text-[12.5px] pt-2" style={{ color: C.sub }}>{o}</div>)}
+          {!canUndo && !undone && undoHint && <div className="text-[11px] pt-2" style={{ color: C.faint }}>{undoHint}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdjustChat({ state, setState, program, authorId, onClose, compact = false }) {
+  const me = authorId || null;
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [kept, setKept] = useState(true);
+  // The program as it was before each change, for Undo during this visit.
+  const snapshots = useRef(new Map());
+  const listRef = useRef(null);
+  const programRef = useRef(program);
+  programRef.current = program;
+
+  useEffect(() => {
+    let live = true;
+    setMessages([]);
+    if (!program?.id || String(program.id).startsWith("plocal")) { setKept(false); return; }
+    supabase.from(ADJUST_TABLE).select("*").eq("program_id", program.id).order("created_at", { ascending: true }).limit(200)
+      .then(({ data, error: e }) => {
+        if (!live) return;
+        if (e) { setKept(false); return; }
+        setKept(true);
+        setMessages((data || []).map(adjustRowToMessage));
+      });
+    return () => { live = false; };
+  }, [program?.id]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, busy]);
+
+  const store = async (msg) => {
+    if (!kept || !me) return msg;
+    const { data, error: e } = await supabase.from(ADJUST_TABLE)
+      .insert({ program_id: program.id, author_id: me, role: msg.role, content: msg.text, changes: msg.changes || null })
+      .select().single();
+    if (e) { setKept(false); return msg; }
+    return { ...msg, id: data.id };
+  };
+
+  // Only the newest change that hasn't been undone can be undone, so an
+  // older Undo never quietly throws away the changes made after it.
+  const latestUndoable = [...messages].reverse().find(m => m.changes && !m.changes.undone && m.changes.workouts + (m.changes.other || []).length > 0);
+
+  const send = async (textArg) => {
+    const text = String(textArg ?? input).trim();
+    if (!text || busy) return;
+    setInput("");
+    setError(null);
+    const userMsg = { id: newAdjustId("m"), role: "user", text };
+    setMessages(m => [...m, userMsg]);
+    setBusy(true);
+    const before = programRef.current;
+    try {
+      store(userMsg).then(saved => setMessages(m => m.map(x => (x.id === userMsg.id ? saved : x))));
+      const raw = await callAI({
+        system: ADJUST_SYSTEM,
+        messages: buildAdjustMessages(messages, before, state.exercises, text),
+        maxTokens: 8000,
+      });
+      const parsed = parseAIJson(raw);
+      const ops = Array.isArray(parsed?.ops) ? parsed.ops : [];
+      let reply = String(parsed?.reply || "").trim() || (ops.length ? "Done." : "Can you say a bit more about what to change?");
+      let changes = null;
+      if (ops.length) {
+        let result;
+        try {
+          result = applyAdjustOps(before, ops, { exercises: state.exercises });
+          const problem = validateAdjustedProgram(result.program, [...state.exercises, ...result.newExercises]);
+          if (problem) throw new Error(problem);
+        } catch (err) {
+          result = null;
+          reply = `I couldn't make that change, so nothing was changed. ${err.message}`;
+        }
+        if (result) {
+          const lib = [...state.exercises, ...result.newExercises];
+          const diff = adjustDiff(before, result.program, lib);
+          const ok = await saveWholeProgram(state, setState, result.program, result.newExercises, reply.slice(0, 140));
+          if (!ok) {
+            reply = "The change didn't save. Check your connection and try again. Nothing was changed.";
+            setState(s => ({ ...s, programs: (s.programs || []).map(p => (p.id === before.id ? before : p)) }));
+          } else {
+            changes = {
+              rows: diff.rows, other: diff.other, workouts: diff.workouts, undone: false,
+              // Kept with the message so Undo still works after the page is closed.
+              before: { name: before.name, weeks: before.weeks, phases: before.phases || null, days: denormalizeDays(before.days, { ...state, exercises: lib }) },
+            };
+          }
+        }
+      }
+      const aiMsg = { id: newAdjustId("m"), role: "assistant", text: reply, changes };
+      if (changes) snapshots.current.set(aiMsg.id, before);
+      setMessages(m => [...m, aiMsg]);
+      const saved = await store(aiMsg);
+      if (saved.id !== aiMsg.id) {
+        if (changes) snapshots.current.set(saved.id, before);
+        setMessages(m => m.map(x => (x.id === aiMsg.id ? saved : x)));
+      }
+    } catch (err) {
+      setError(err?.message || "Something went wrong. Nothing was changed.");
+    }
+    setBusy(false);
+  };
+
+  const undo = async (msg) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    let restored = snapshots.current.get(msg.id);
+    let extra = [];
+    if (!restored && msg.changes?.before) {
+      const { days, newExercises } = buildDaysWithExerciseIds(msg.changes.before.days, state);
+      restored = { ...programRef.current, name: msg.changes.before.name, weeks: msg.changes.before.weeks, phases: msg.changes.before.phases || null, days };
+      extra = newExercises;
+    }
+    if (!restored) { setError("That change can't be undone any more."); setBusy(false); return; }
+    const ok = await saveWholeProgram(state, setState, { ...restored, id: programRef.current.id }, extra, "Undid an AI change");
+    if (!ok) { setError("The undo didn't save. Check your connection and try again."); setBusy(false); return; }
+    const changes = { ...msg.changes, undone: true };
+    setMessages(m => m.map(x => (x.id === msg.id ? { ...x, changes } : x)));
+    if (kept && !String(msg.id).startsWith("m")) {
+      await supabase.from(ADJUST_TABLE).update({ changes }).eq("id", msg.id);
+    }
+    setBusy(false);
+  };
+
+  const examples = [
+    "Weeks 5 to 8: drop the main lifts to 3x5",
+    "Make week 4 a deload",
+    "Add a Nordic curl to every lower day",
+    "Make this two phases, weeks 1 to 6 Foundation and the rest Speed-Strength",
+  ];
+
+  return (
+    <div className="flex flex-col h-full min-h-0" style={{ background: C.panel }}>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 shrink-0" style={{ borderBottom: `1px solid ${C.border}` }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <Sparkles size={16} style={{ color: C.blue }} className="shrink-0" />
+          <div className="font-semibold text-[15px] truncate" style={{ fontFamily: DISPLAY, color: C.text }}>Adjust with AI</div>
+        </div>
+        {onClose && (
+          <button onClick={onClose} aria-label="Close" className="rounded-full w-8 h-8 flex items-center justify-center" style={{ background: C.bg }}>
+            <X size={16} style={{ color: C.sub }} />
+          </button>
+        )}
+      </div>
+
+      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+        {messages.length === 0 && !busy && (
+          <div>
+            <p className="text-[13px] leading-relaxed" style={{ color: C.sub }}>
+              Describe a change to {program?.name || "this program"} and it's made straight away. Any weeks, days,
+              phases, sections or exercises. Every change can be undone. Logged workouts are never touched.
+            </p>
+            <div className="mt-3 space-y-2">
+              {examples.map(t => (
+                <button key={t} onClick={() => send(t)} className="w-full text-left rounded-xl px-3 py-2 text-[12.5px]"
+                  style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}>{t}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map(m => (
+          <div key={m.id} className={m.role === "user" ? "flex justify-end" : ""}>
+            {m.role === "user" ? (
+              <div className="rounded-2xl px-3 py-2 text-[13px] max-w-[85%] whitespace-pre-wrap" style={{ background: C.orange, color: "#fff" }}>{m.text}</div>
+            ) : (
+              <div>
+                <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: C.text }}>{m.text}</div>
+                <ChangeCard changes={m.changes} busy={busy}
+                  canUndo={latestUndoable?.id === m.id}
+                  undoHint="Undo the newer change first."
+                  onUndo={() => undo(m)} />
+              </div>
+            )}
+          </div>
+        ))}
+        {busy && (
+          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
+            <Loader2 size={14} className="animate-spin" style={{ color: C.blue }} /> Making the changes
+          </div>
+        )}
+        {error && <div className="text-[12.5px]" style={{ color: C.red }}>{error}</div>}
+      </div>
+
+      <div className="px-3 pt-2 shrink-0" style={{ borderTop: `1px solid ${C.border}`, paddingBottom: compact ? "max(12px, env(safe-area-inset-bottom))" : 12 }}>
+        <div className="flex items-end gap-2">
+          <textarea value={input} onChange={e => setInput(e.target.value)} rows={2}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder="Describe a change"
+            className="flex-1 rounded-xl px-3 py-2 text-[15px] resize-none"
+            style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+          <button onClick={() => send()} disabled={busy || !input.trim()} aria-label="Send"
+            className="rounded-xl w-11 h-11 flex items-center justify-center shrink-0"
+            style={{ background: C.orange, opacity: busy || !input.trim() ? 0.4 : 1 }}>
+            <Send size={17} color="#fff" />
+          </button>
+        </div>
+        {!kept && <div className="text-[11px] mt-1.5" style={{ color: C.faint }}>This chat isn't kept after you leave the page.</div>}
+      </div>
+    </div>
+  );
+}
+
+// The board with the chat beside it. On a computer or tablet the chat is a
+// panel on the right that stays open; on a phone it's a full-screen sheet
+// opened from the button above the board.
+function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClick, onEditDay }) {
+  const wide = useIsWide();
+  const [open, setOpen] = useState(false);
+  const board = <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay} />;
+  if (!program || !(program.days || []).length) return board;
+
+  if (wide) {
+    return (
+      <div className="grid gap-4 items-start" style={{ gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
+        <div className="min-w-0">{board}</div>
+        <div className="rounded-2xl overflow-hidden sticky top-4" style={{ ...card({ borderRadius: 16 }), height: "min(78vh, 720px)" }}>
+          <AdjustChat state={state} setState={setState} program={program} authorId={authorId} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Btn className="w-full mb-3" icon={Sparkles} onClick={() => setOpen(true)}>Adjust with AI</Btn>
+      {board}
+      {open && (
+        <div className="fixed inset-0 z-50 flex flex-col" style={{ background: C.panel, paddingTop: "env(safe-area-inset-top)" }}>
+          <AdjustChat state={state} setState={setState} program={program} authorId={authorId} onClose={() => setOpen(false)} compact />
+        </div>
+      )}
     </div>
   );
 }
@@ -23470,8 +24294,12 @@ function CalendarViewPage({ state, setState, nav }) {
         <TopBar title="Week" onLogout={nav.logout} />
         <div className="px-5 pt-5">
           <div className="mb-4">{weekTabs}</div>
-          <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise}
-            onEditDay={state.me.coachId ? null : (day) => nav.go("athlete-program-edit", day.id)} />
+          {/* Solo athletes adjust their own program; a coached athlete's is
+              their coach's to change, so they get the board alone. */}
+          {state.me.coachId
+            ? <ProgramBoard program={myProgram} exercises={state.exercises} onExerciseClick={setDetailExercise} onEditDay={null} />
+            : <ProgramBoardWithAI state={state} setState={setState} program={myProgram} authorId={state.me.id}
+                onExerciseClick={setDetailExercise} onEditDay={(day) => nav.go("athlete-program-edit", day.id)} />}
         </div>
         {detailModal}
       </div>
@@ -26719,7 +27547,7 @@ function AppInner() {
         (coachPrograms || []).forEach(row => {
           const { days, newExercises } = buildDaysWithExerciseIds(row.days, { ...s, exercises });
           exercises = [...exercises, ...newExercises];
-          programs.push({ id: row.id, name: row.name, weeks: row.weeks, sport: row.sport, rationale: row.rationale || null, startedOn: row.started_on || null, athleteId: row.athlete_id, assignedCount: row.athlete_id ? 1 : 0, days });
+          programs.push({ id: row.id, name: row.name, weeks: row.weeks, sport: row.sport, rationale: row.rationale || null, startedOn: row.started_on || null, athleteId: row.athlete_id, assignedCount: row.athlete_id ? 1 : 0, phases: row.phases || null, days });
         });
 
         return {
@@ -26862,7 +27690,7 @@ function AppInner() {
         let next = s;
         if (programRow) {
           const { days, newExercises } = buildDaysWithExerciseIds(programRow.days, s);
-          const program = { id: programRow.id, name: programRow.name, weeks: programRow.weeks, assignedCount: 1, sport: programRow.sport, rationale: programRow.rationale || null, startedOn: programRow.started_on || null, days };
+          const program = { id: programRow.id, name: programRow.name, weeks: programRow.weeks, assignedCount: 1, sport: programRow.sport, rationale: programRow.rationale || null, startedOn: programRow.started_on || null, phases: programRow.phases || null, days };
           next = { ...next, programs: [...next.programs, program], exercises: [...next.exercises, ...newExercises], me: { ...next.me, program: program.id } };
         }
         // camelCase on the way in, like every other row this app holds, so

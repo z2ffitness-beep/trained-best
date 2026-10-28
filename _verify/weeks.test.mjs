@@ -311,7 +311,9 @@ test("every caller drops the holes at its own site", () => {
   // .filter(Boolean) across the whole file passes even after one is deleted.
   const sites = [...src.matchAll(/prescribeForWeek\(/g)].map(m => m.index);
   // Five call sites since 26 Oct: the program board (programBoardWeek).
-  assert.equal(sites.length, 6, "one declaration plus five call sites");
+  // Seven since 28 Oct: Adjust with AI writes the shown weeks out first
+  // (bakeGeneratedProgression) and counts what changed (adjustDiff).
+  assert.equal(sites.length, 8, "one declaration plus seven call sites");
 
   const [, ...calls] = sites;
   calls.forEach((at) => {
