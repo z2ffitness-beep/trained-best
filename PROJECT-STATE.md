@@ -70,8 +70,7 @@ Next session card with date) is pushed, NOT merged yet.
   Background/Specialties/Style removed. #19 delete account removes the
   user's storage files (form-checks, message-media, progress-photos,
   coach-logos) before the RPC. Migration 010 (delete notices about the user
-  from the coach's list) written; Isaiah approved, first apply attempt timed
-  out on the approval prompt, NOT applied yet. Deletion email waits on an
+  from the coach's list) APPLIED 28 Oct (approved by Isaiah). Deletion email waits on an
   email provider (suggested Resend; Isaiah to supply the key).
 - Branch `simplify-batch-4` (28 Oct): #8 upload your own rest sound in
   Settings. Kept on the phone (IndexedDB), checked before saving, cut off at
@@ -85,8 +84,8 @@ Next session card with date) is pushed, NOT merged yet.
   weeks) with Undo of the newest change. A program the app progresses
   itself is written out first so untouched weeks keep their numbers.
   Exercise `note` field added (board + workout). Migration 011 (programs.
-  phases column + program_ai_messages table with RLS) written, NOT applied;
-  needs Isaiah's approval. Tests: _verify/adjust-ai.test.mjs.
+  phases column + program_ai_messages table with RLS) APPLIED 28 Oct
+  (approved by Isaiah). Tests: _verify/adjust-ai.test.mjs.
 - Still open: #20 hidden features, Isaiah to pick the order.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
