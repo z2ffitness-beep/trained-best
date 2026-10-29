@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { load } from "./extract.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = path.join(here, "..", "src", "App.jsx");
@@ -14,6 +15,7 @@ const H = await load(APP, [
   "metricModeFor", "prescribedMeters",
 ]);
 
+const await_src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "App.jsx"), "utf8");
 let passed = 0;
 const tests = [];
 const test = (n, f) => tests.push([n, f]);
@@ -62,6 +64,12 @@ test("distance in metres", () => {
   assert.equal(H.prescribedMeters("25 yd"), 23);
   assert.equal(H.prescribedMeters("1 km"), 1000);
   assert.equal(H.prescribedMeters("15 min"), null);
+});
+
+test("the coach sees timed, held and distance results, not only lifts", () => {
+  const src = (await_src);
+  const row = src.slice(src.indexOf("function SessionLogRow("), src.indexOf("function CoachReplyCard("));
+  for (const k of ['any("minutes")', 'any("seconds")', 'any("workSec")', 'any("meters")']) assert.ok(row.includes(k), k);
 });
 
 for (const [name, fn] of tests) {

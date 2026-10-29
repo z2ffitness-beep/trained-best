@@ -16716,8 +16716,22 @@ function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
   const loaded = (log.exercises || [])
     // Recomputed from `sets` rather than trusting a stored topWeight, so the
     // number here always agrees with the sets listed beneath it.
-    .map(e => ({ name: e.name, sets: (e.sets || []).filter(wasLifted), top: topSetWeight(e.sets) }))
+    // A loaded carry is listed with the distances below, not as a lift too.
+    .map(e => ({ name: e.name, sets: (e.sets || []).filter(st => wasLifted(st) && st.meters == null), top: topSetWeight((e.sets || []).filter(st => st?.meters == null)) }))
     .filter(e => e.top?.weight != null);
+  // Cardio, holds, intervals and distance, in their own units (29 Oct). The
+  // coach saw only lifts with a weight, so a 40-minute ride logged as nothing.
+  const measured = (log.exercises || []).map(e => {
+    const done = (e.sets || []).filter(st => st?.done);
+    const sum = (k) => done.reduce((n, st) => n + (typeof st[k] === "number" ? st[k] : 0), 0);
+    const any = (k) => done.some(st => typeof st[k] === "number");
+    let text = null;
+    if (any("minutes")) text = `${Math.round(sum("minutes") * 10) / 10} min`;
+    else if (any("seconds")) text = done.filter(st => typeof st.seconds === "number").map(st => `${st.seconds}s`).join(" · ");
+    else if (any("workSec")) text = `${done.length} round${done.length === 1 ? "" : "s"} · ${done.filter(st => typeof st.workSec === "number").map(st => `${st.workSec}s`).join(" · ")}`;
+    else if (any("meters")) text = done.filter(st => typeof st.meters === "number").map(st => `${st.meters} m${typeof st.weight === "number" ? ` @ ${st.weight} ${st.unit || "lb"}` : ""}`).join(" · ");
+    return text ? { name: e.name, text } : null;
+  }).filter(Boolean);
   return (
     <div className="rounded-xl p-3.5" style={card({ borderRadius: 16 })}>
       <div className="flex items-center gap-3">
@@ -16771,6 +16785,16 @@ function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {measured.length > 0 && (
+        <div className="mt-2.5 pt-2.5 space-y-1" style={{ borderTop: `1px solid ${C.border}` }}>
+          {measured.map((m, i) => (
+            <div key={i} className="flex items-baseline justify-between gap-2 text-[12.5px]">
+              <span className="truncate" style={{ color: C.text }}>{m.name}</span>
+              <span className="tabular-nums shrink-0" style={{ color: C.olive }}>{m.text}</span>
+            </div>
+          ))}
         </div>
       )}
       {showNote && log.notes && (
