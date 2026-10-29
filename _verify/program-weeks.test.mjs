@@ -223,7 +223,12 @@ test("junk arguments do not throw", () => {
 // ---------- wiring ----------
 
 test("both screens can add and remove weeks and phases", () => {
-  for (const fn of ["function AthleteProgram(", "function CoachAthleteDetail("]) {
+  // 29 Oct: the coach's per-day editor is gone. A coach adds and removes
+  // weeks and phases with Adjust with AI (add_weeks, remove_weeks,
+  // set_phases), which adjust-ai.test.mjs covers.
+  assert.match(src, /case "add_weeks": \{/);
+  assert.match(src, /case "remove_weeks": \{/);
+  for (const fn of ["function AthleteProgram("]) {
     const at = src.indexOf(fn);
     const body = src.slice(at, src.indexOf("\nfunction ", at + 1));
     assert.ok(/<WeeksModal/.test(body), `${fn} must offer it`);

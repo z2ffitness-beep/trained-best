@@ -92,11 +92,13 @@ test("a one-block program is not asked a question with one answer", () => {
 
 // ---------- wiring on the coach's editor ----------
 
-test("the coach editor has a block strip at last", () => {
-  const body = bodyOf("function CoachAthleteDetail(");
-  assert.ok(/setEditBlockStart\(b\.startWeek\)/.test(body),
-    "without this there is no week on screen and every edit is necessarily global");
-  assert.ok(/coachPlan\.blocks\.length > 1 && \(/.test(body), "and it hides itself when there is one block");
+test("a coach changing one exercise on the board picks this week or every week", () => {
+  // 29 Oct: the per-day editor with its block strip is gone; the board is
+  // the one place, and a change there is week-only unless the coach says so.
+  const body = bodyOf("function BoardExerciseEditor(");
+  assert.match(body, /setScope\("week"\)/);
+  assert.match(body, /scope === "week" && total > 1 \? \[target\.week, target\.week\] : undefined/);
+  assert.match(body, /applyAdjustOps\(program, ops/);
 });
 
 test("the coach's plan honours authored blocks and the fight taper", () => {
@@ -155,17 +157,6 @@ test("no resolved day ever reaches a save", () => {
   }
   assert.deepEqual(offenders, [],
     "a resolved single-week day was handed straight to a save path");
-});
-
-test("the coach editor renders the resolved day but saves the stored one", () => {
-  const body = bodyOf("function CoachAthleteDetail(");
-  assert.ok(/buildSessionBlocks\(sortedExercises\(dayForEdit\(day\)\)\)/.test(body),
-    "the screen must show what that block actually prescribes");
-  // ensureCustom deep-clones `program` — the stored one — and saves its days.
-  const ec = body.slice(body.indexOf("const ensureCustom ="), body.indexOf("const ensureCustom =") + 420);
-  assert.ok(/JSON\.parse\(JSON\.stringify\(program\)\)/.test(ec),
-    "the save must start from the stored program, never from a resolved copy");
-  assert.ok(!/dayForEdit/.test(ec));
 });
 
 test("dayForEdit is documented as display-only", () => {

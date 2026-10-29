@@ -98,7 +98,7 @@ const SECTIONS = {
   "Client Details": "overview",
   "Weekly accountability tracker": "overview",
   '<ChalkDivider label="End Coaching" />': "overview",
-  '<ChalkDivider label="Assigned Program — Edit" />': "program",
+  "Delete this program": "program",
   '<ChalkDivider label="Progress History" />': "progress",
   "<CheckinSummaryPanel": "progress",
   '<ChalkDivider label="Recent Sessions" />': "notes",

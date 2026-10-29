@@ -125,7 +125,7 @@ ok("none of the three start buttons share a row", () => {
   // fixed window cut the third button off the end the first time, and the
   // same mistake once reported half a word as a missing signup key.
   const card = detailBody.slice(detailBody.indexOf("No program yet"));
-  const block = card.slice(0, card.indexOf("{program && program.days.length"));
+  const block = card.slice(0, card.indexOf("{/* One place to change a program"));
   assert.ok(!/<div className="flex gap-2\.5">[\s\S]*?<Btn/.test(block),
     "the start options must each be on their own full-width row");
   assert.equal((block.match(/className="w-full/g) || []).length, 3);
@@ -166,7 +166,7 @@ ok("a generated programme is NOT saved with allowEmpty", () => {
 
 ok("the button only exists where there is no programme yet", () => {
   const card = detailBody.slice(detailBody.indexOf("No program yet"));
-  const end = card.indexOf("{program && program.days.length");
+  const end = card.indexOf("{/* One place to change a program");
   assert.ok(end > 0, "could not find the end of the no-programme card");
   assert.ok(card.slice(0, end).includes('"Use their answers"'),
     "the button must sit inside the !program card, so it disappears once they have one");

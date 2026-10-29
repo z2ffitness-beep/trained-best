@@ -12968,16 +12968,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               <ChalkDivider label="Whole Program" />
               <div className="mb-5">
                 <ProgramBoardWithAI state={state} setState={setState} program={program}
-                  authorId={state.coachProfile?.id} onExerciseClick={setDetailExercise} />
+                  authorId={state.coachProfile?.id} onExerciseClick={setDetailExercise} editable />
               </div>
             </>
-          )}
-          <ChalkDivider label="Assigned Program — Edit" />
-          {program && (
-            <Btn className="w-full mb-3" icon={Plus} disabled={generating || building || importing}
-              onClick={() => setNewProgramOpen(true)}>
-              {generating || building ? "Creating…" : "Make new program"}
-            </Btn>
           )}
           {!program && (
             <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
@@ -13013,149 +13006,19 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               </Btn>
             </div>
           )}
-          {program && program.days.length > 0 && (
-            <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
-              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                How they train with you
-              </div>
-              <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
-              <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
-                {programSessionMode(program.days) === null
-                  ? "Mixed — set per session below."
-                  : "Applies to every session. Change any single one below."}
-              </p>
-            </div>
-          )}
+          {/* One place to change a program (Isaiah, 29 Oct): the board above,
+              by tapping an exercise or with Adjust with AI. The long per-day
+              editor that used to sit here is gone. Starting over and deleting
+              stay, small, at the bottom. */}
           {program && (
-            <div className="space-y-4">
-              {program.days.map(day => (
-                <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                    <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
-                  </div>
-                  <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
-
-                  {/* How this session normally runs. Set once here; any single
-                      date can still be changed below without disturbing it. */}
-                  <div className="mt-3">
-                    <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                      How this session runs
-                    </div>
-                    <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
-                    <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
-                  </div>
-
-                  {/* Grouped into the same sections the athlete sees, so a
-                      coach deleting "Conditioning" is looking at the same thing
-                      the athlete is, and so a whole section can go in one action
-                      instead of one exercise at a time. */}
-                  {/* Which block is being edited. Without this the screen only
-                      ever showed the base template, so every change was global
-                      whether the coach meant it or not. */}
-                  {coachPlan.blocks.length > 1 && (
-                    <div className="mt-3">
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
-                        <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
-                      </div>
-                      <div className="flex gap-1.5 overflow-x-auto pb-1">
-                        {coachPlan.blocks.map(b => {
-                          const on = b.startWeek === editBlock?.startWeek;
-                          return (
-                            <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
-                              className="shrink-0 rounded-lg px-3 py-2 text-left"
-                              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
-                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>{b.name || `Block ${b.index}`}</div>
-                              <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
-                            </button>
-                          );
-                        })}
-                        <button onClick={() => setWeeksOpen(true)}
-                          className="shrink-0 rounded-lg px-3 py-2 text-left"
-                          style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
-                          <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
-                          <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
-                        </button>
-                        <button onClick={() => setDeleteProgOpen(true)}
-                          className="shrink-0 rounded-lg px-3 py-2 text-left"
-                          style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
-                          <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
-                          <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <div className="space-y-3 mt-3">
-                    {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
-                    <div key={b.key} className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
-                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
-                        <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                          aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
-                          <Plus size={14} style={{ color: b.accent }} />
-                        </button>
-                        <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
-                          aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
-                          <Trash2 size={13} style={{ color: C.faint }} />
-                        </button>
-                      </div>
-                    {b.items.map(x => {
-                      const ex = exById(x.exerciseId);
-                      const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
-                      return (
-                        <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                            <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
-                            <NoPhotoFlag name={ex?.name} size="xs" />
-                            <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
-                            <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
-                          </div>
-                          <div className="grid grid-cols-4 gap-1.5">
-                            {["sets", "reps", "rpe", "rest"].map(field => (
-                              <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
-                                className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
-                            ))}
-                          </div>
-                          <div className="grid grid-cols-4 gap-1.5 mt-1">
-                            {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    </div>
-                    ))}
-                  </div>
-                  {(() => {
-                    const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
-                    const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
-                    if (!missing.length) return null;
-                    return (
-                      <div className="mt-3">
-                        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
-                        <div className="flex gap-2 flex-wrap">
-                          {missing.map(b => (
-                            <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
-                              style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
-                              <Plus size={13} /> {b.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                  <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
-                    className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                    style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                    <BookOpen size={15} /> Add From Library
-                  </button>
-                </div>
-              ))}
-              <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
-              <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+            <div className="mt-2 flex flex-col items-center gap-1">
+              <button onClick={() => setNewProgramOpen(true)} disabled={generating || building || importing}
+                className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+                {generating || building ? "Creating\u2026" : "Make new program"}
+              </button>
+              <button onClick={() => setDeleteProgOpen(true)} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+                Delete this program
+              </button>
             </div>
           )}
         </>)}
@@ -24051,7 +23914,7 @@ function programForAI(program, exercises, { withWeeks = true } = {}) {
     phasesNamedByCoach: storedPhasesValid(program?.phases, total),
     weeksWrittenOut: programHasWeeklyPlan(program),
     days: (program?.days || []).map(d => ({
-      id: d.id, name: d.name || "Session", weekday: d.weekday || null,
+      id: d.id, name: d.name || "Session", weekday: d.weekday || null, mode: d.mode || null,
       exercises: (d.exercises || []).map(x => {
         const o = { id: x.id, name: nameOf(x.exerciseId) || x.name || "Exercise", section: x.phase || null, sets: x.sets, reps: x.reps };
         if (x.rpe !== undefined && x.rpe !== null && x.rpe !== "") o.rpe = x.rpe;
@@ -24224,6 +24087,10 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
           if (op.weekday !== null && !WEEKDAY_ORDER.includes(op.weekday)) throw new Error(`"${op.weekday}" isn't a day of the week.`);
           p.days = reassignWeekday(p.days, d.id, op.weekday);
         }
+        if (op.mode !== undefined) {
+          if (op.mode !== null && !["in_person", "online"].includes(op.mode)) throw new Error(`"${op.mode}" isn't in person or online.`);
+          p.days = p.days.map(x => (x.id === d.id ? { ...x, mode: op.mode } : x));
+        }
         break;
       }
       case "add_day": {
@@ -24374,7 +24241,7 @@ Operations:
 {"op":"set_phases","phases":[{"name":"Foundation","startWeek":1,"endWeek":6},{"name":"Speed-Strength","startWeek":7,"endWeek":12}]}
   Phases must run from week 1 to the last week with no gaps or overlaps.
 {"op":"rename_program","name":"..."}
-{"op":"update_day","day":"day id","name":"...","weekday":"Monday"}   (weekday is Monday to Sunday, or null to unschedule)
+{"op":"update_day","day":"day id","name":"...","weekday":"Monday","mode":"in_person"}   (weekday is Monday to Sunday, or null to unschedule; mode is "in_person" or "online" for how the session runs)
 {"op":"add_day","id":"new-day-1","name":"...","weekday":"Friday","copyFrom":"optional day id"}   then add_exercise to "new-day-1" if it is not a copy
 {"op":"remove_day","day":"day id"}
 {"op":"add_weeks","at":13,"count":4}   (at = the week number the new weeks start at; new weeks carry on the week before them)
@@ -24435,7 +24302,7 @@ function boardDayOrder(days) {
     .map(x => x.d);
 }
 
-function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay }) {
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise }) {
   const blocks = programBoardWeek(program, day, week, plan, authored);
   return (
     <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
@@ -24460,7 +24327,9 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
             const name = ex?.name || x.name || "Exercise";
             const img = exerciseImage(name);
             return (
-              <button key={x.id || i} onClick={() => onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
+              <button key={x.id || i} onClick={() => (onEditExercise
+                  ? onEditExercise({ item: x, day, week, name })
+                  : onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }))}
                 className="w-full flex items-center gap-2.5 py-1.5 text-left" style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
                 <div className="rounded-md w-8 h-8 shrink-0 overflow-hidden flex items-center justify-center" style={{ background: img ? PHOTO_TILE : C.panelAlt }}>
                   {img ? <img src={img} alt="" loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={13} style={{ color: C.faint }} />}
@@ -24479,7 +24348,7 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
   );
 }
 
-function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
+function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditExercise = null }) {
   const wide = useIsWide();
   const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
   const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
@@ -24500,7 +24369,7 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
   const named = storedPhasesValid(program.phases, total) ? program.phases : null;
   const phaseName = (w) => named?.find(ph => w >= ph.startWeek && w <= ph.endWeek)?.name || null;
   const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
-  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay };
+  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise };
 
   if (!wide) {
     const shown = Math.min(total, Math.max(1, week));
@@ -24837,13 +24706,100 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
   );
 }
 
+// Changing one exercise from the board (Isaiah, 29 Oct): tap it, change the
+// numbers, choose this week or every week. The same engine as Adjust with AI,
+// so a week-only change stays on that week and logged workouts are untouched.
+function BoardExerciseEditor({ target, program, state, setState, onClose, onShow }) {
+  const x = target?.item;
+  const [vals, setVals] = useState({});
+  const [scope, setScope] = useState("week");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!x) return;
+    setVals({ sets: x.sets ?? "", reps: x.reps ?? "", rpe: x.rpe ?? "", rest: x.rest ?? "" });
+    setScope("week"); setError(null); setSaving(false);
+  }, [x?.id, target?.week]);
+  if (!x) return null;
+
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  const run = async (ops, summary) => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = applyAdjustOps(program, ops, { exercises: state.exercises });
+      const problem = validateAdjustedProgram(result.program, [...state.exercises, ...result.newExercises]);
+      if (problem) throw new Error(problem);
+      const ok = await saveWholeProgram(state, setState, result.program, result.newExercises, summary);
+      if (!ok) throw new Error("That didn't save. Check your connection and try again.");
+      onClose();
+    } catch (e) {
+      setError(e.message || "That didn't save.");
+    }
+    setSaving(false);
+  };
+  const weeks = scope === "week" && total > 1 ? [target.week, target.week] : undefined;
+  const changed = {};
+  ["sets", "reps", "rpe", "rest"].forEach(f => {
+    const v = String(vals[f] ?? "").trim();
+    if (v === String(x[f] ?? "")) return;
+    changed[f] = (f === "sets" || f === "rpe") && /^\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+  });
+  const save = () => run([{ op: "update_exercises", exercises: [x.id], set: changed, weeks }],
+    `${target.name}${weeks ? ` in week ${target.week}` : ""}`);
+  const remove = () => run([{ op: "remove_exercises", exercises: [x.id], weeks }],
+    `Removed ${target.name}${weeks ? ` from week ${target.week}` : ""}`);
+
+  const field = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "10px 8px", fontSize: 15, width: "100%", textAlign: "center" };
+  return (
+    <Modal open={!!x} onClose={() => !saving && onClose()} title={target.name}>
+      <div className="text-[12.5px] mb-3" style={{ color: C.sub }}>{target.day?.name} · week {target.week}</div>
+      <div className="grid grid-cols-4 gap-2">
+        {[["sets", "Sets"], ["reps", "Reps"], ["rpe", DIFFICULTY_SHORT], ["rest", "Rest"]].map(([k, label]) => (
+          <div key={k}>
+            <input value={vals[k] ?? ""} onChange={e => setVals(v => ({ ...v, [k]: e.target.value }))} aria-label={label} style={field} />
+            <div className="text-center text-[11px] mt-1" style={{ color: C.faint }}>{label}</div>
+          </div>
+        ))}
+      </div>
+      {total > 1 && (
+        <div className="mt-4">
+          <SegmentedTabs value={scope} onChange={setScope}
+            options={[{ key: "week", label: `Week ${target.week} only` }, { key: "all", label: "Every week" }]} />
+        </div>
+      )}
+      {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
+      <Btn className="w-full mt-4" disabled={saving || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
+      <div className="flex items-center justify-between mt-3">
+        <button onClick={() => { const ex = state.exercises.find(e => e.id === x.exerciseId); onClose(); onShow?.({ ...ex, name: target.name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }); }}
+          className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>See the exercise</button>
+        <button onClick={remove} disabled={saving} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+          {weeks ? `Remove from week ${target.week}` : "Remove from every week"}
+        </button>
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: C.faint }}>For bigger changes across weeks or days, use Adjust with AI.</p>
+    </Modal>
+  );
+}
+
 // The board with the chat beside it. On a computer or tablet the chat is a
 // panel on the right that stays open; on a phone it's a full-screen sheet
 // opened from the button above the board.
-function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClick, onEditDay }) {
+function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClick, onEditDay, editable = false }) {
   const wide = useIsWide();
   const [open, setOpen] = useState(false);
-  const board = <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay} />;
+  const [editing, setEditing] = useState(null);
+  const board = (
+    <>
+      <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay}
+        onEditExercise={editable ? setEditing : null} />
+      {editable && (
+        <BoardExerciseEditor target={editing} program={program} state={state} setState={setState}
+          onClose={() => setEditing(null)} onShow={onExerciseClick} />
+      )}
+    </>
+  );
   if (!program || !(program.days || []).length) return board;
 
   if (wide) {
@@ -25295,107 +25251,7 @@ function SessionModeTag({ mode, overridden = false, size = "sm" }) {
   );
 }
 
-// One-off changes: "this Tuesday is online, I'm away". Collapsed by default,
-// because the common case is that a day runs the same way every week and the
-// coach should not have to scroll past a date picker to reach the exercises.
-//
-// Existing overrides are always listed, open or closed. An override the coach
-// set weeks ago and forgot is the one that causes the problem this feature is
-// meant to solve, so it is never hidden behind a tap.
-function SessionDateOverrides({ day, program, onSet }) {
-  const [open, setOpen] = useState(false);
-  const [date, setDate] = useState("");
 
-  // No filter. setDateSessionMode refuses to store a value equal to the day's
-  // normal mode, so everything held here is a genuine difference — and what
-  // the coach sees listed is exactly what exists, with nothing hidden that
-  // could surprise them later.
-  const overrides = Object.entries(day.modeByDate || {})
-    .filter(([, mode]) => !!mode)
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
-  // Only dates this session actually falls on can be overridden. Offering the
-  // coach a free date field lets them set Wednesday online for a session that
-  // only ever runs on Tuesdays, and then wonder why nothing changed.
-  const dateIsValid = !!date && isDayScheduledOn(day, date);
-  const currentAtDate = dateIsValid ? sessionModeFor(day, date) : null;
-
-  return (
-    <div className="mt-2">
-      {overrides.length > 0 && (
-        <div className="space-y-1.5 mb-2">
-          {overrides.map(([iso, mode]) => (
-            <div key={iso} className="rounded-lg px-2.5 py-2 flex items-center gap-2"
-              style={{ background: C.bg, border: `1px solid ${C[sessionModeMeta(mode).accentKey]}55` }}>
-              <span className="text-[11px] tabular-nums flex-1 min-w-0 truncate" style={{ color: C.text }}>
-                {formatSessionDate(iso) || iso}
-              </span>
-              <SessionModeTag mode={mode} size="xs" />
-              <button onClick={() => onSet(day.id, iso, null)} aria-label="Remove this one-off change">
-                <X size={12} style={{ color: C.faint }} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <button type="button" onClick={() => setOpen(o => !o)} className="text-[11px] font-semibold" style={{ color: C.blue }}>
-        {open ? "Close" : "Change one specific date"}
-      </button>
-
-      {open && (
-        <div className="mt-2 rounded-lg p-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-          <input type="date" value={date} min={program?.startedOn || undefined}
-            onChange={e => setDate(e.target.value)}
-            className="text-[12.5px] rounded py-2 px-2 w-full mb-2"
-            style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
-          {date && !dateIsValid ? (
-            <p className="text-[11px] leading-relaxed" style={{ color: C.amber }}>
-              {day.name} doesn't fall on that date. Pick a {day.weekday || "scheduled"} the program is running.
-            </p>
-          ) : dateIsValid ? (
-            <SessionModePicker
-              value={currentAtDate}
-              onChange={(m) => { onSet(day.id, date, m); setDate(""); setOpen(false); }}
-              onClear={day.modeByDate?.[date] ? () => { onSet(day.id, date, null); setDate(""); setOpen(false); } : null} />
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Two buttons, no dropdown. There are exactly two answers and the coach is
-// setting this while looking at a calendar, often on a phone.
-function SessionModePicker({ value, onChange, onClear, clearLabel }) {
-  return (
-    <div>
-      <div className="grid grid-cols-2 gap-2">
-        {SESSION_MODES.map(m => {
-          const active = value === m.key;
-          const accent = C[m.accentKey];
-          const Icon = m.key === "online" ? Video : MapPin;
-          return (
-            <button key={m.key} onClick={() => onChange(m.key)}
-              className="rounded-xl p-3 text-left"
-              style={{ background: active ? `${accent}18` : C.panel, border: `1px solid ${active ? accent : C.border}` }}>
-              <div className="flex items-center gap-1.5">
-                <Icon size={13} style={{ color: active ? accent : C.sub }} />
-                <span className="text-[15px] font-semibold" style={{ color: active ? accent : C.text }}>{m.label}</span>
-              </div>
-              <div className="text-[11px] mt-1 leading-snug" style={{ color: C.sub }}>{m.hint}</div>
-            </button>
-          );
-        })}
-      </div>
-      {onClear && (
-        <button onClick={onClear} className="w-full text-center text-[11px] font-semibold py-2 mt-1" style={{ color: C.blue }}>
-          {clearLabel || "Use the usual setting for this day"}
-        </button>
-      )}
-    </div>
-  );
-}
 
 // ============================================================
 // BOOKING
