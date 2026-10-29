@@ -45,6 +45,49 @@ Next session card with date) is pushed, NOT merged yet.
    first, one at a time.
 6. Coach side: remove the session-length alert and accountability switches.
 
+### Progress (28 Oct)
+- DONE, live: #10 check-in step removed; Done button; "You're done for
+  today" on Home and My Workout; log-out arrow removed from headers (Log Out
+  is in Profile only); streak pill no longer logs out.
+- Branch `simplify-batch-1` (28 Oct): #6 one finish screen (RewardsScreen is
+  the only one, summary folded in, SessionLoggedScreen deleted); #9 Stop
+  sheet = Pause / Finish; #1 today's workout first on Home, then booked
+  sessions, then missed cards; #4 coached athletes get coach thread only, no
+  AI tab, self-guided get AI only; #16 Accountability and Session-Length
+  switches removed from coach Profile, Session Length panel always on,
+  "Today's Check-ins" became "Today's Workouts" (logged today = done).
+- Branch `simplify-batch-2` (off batch 1, 28 Oct): #3 Coach tab. New
+  `CoachTab`: Messages | Sessions | History under one header (the coach's
+  name). AthleteMessages and AthleteBooking take a `header` prop; Sessions
+  hides the history (it has its own tab). Book is no longer a bottom-bar
+  tab (5 tabs now); route `athlete-booking` renders CoachTab on Sessions.
+  Self-guided athletes see the AI thread only.
+- Next: batch 3 accounts (#19, #18), batch 4 custom sound (#8), batch 5
+  Adjust with AI.
+
+- Branch `simplify-batch-3` (28 Oct): #18 coach signup step 2 is business
+  name + logo (both optional; logo uploaded once the account exists);
+  Background/Specialties/Style removed. #19 delete account removes the
+  user's storage files (form-checks, message-media, progress-photos,
+  coach-logos) before the RPC. Migration 010 (delete notices about the user
+  from the coach's list) written; Isaiah approved, first apply attempt timed
+  out on the approval prompt, NOT applied yet. Deletion email waits on an
+  email provider (suggested Resend; Isaiah to supply the key).
+- Branch `simplify-batch-4` (28 Oct): #8 upload your own rest sound in
+  Settings. Kept on the phone (IndexedDB), checked before saving, cut off at
+  8 seconds, falls back to Beep on a phone without the file. No DB change.
+- Branch `simplify-batch-5` (28 Oct): Adjust with AI. Chat beside the
+  Program board (coach client page; solo athlete Week > Program), full-screen
+  sheet on phones. AI returns operations (update/remove/add exercises with
+  optional weeks, set_phases, rename, update/add/remove day, add/remove
+  weeks); the app applies them with applyExerciseEdit etc., validates, saves
+  days+weeks+name+phases, shows a change card (workouts edited, per day and
+  weeks) with Undo of the newest change. A program the app progresses
+  itself is written out first so untouched weeks keep their numbers.
+  Exercise `note` field added (board + workout). Migration 011 (programs.
+  phases column + program_ai_messages table with RLS) written, NOT applied;
+  needs Isaiah's approval. Tests: _verify/adjust-ai.test.mjs.
+- Still open: #20 hidden features, Isaiah to pick the order.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
 plain words. Solo athletes get the same on their own program.

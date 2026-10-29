@@ -29,7 +29,7 @@ const H = await load(APP, [
   "weekEntryFor", "resolveExerciseForWeek", "weekKeys", "resolvedFields", "tidyByWeek",
   "setWeekEntry", "setFieldsInRange", "clearFieldsInRange", "pinAt", "applyExerciseEdit",
   "buildProgramPlan", "authoredBlockStarts", "authoredBlocks", "authoredBlocksLookReal",
-  "dayHasWeeklyPlan", "programHasWeeklyPlan", "programBlocks",
+  "dayHasWeeklyPlan", "programHasWeeklyPlan", "programBlocks", "storedPhasesValid",
   "buildDaysWithExerciseIds", "denormalizeByWeek", "denormalizeDays",
 ]);
 

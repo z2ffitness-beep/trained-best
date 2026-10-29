@@ -565,10 +565,9 @@ test("the panel shows the week being looked at, not always this one", () => {
 
 // ---------- the missed card on Today ----------
 
-test("what did not happen comes before the card that assumes carrying on", () => {
-  // An athlete with a missed Wednesday is deciding between catching it up
-  // and carrying on, and that decision belongs above the card that has
-  // already made it for them.
+test("today's workout comes first on Home, above the missed cards", () => {
+  // Isaiah, 28 Oct: today's workout is the first thing on Home. (This used
+  // to require the opposite order.)
   const home = (() => {
     const at = src.indexOf("function AthleteDashboard(");
     assert.ok(at > 0, "the home screen is gone");
@@ -579,7 +578,7 @@ test("what did not happen comes before the card that assumes carrying on", () =>
   const todayAt = home.indexOf(">Today's Workout</div>");
   assert.ok(missedAt > 0, "there is no missed card on the home screen");
   assert.ok(todayAt > 0, "today's workout card is gone");
-  assert.ok(missedAt < todayAt, "the missed card sits below today's workout");
+  assert.ok(todayAt < missedAt, "today's workout is no longer first on Home");
 });
 
 test("the card is capped, not a wall of red", () => {

@@ -405,7 +405,7 @@ test("a part session is named as one on the finish screen", () => {
   const card = src.slice(at - 600, at + 800);
   assert.ok(/counts === false &&/.test(card),
     "the card shows for every session, or for none");
-  assert.ok(/It is saved either way, and your coach can see it/.test(card),
+  assert.ok(/It's saved, and your coach can see it/.test(card),
     "it does not say the session was still saved, which is the part that matters");
   assert.ok(/counts=\{loggedSummary\?\.counts\}/.test(src),
     "the finish screen is never told whether the session counted");

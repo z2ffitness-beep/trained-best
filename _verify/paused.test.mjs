@@ -246,15 +246,16 @@ test("the workout screen is about this workout only, the way back to other days 
   assert.ok(/\{ key: "calendar", label: "Week"/.test(src), "there is no Week tab to reach the program from");
 });
 
-test("the sheet offers pause or resume, keep going, and the two ways to stop", () => {
-  const at = src.indexOf('title="Workout options"');
+test("the Stop sheet offers two things: Pause and Finish", () => {
+  // Isaiah, 28 Oct: two choices. Pausing the clock is on the timer strip;
+  // closing the sheet is "keep going".
+  const at = src.indexOf('title="Stop workout"');
   assert.ok(at > 0, "there is no Stop sheet");
   const sheet = src.slice(at, src.indexOf("</Modal>", at));
-  for (const label of ["Pause timer", "Resume timer", "Stop and save my progress", "Keep going", "I'm done for good, count what I did"]) {
-    assert.ok(sheet.includes(label), `the sheet is missing "${label}"`);
-  }
-  assert.ok(/Nothing is logged until you finish/.test(sheet),
-    "the sheet does not say that stopping and saving logs nothing");
+  assert.ok(/onClick=\{stopAndSave\}>Pause</.test(sheet), "Pause does not save the session for later");
+  assert.ok(/onClick=\{stopAndLog\}/.test(sheet) && /"Finish"/.test(sheet), "Finish does not log the session");
+  assert.equal((sheet.match(/<Btn /g) || []).length, 2, "the sheet has more than two choices again");
+  assert.ok(/Nothing is logged yet/.test(sheet), "the sheet does not say that pausing logs nothing");
 });
 
 test("stopping and saving logs nothing and keeps everything", () => {
@@ -292,7 +293,7 @@ test("replacing another paused workout is said out loud", () => {
   const body = src.slice(at, src.indexOf("\n  };", at));
   assert.ok(/existing\.dayKey !== dayKey/.test(body),
     "a paused workout for THIS session would be reported as a replacement");
-  assert.ok(/saving this one replaces it/.test(src),
+  assert.ok(/This replaces your paused/.test(src),
     "the sheet never warns that another paused workout is about to be replaced");
 });
 

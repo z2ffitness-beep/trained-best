@@ -183,11 +183,13 @@ test("all time holds everything, including a log with no date", () => {
 // ---------- the wiring ----------
 
 test("the score is shown where it was earned", () => {
-  const at = src.indexOf("function SessionLoggedScreen");
+  // One finish screen since 28 Oct: the rewards screen, which counts the
+  // points up, fed from what the save path recorded.
+  const at = src.indexOf("function RewardsScreen(");
   const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/const earned = sessionPoints\(\{ setsCompleted, setsPrescribed \}\)/.test(body),
-    "the session screen does not work out what was earned");
-  assert.ok(/\+\{earned\}/.test(body), "the earned score is never shown");
+  assert.ok(/\+\{climbing\}/.test(body), "the earned score is never shown");
+  assert.ok(/points: sessionPoints\(loggedRow\)/.test(src), "the score is not worked out from the logged session");
+  assert.ok(/points=\{r\.points \|\| 0\}/.test(src), "the finish screen is not handed the score");
 });
 
 test("the totals are on the profile with a real weekly target", () => {

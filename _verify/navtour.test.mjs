@@ -275,6 +275,33 @@ test("the check-in still only appears when the coach asked for it", () => {
     "it now shows to athletes whose coach switched check-offs off");
 });
 
+test("coached athletes get their coach only, no AI tab", () => {
+  // Isaiah, 28 Oct: a coached athlete talks to their coach; a self-guided
+  // athlete gets the AI assistant. No tab strip either way.
+  const at = src.indexOf("function AthleteMessages(");
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10));
+  assert.ok(!/>AI Assistant</.test(body), "the AI Assistant tab is back");
+  assert.ok(/useState\(hasCoach \|\| !FEATURES\.aiAssistant \? "coach" : "ai"\)/.test(body), "a coached athlete does not land on the coach thread");
+});
+
+test("no Accountability or Session-Length switches on the coach profile", () => {
+  assert.ok(!/>Accountability Mode</.test(src), "the Accountability switch is back");
+  assert.ok(!/>Session-Length Alerts</.test(src), "the Session-Length Alerts switch is back");
+  assert.ok(/<CompliancePanel logs=\{athleteLogs\} \/>/.test(src), "the session-length panel went with the switch");
+});
+
+test("the Coach tab holds Messages, Sessions and History; Book is not its own tab", () => {
+  // Isaiah, 28 Oct: everything between a client and their coach in one place.
+  const at = src.indexOf("function CoachTab(");
+  assert.ok(at > 0, "there is no Coach tab");
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10));
+  for (const k of ['"messages"', '"sessions"', '"history"']) assert.ok(body.includes(`key: ${k}`), `the Coach tab has no ${k} tab`);
+  assert.ok(/showHistory=\{false\}/.test(body), "Sessions repeats the history that has its own tab");
+  assert.ok(!/key: "athlete-booking", label: "Book"/.test(src), "Book is back as its own tab");
+  assert.ok(/"athlete-ai": <CoachTab /.test(src), "the Coach tab in the bar is not the combined screen");
+  assert.ok(/"athlete-booking": <CoachTab [^>]*initialTab="sessions"/.test(src), "old Book links do not land on Sessions");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
