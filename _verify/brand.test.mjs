@@ -55,6 +55,18 @@ test("deleting an account forgets the brand on the phone", () => {
   assert.match(d, /rememberBrand\(null\);/);
 });
 
+test("the join link carries the code, and only fills it in for a new signup", () => {
+  assert.match(src, /\/\?join=\$\{code \|\| ""\}/);
+  assert.match(src, /\.\.\.\(joinCodeFromLink\(\) \? \{ inviteCode: joinCodeFromLink\(\) \} : \{\}\)/);
+  assert.match(src, /auth\?\.session \? null : supabase\.rpc\("coach_by_invite_code"/);
+  assert.match(src, /savedProfile = inserted;\n        try \{ localStorage\.removeItem\(JOIN_CODE_KEY\); \}/);
+});
+
+test("the athlete Profile has no Recent Sessions list", () => {
+  const p = src.slice(src.indexOf("function AthleteProfile("), src.indexOf("\n}\n", src.indexOf("function AthleteProfile(")));
+  assert.ok(!/label="Recent Sessions"/.test(p));
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`✖ ${name}\n  ${err.message}`); process.exitCode = 1; }

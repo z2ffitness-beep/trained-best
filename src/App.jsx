@@ -748,6 +748,45 @@ try {
   });
 } catch { /* no matchMedia, or no addEventListener on it */ }
 
+// ---------- the coach's join link ----------
+//
+// Isaiah, 29 Oct: a new client should see their coach's logo on the very
+// first screen, before they have an account. The phone can't know whose
+// client someone is until they say, so the coach shares a link with their
+// invite code in it (…/?join=ABC123). Opening it looks the coach up, shows
+// their logo, name and colour on the welcome and sign-in screens, and fills
+// the code in for them when they choose "I have a coach".
+const JOIN_CODE_KEY = "tb_join_code";
+function joinCodeFromLink() {
+  try { return localStorage.getItem(JOIN_CODE_KEY) || null; } catch { return null; }
+}
+(function readJoinLink() {
+  try {
+    const raw = new URLSearchParams(window.location.search).get("join");
+    const code = (raw || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return;
+    localStorage.setItem(JOIN_CODE_KEY, code);
+    // Someone already signed in keeps their own coach's brand; the link is
+    // for the first screens only.
+    supabase.auth.getSession().then(({ data: auth }) => auth?.session ? null : supabase.rpc("coach_by_invite_code", { p_code: code })).then((res) => {
+      if (!res) return;
+      const { data } = res;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) return;
+      rememberBrand({
+        name: row.business_name || row.name || "Your coach",
+        logoUrl: coachLogoUrl(row.logo_path),
+        color: row.brand_color || null,
+        initials: row.avatar || null,
+      });
+      brandAccentHex = hexToRgb(row.brand_color) ? String(row.brand_color).toUpperCase() : null;
+      applyTheme(storedTheme());
+      // Repaint even when the colour didn't change: the logo and name did.
+      themeWatchers.forEach(fn => { try { fn(); } catch { /* unmounted */ } });
+    }, () => { /* offline: the code is still kept for signup */ });
+  } catch { /* no window, or storage blocked */ }
+})();
+
 // ---------- phase ordering (the canonical workout structure) ----------
 const PHASES = [
   { key: "warmup_general", label: "Dynamic Warmup", short: "Warmup" },
@@ -7447,6 +7486,8 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   const [data, setData] = useState({
     weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
     email: existingUser?.email || undefined,
+    // From the coach's join link, so "I have a coach" opens with it filled in.
+    ...(joinCodeFromLink() ? { inviteCode: joinCodeFromLink() } : {}),
     ...(draft?.data || {}),
   });
   const set = (k, v) => setData(d => ({ ...d, [k]: v }));
@@ -10957,9 +10998,11 @@ function CoachTodayPanel({ state, nav }) {
 function CoachInviteCard({ code, coachName, compact = false }) {
   const [done, setDone] = useState(null); // "copied" | "shared" | null
 
-  const link = typeof window !== "undefined" ? window.location.origin : "";
+  // The join link (29 Oct): opening it shows the coach's logo on the first
+  // screen and fills the code in.
+  const link = typeof window !== "undefined" ? `${window.location.origin}/?join=${code || ""}` : "";
   const message = `Join me on Trained.best${coachName ? ` (coach: ${coachName})` : ""}. ` +
-    `Sign up at ${link}, choose "I have a coach", and enter my code: ${code}`;
+    `Open ${link} and choose "I have a coach". Your code is ${code}.`;
 
   const flash = (what) => { setDone(what); setTimeout(() => setDone(null), 2000); };
 
@@ -11013,8 +11056,9 @@ function CoachInviteCard({ code, coachName, compact = false }) {
       </div>
       {!compact && (
         <p className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: C.sub }}>
-          Athletes pick <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they
-          sign up and enter this code. Existing users can join from Profile {"\u2192"} Join your coach.
+          Share sends your join link. It opens with your logo and name and fills this code in. Athletes pick{" "}
+          <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they sign up.
+          Existing users can join from Profile {"\u2192"} Join your coach.
         </p>
       )}
     </div>
@@ -23416,15 +23460,8 @@ function AthleteProfile({ state, setState, nav }) {
           </button>
         </div>
 
-        <ChalkDivider label="Recent Sessions" />
-        <div className="space-y-2">
-          {state.workoutLogs.map(l => (
-            <div key={l.id} className="rounded-lg p-3 flex justify-between gap-2" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-              <span className="text-[15px] truncate" style={{ color: C.text }}>{l.programDay}</span>
-              <span className="text-[12.5px] tabular-nums shrink-0" style={{ color: C.sub }}>{formatLogDate(l.date)}</span>
-            </div>
-          ))}
-        </div>
+        {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space
+            and every session is on the Calendar, one button above. */}
         <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
         {/* Required to be reachable from inside the app, not only by writing
@@ -28523,6 +28560,7 @@ function AppInner() {
           .from("profiles").upsert(profileRow).select().single();
         if (profileError) return errText(profileError);
         savedProfile = inserted;
+        try { localStorage.removeItem(JOIN_CODE_KEY); } catch { /* storage blocked */ }
 
         // Link a coached athlete to their coach. The invite code was collected
         // during onboarding, validated for length only, and dropped into the
