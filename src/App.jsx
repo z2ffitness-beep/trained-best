@@ -2314,11 +2314,39 @@ const SET_SECONDS = { warmup: 30, power: 20, strength: 45, accessory: 40, condit
 // gives the movement; anything unrecognised stays reps and weight.
 const TIME_PHASES = new Set(["aerobic", "zone2", "steady_state"]);
 const INTERVAL_PHASES = new Set(["lactic", "intervals", "interval", "hiit", "alactic", "anaerobic"]);
+// Isaiah, 29 Oct: not everything is pounds. Past the phase, the prescription
+// itself says what to measure, by the unit on its FIRST number:
+//   "15 min" -> time (minutes)       "30-45 sec/side", "30s" -> hold (seconds)
+//   "20 m/side", "10 m @ 80%" -> distance (metres, with an optional weight
+//   for a loaded carry or sled)
+// "8/side, 2-sec hold" and "3 x 3-5 sec" start with a rep count, so they stay
+// reps and weight.
+const LEAD_NUMBER = String.raw`^\s*~?\s*\d+(?:\.\d+)?(?:\s*[\u2013\u2014-]\s*\d+(?:\.\d+)?)?\s*\+?\s*`;
+const LEAD_MINUTES = new RegExp(LEAD_NUMBER + String.raw`(?:min|mins|minutes?)\b`, "i");
+const LEAD_SECONDS = new RegExp(LEAD_NUMBER + String.raw`(?:s|sec|secs|seconds?)\b`, "i");
+const LEAD_DISTANCE = new RegExp(LEAD_NUMBER + String.raw`(?:m|meters?|metres?|yd|yds|yards?|km|mi|miles?)\b`, "i");
 function metricModeFor(item) {
   const p = String(item?.phase || "").toLowerCase();
+  const rx = String(item?.reps ?? "");
   if (TIME_PHASES.has(p)) return "time";
-  if (INTERVAL_PHASES.has(p)) return "intervals";
+  // A sled push or hill sprint "20 m" is distance even inside conditioning.
+  if (INTERVAL_PHASES.has(p)) return LEAD_DISTANCE.test(rx) ? "distance" : "intervals";
+  if (LEAD_MINUTES.test(rx)) return "time";
+  if (LEAD_SECONDS.test(rx)) return "hold";
+  if (LEAD_DISTANCE.test(rx)) return "distance";
   return "load";
+}
+// The first distance in a prescription, in metres. "20 m/side" -> 20,
+// "25 yd" -> 23, "1 km" -> 1000.
+function prescribedMeters(text) {
+  const m = /(\d+(?:\.\d+)?)\s*(?:[\u2013\u2014-]\s*\d+(?:\.\d+)?\s*)?(m|meters?|metres?|yd|yds|yards?|km|mi|miles?)\b/i.exec(String(text || ""));
+  if (!m) return null;
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  if (u.startsWith("y")) return Math.round(n * 0.9144);
+  if (u === "km") return n * 1000;
+  if (u === "mi" || u.startsWith("mile")) return Math.round(n * 1609);
+  return n;
 }
 
 // The first number in a prescription, read as minutes or seconds.
@@ -14994,7 +15022,7 @@ function PrivacyPolicyPage({ nav, onBack }) {
 // index N-1 for each movement.
 function GroupedBlock({
   block, resolveName, weightUnit, setChecks, setWeights, setReps,
-  onToggle, onWeight, onReps, lastFor, onSwap,
+  onToggle, onWeight, onReps, lastFor, onSwap, setMetrics = {}, onMetric = null,
 }) {
   const meta = groupKindMeta(block.kind, block.items.length);
   return (
@@ -15014,7 +15042,7 @@ function GroupedBlock({
             <div key={item.id} className="flex items-baseline gap-2 text-[12.5px]">
               <span className="tabular-nums font-bold shrink-0" style={{ color: C.orange }}>{blockItemLabel(block, i)}</span>
               <span className="min-w-0 flex-1 truncate font-semibold" style={{ color: C.text }}>{resolveName(item)}</span>
-              <span className="tabular-nums shrink-0" style={{ color: C.faint }}>{item.reps} reps</span>
+              <span className="tabular-nums shrink-0" style={{ color: C.faint }}>{item.reps}{metricModeFor(item) === "load" ? " reps" : ""}</span>
               {onSwap && (
                 <button onClick={() => onSwap(item)} className="shrink-0 p-1 -m-1"
                   aria-label={`Swap ${resolveName(item)}`}>
@@ -15066,24 +15094,46 @@ function GroupedBlock({
                       style={{ color: checked ? C.olive : C.text }}>
                       {resolveName(item)}
                     </span>
-                    <input
-                      type="number" inputMode="decimal" min="0" step="any"
-                      placeholder={previous?.weight != null ? String(previous.weight) : "—"}
-                      value={setWeights[item.id]?.[r] ?? ""}
-                      onChange={e => onWeight(item, r, e.target.value)}
-                      aria-label={`Weight for ${resolveName(item)} round ${round}`}
-                      className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
-                      style={{ width: 58, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>{weightUnit}</span>
-                    <input
-                      type="number" inputMode="numeric" min="1" step="1"
-                      placeholder={previous?.reps != null ? String(previous.reps) : String(item.reps ?? "")}
-                      value={setReps[item.id]?.[r] ?? ""}
-                      onChange={e => onReps(item, r, e.target.value)}
-                      aria-label={`Reps for ${resolveName(item)} round ${round}`}
-                      className="tabular-nums text-[12.5px] text-center rounded py-1 px-1 shrink-0"
-                      style={{ width: 38, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>reps</span>
+                    {(() => {
+                      const mode = metricModeFor(item);
+                      const small = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" };
+                      if (mode !== "load" && onMetric) {
+                        // One number, in the unit this movement is measured in.
+                        const field = mode === "time" ? "minutes" : mode === "hold" ? "seconds" : mode === "distance" ? "meters" : "work";
+                        const unit = mode === "time" ? "min" : mode === "distance" ? "m" : "sec";
+                        const plan = mode === "time" ? prescribedMinutes(item.reps) : mode === "distance" ? prescribedMeters(item.reps) : prescribedSeconds(item.reps);
+                        return (<>
+                          <input type="number" inputMode="decimal" min="0" step="any"
+                            placeholder={plan != null ? String(plan) : "—"}
+                            value={setMetrics[item.id]?.[r]?.[field] ?? ""}
+                            onChange={e => onMetric(item, r, field, e.target.value)}
+                            aria-label={`${unit} for ${resolveName(item)} round ${round}`}
+                            className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
+                            style={{ width: 58, ...small }} />
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint, width: 66 }}>{unit}</span>
+                        </>);
+                      }
+                      return (<>
+                        <input
+                          type="number" inputMode="decimal" min="0" step="any"
+                          placeholder={previous?.weight != null ? String(previous.weight) : "—"}
+                          value={setWeights[item.id]?.[r] ?? ""}
+                          onChange={e => onWeight(item, r, e.target.value)}
+                          aria-label={`Weight for ${resolveName(item)} round ${round}`}
+                          className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
+                          style={{ width: 58, ...small }} />
+                        <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>{weightUnit}</span>
+                        <input
+                          type="number" inputMode="numeric" min="1" step="1"
+                          placeholder={previous?.reps != null ? String(previous.reps) : String(item.reps ?? "")}
+                          value={setReps[item.id]?.[r] ?? ""}
+                          onChange={e => onReps(item, r, e.target.value)}
+                          aria-label={`Reps for ${resolveName(item)} round ${round}`}
+                          className="tabular-nums text-[12.5px] text-center rounded py-1 px-1 shrink-0"
+                          style={{ width: 38, ...small }} />
+                        <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>reps</span>
+                      </>);
+                    })()}
                   </div>
                 );
               })}
@@ -16792,7 +16842,8 @@ function CoachSessionModal({ log, onClose, onSaved }) {
   // Every set that was ticked off, with its place in the stored session.
   const lifts = (log.exercises || []).map((e, ei) => ({
     name: e.name, ei,
-    sets: (e.sets || []).map((st, si) => ({ ...st, si })).filter(st => st.done === true),
+    // Lifts only: a timed, held or distance set has no weight to fix.
+    sets: (e.sets || []).map((st, si) => ({ ...st, si })).filter(st => st.done === true && (typeof st.reps === "number" || (typeof st.weight === "number" && st.meters == null))),
   })).filter(x => x.sets.length);
 
   const keyOf = (ei, si) => `${ei}:${si}`;
@@ -20443,6 +20494,17 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
             workSec: metricNumber(metrics[i]?.work), restSec: metricNumber(metrics[i]?.rest), manual: false };
         }
+        if (mode === "hold") {
+          return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
+            seconds: metricNumber(metrics[i]?.seconds), manual: false };
+        }
+        if (mode === "distance") {
+          // A carry or a sled is loaded, so the weight is kept when typed. It
+          // is not a "last time" lift: that reads load-mode sets only.
+          const w = normalizeWeight(typed[i]);
+          return { set: i + 1, done: checked.includes(i), weight: w, unit: w == null ? null : weightUnit, reps: null,
+            meters: metricNumber(metrics[i]?.meters), manual: false };
+        }
         const weight = normalizeWeight(typed[i]);
         // What was done, not what was asked for. Without it a set of five at
         // 135 and a set of ten at 135 logged identically, and "last time"
@@ -20861,7 +20923,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               </p>
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 tabular-nums text-[15px]" style={{ color: C.orange }}>
-              <span>{x.sets} {tracked && metricMode === "load" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
+              <span>{x.sets} {tracked && metricMode !== "intervals" && metricMode !== "time" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
             {x.note && (
@@ -20925,12 +20987,16 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         </div>
 
         <div className="mb-2">
-          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : "Sets"}</div>
+          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : metricMode === "hold" ? "Holds" : metricMode === "distance" ? "Distance" : "Sets"}</div>
           <div className="text-[12.5px] mt-0.5" style={{ color: C.faint }}>
             {metricMode === "time"
               ? "Type how many minutes you went for, then tick it."
               : metricMode === "intervals"
               ? "Type your work and rest time for each round, then tick the round."
+              : metricMode === "hold"
+              ? "Type how many seconds you held it, then tick the set."
+              : metricMode === "distance"
+              ? "Type the distance, and the weight if it was loaded, then tick the set."
               : "Type the weight you used, then tap the set as you finish it."}
           </div>
         </div>
@@ -21011,6 +21077,13 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
                 <span className="shrink-0" style={{ width: 44 }}>{metricMode === "intervals" ? "Round" : "Set"}</span>
                 {metricMode === "time"
                   ? <span className="flex-1 text-center">Minutes</span>
+                  : metricMode === "hold"
+                  ? <span className="flex-1 text-center">Seconds</span>
+                  : metricMode === "distance"
+                  ? <>
+                      <span className="flex-1 text-center">Metres</span>
+                      <span className="flex-1 text-center">Weight ({weightUnit})</span>
+                    </>
                   : <>
                       <span className="flex-1 text-center">Work (sec)</span>
                       <span className="flex-1 text-center">Rest (sec)</span>
@@ -21031,6 +21104,25 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
                         value={v.minutes ?? ""} onChange={e => write(i, "minutes", e.target.value)}
                         aria-label={`Minutes for set ${i + 1}`}
                         className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                    ) : metricMode === "hold" ? (
+                      <input type="number" inputMode="numeric" min="0" step="1"
+                        placeholder={planWork != null ? String(planWork) : ""}
+                        value={v.seconds ?? ""} onChange={e => write(i, "seconds", e.target.value)}
+                        aria-label={`Seconds for set ${i + 1}`}
+                        className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                    ) : metricMode === "distance" ? (
+                      <>
+                        <input type="number" inputMode="decimal" min="0" step="any"
+                          placeholder={prescribedMeters(x.reps) != null ? String(prescribedMeters(x.reps)) : ""}
+                          value={v.meters ?? ""} onChange={e => write(i, "meters", e.target.value)}
+                          aria-label={`Metres for set ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                        <input type="number" inputMode="decimal" min="0" step="any" placeholder="none"
+                          value={setWeights[x.id]?.[i] ?? ""}
+                          onChange={e => setSetWeights(w => { const f = [...(w[x.id] || [])]; f[i] = e.target.value; return { ...w, [x.id]: f }; })}
+                          aria-label={`Weight for set ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                      </>
                     ) : (
                       <>
                         <input type="number" inputMode="numeric" min="0" step="1"
@@ -21059,6 +21151,10 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               <div className="px-3 py-2 text-[11px] tabular-nums" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
                 {metricMode === "time"
                   ? (planMin != null ? `Planned: ${planMin} min. Leave a box empty to log the plan as written.` : "Leave a box empty if you didn't time it.")
+                  : metricMode === "hold"
+                  ? `${(setChecks[x.id] || []).length} of ${totalSets} done${planWork != null ? ` · planned ${planWork}s` : ""}`
+                  : metricMode === "distance"
+                  ? `${(setChecks[x.id] || []).length} of ${totalSets} done${prescribedMeters(x.reps) != null ? ` · planned ${prescribedMeters(x.reps)} m` : ""}. Leave weight empty if it wasn't loaded.`
                   : `${(setChecks[x.id] || []).length} of ${totalSets} rounds done${planWork != null ? ` · planned ${planWork}s work` : ""}${planRest != null ? ` / ${planRest}s rest` : ""}`}
               </div>
             </div>
@@ -21255,6 +21351,12 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               const forExercise = [...(w[item.id] || [])];
               forExercise[i] = value;
               return { ...w, [item.id]: forExercise };
+            })}
+            setMetrics={setMetrics}
+            onMetric={(item, i, field, value) => setSetMetrics(m => {
+              const forExercise = [...(m[item.id] || [])];
+              forExercise[i] = { ...(forExercise[i] || {}), [field]: value };
+              return { ...m, [item.id]: forExercise };
             })}
             onReps={(item, i, value) => setSetReps(r => {
               const forExercise = [...(r[item.id] || [])];
