@@ -86,6 +86,16 @@ Next session card with date) is pushed, NOT merged yet.
   Exercise `note` field added (board + workout). Migration 011 (programs.
   phases column + program_ai_messages table with RLS) APPLIED 28 Oct
   (approved by Isaiah). Tests: _verify/adjust-ai.test.mjs.
+- Branch `coach-session-reply` (off batch 5, 28-29 Oct): coach reply on a
+  logged session + fix weight/reps (RPC coach_update_session, migration
+  012); coach edits client goals/injuries/days/body (RPC
+  coach_update_athlete, 014); notification kind check widened (013, it was
+  blocking 009's 7 AM notices and 012's replies); do a future workout today
+  (My Workout + Week calendar, a "pull" move; calendar now shows moves);
+  branding: coach colour is the app accent (made readable), any colour,
+  brand shows with logo alone, phone remembers brand for sign-in/welcome,
+  tab title, home-screen icon and name. Migrations 012, 013, 014 APPLIED
+  (approved by Isaiah).
 - Still open: #20 hidden features, Isaiah to pick the order.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in
