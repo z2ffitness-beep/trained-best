@@ -23892,11 +23892,18 @@ function skipExerciseInRange(exercise, from, to, totalWeeks) {
 
 // A new exercise that only exists in weeks `from` to `to`.
 function limitNewExerciseToRange(exercise, from, to, totalWeeks) {
+  return limitNewExerciseToSpans(exercise, [[from, to]], totalWeeks);
+}
+// The same, for several stretches: weeks 2 to 3 and week 5, say.
+function limitNewExerciseToSpans(exercise, spans, totalWeeks) {
   const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
   const map = {};
-  if (from > 1) map["1"] = { skip: true };
-  if (from > 1) map[String(from)] = { skip: false };
-  if (to < total) map[String(to + 1)] = { skip: true };
+  const list = [...(spans || [])].sort((x, y) => x[0] - y[0]);
+  if (list.length && list[0][0] > 1) map["1"] = { skip: true };
+  list.forEach(([from, to]) => {
+    if (from > 1) map[String(from)] = { skip: false };
+    if (to < total) map[String(to + 1)] = { skip: true };
+  });
   return Object.keys(map).length ? { ...exercise, byWeek: map } : exercise;
 }
 
@@ -23957,13 +23964,31 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
     return hit;
   };
   const total = () => Math.max(1, Math.round(Number(p.weeks) || 0) || 1);
+  // Which weeks a change is for (Isaiah, 29 Oct: "weeks 2 and 3, or just
+  // week 5, or Tuesday of week 6"). Accepts [from, to], a list of those
+  // ([[2, 3], [5, 5]]), a list of single weeks ([2, 4, 6]) or one number.
+  // Returns sorted, merged spans, or null for every week.
   const span = (weeks) => {
     if (weeks === undefined || weeks === null) return null;
-    const pair = Array.isArray(weeks) ? weeks : [weeks.from ?? weeks.start, weeks.to ?? weeks.end];
-    const a = Math.round(Number(pair[0]));
-    const b = Math.round(Number(pair[1] ?? pair[0]));
-    if (!(a >= 1) || !(b >= a) || b > total()) throw new Error(`Weeks ${a} to ${b} are outside this ${total()}-week program.`);
-    return (a === 1 && b === total()) ? null : [a, b];
+    let list;
+    if (Array.isArray(weeks) && weeks.length && weeks.every(w => Array.isArray(w))) list = weeks;
+    else if (Array.isArray(weeks) && weeks.length === 2) list = [weeks];
+    else if (Array.isArray(weeks)) list = weeks.map(w => [w, w]);
+    else if (typeof weeks === "object") list = [[weeks.from ?? weeks.start, weeks.to ?? weeks.end]];
+    else list = [[weeks, weeks]];
+    const pairs = list.map(pair => {
+      const a = Math.round(Number(pair[0]));
+      const b = Math.round(Number(pair[1] ?? pair[0]));
+      if (!(a >= 1) || !(b >= a) || b > total()) throw new Error(`Weeks ${a} to ${b} are outside this ${total()}-week program.`);
+      return [a, b];
+    }).sort((x, y) => x[0] - y[0]);
+    if (!pairs.length) return null;
+    const merged = [pairs[0].slice()];
+    for (const [a, b] of pairs.slice(1)) {
+      const last = merged[merged.length - 1];
+      if (a <= last[1] + 1) last[1] = Math.max(last[1], b); else merged.push([a, b]);
+    }
+    return (merged.length === 1 && merged[0][0] === 1 && merged[0][1] === total()) ? null : merged;
   };
   const findEx = (id) => {
     for (const d of p.days || []) {
@@ -24017,7 +24042,8 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
             const full = swappedName ? { ...patch, name: swappedName } : patch;
             x = sp
               ? applyExerciseEdit(x, full, {
-                  scope: "blocks", blocks: [{ startWeek: sp[0], endWeek: sp[1] }], selected: [sp[0]], totalWeeks: total(), nameFor,
+                  scope: "blocks", blocks: sp.map(([a, b]) => ({ startWeek: a, endWeek: b })), selected: sp.map(([a]) => a),
+                  totalWeeks: total(), nameFor,
                 })
               : applyExerciseEdit(x, full, { scope: "all", totalWeeks: total(), nameFor });
           }
@@ -24031,8 +24057,11 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
         const sp = span(op.weeks);
         for (const id of ids) {
           const { d, i } = findEx(id);
-          if (sp) d.exercises[i] = skipExerciseInRange(d.exercises[i], sp[0], sp[1], total());
-          else d.exercises.splice(i, 1);
+          if (sp) {
+            let x = d.exercises[i];
+            for (const [a, b] of sp) x = skipExerciseInRange(x, a, b, total());
+            d.exercises[i] = x;
+          } else d.exercises.splice(i, 1);
         }
         break;
       }
@@ -24051,7 +24080,7 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
             groupId: null, groupKind: null, groupRounds: null, byWeek: null,
             note: String(spec.note || "").trim() || null,
           };
-          if (sp) x = limitNewExerciseToRange(x, sp[0], sp[1], total());
+          if (sp) x = limitNewExerciseToSpans(x, sp, total());
           const at = op.after ? d.exercises.findIndex(y => y.id === op.after) : -1;
           if (at >= 0) d.exercises.splice(at + 1, 0, x); else d.exercises.push(x);
         }
@@ -24231,7 +24260,7 @@ You will get the current program as JSON and their request. Reply with ONLY a JS
 {"reply": "...", "ops": [ ... ]}
 
 "reply": one to three short sentences in plain words saying what you changed (or what you need to know). No em dashes. No markdown.
-"ops": the changes, applied in order. Use ids exactly as given. Leave "weeks" out to mean every week of the program. "weeks": [from, to] is inclusive and 1-based; [4, 4] is week 4 only. Week numbers in later ops refer to the program after earlier ops have run.
+"ops": the changes, applied in order. Use ids exactly as given. Leave "weeks" out to mean every week of the program. "weeks": [from, to] is inclusive and 1-based; [4, 4] is week 4 only. For weeks that are not next to each other, give a list of ranges: [[2, 3], [5, 5]] is weeks 2, 3 and 5. A single day in a single week ("Tuesday of week 6") is that day's exercise ids with "weeks": [6, 6]. Week numbers in later ops refer to the program after earlier ops have run.
 
 Operations:
 {"op":"update_exercises","exercises":[exercise ids],"set":{"sets":3,"reps":"5","rpe":7,"rest":"90s","name":"new exercise name to swap to","section":"compound","note":"cue text"},"weeks":[5,8]}
@@ -24712,13 +24741,15 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
 function BoardExerciseEditor({ target, program, state, setState, onClose, onShow }) {
   const x = target?.item;
   const [vals, setVals] = useState({});
-  const [scope, setScope] = useState("week");
+  // Which weeks the change is for: any of them (Isaiah, 29 Oct). Starts on
+  // the week being looked at.
+  const [picked, setPicked] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   useEffect(() => {
     if (!x) return;
     setVals({ sets: x.sets ?? "", reps: x.reps ?? "", rpe: x.rpe ?? "", rest: x.rest ?? "" });
-    setScope("week"); setError(null); setSaving(false);
+    setPicked(target?.week ? [target.week] : []); setError(null); setSaving(false);
   }, [x?.id, target?.week]);
   if (!x) return null;
 
@@ -24739,7 +24770,12 @@ function BoardExerciseEditor({ target, program, state, setState, onClose, onShow
     }
     setSaving(false);
   };
-  const weeks = scope === "week" && total > 1 ? [target.week, target.week] : undefined;
+  const allWeeks = Array.from({ length: total }, (_, i) => i + 1);
+  const everyWeek = total <= 1 || picked.length === total;
+  const sortedPicked = [...picked].sort((a, b) => a - b);
+  const weeks = everyWeek ? undefined : sortedPicked.map(w => [w, w]);
+  const weeksLabel = everyWeek ? "every week" : formatWeekList(sortedPicked).toLowerCase();
+  const toggleWeek = (w) => setPicked(p => (p.includes(w) ? p.filter(x => x !== w) : [...p, w]));
   const changed = {};
   ["sets", "reps", "rpe", "rest"].forEach(f => {
     const v = String(vals[f] ?? "").trim();
@@ -24747,9 +24783,9 @@ function BoardExerciseEditor({ target, program, state, setState, onClose, onShow
     changed[f] = (f === "sets" || f === "rpe") && /^\d+(\.\d+)?$/.test(v) ? Number(v) : v;
   });
   const save = () => run([{ op: "update_exercises", exercises: [x.id], set: changed, weeks }],
-    `${target.name}${weeks ? ` in week ${target.week}` : ""}`);
+    `${target.name}, ${weeksLabel}`);
   const remove = () => run([{ op: "remove_exercises", exercises: [x.id], weeks }],
-    `Removed ${target.name}${weeks ? ` from week ${target.week}` : ""}`);
+    `Removed ${target.name}, ${weeksLabel}`);
 
   const field = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "10px 8px", fontSize: 15, width: "100%", textAlign: "center" };
   return (
@@ -24765,20 +24801,39 @@ function BoardExerciseEditor({ target, program, state, setState, onClose, onShow
       </div>
       {total > 1 && (
         <div className="mt-4">
-          <SegmentedTabs value={scope} onChange={setScope}
-            options={[{ key: "week", label: `Week ${target.week} only` }, { key: "all", label: "Every week" }]} />
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Apply to</div>
+            <button onClick={() => setPicked(everyWeek ? [target.week] : allWeeks)} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+              {everyWeek ? `Just week ${target.week}` : "Every week"}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {allWeeks.map(w => {
+              const on = picked.includes(w);
+              return (
+                <button key={w} onClick={() => toggleWeek(w)} aria-pressed={on} aria-label={`Week ${w}`}
+                  className="rounded-lg text-[13px] font-semibold tabular-nums"
+                  style={{ width: 40, height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+                  {w}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-[11px] mt-1.5" style={{ color: C.faint }}>
+            {picked.length ? `This ${target.day?.name ? "session" : "day"}, ${weeksLabel}.` : "Pick at least one week."}
+          </div>
         </div>
       )}
       {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
-      <Btn className="w-full mt-4" disabled={saving || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
+      <Btn className="w-full mt-4" disabled={saving || !picked.length || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
       <div className="flex items-center justify-between mt-3">
         <button onClick={() => { const ex = state.exercises.find(e => e.id === x.exerciseId); onClose(); onShow?.({ ...ex, name: target.name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }); }}
           className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>See the exercise</button>
-        <button onClick={remove} disabled={saving} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
-          {weeks ? `Remove from week ${target.week}` : "Remove from every week"}
+        <button onClick={remove} disabled={saving || !picked.length} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+          {everyWeek ? "Remove from every week" : `Remove from ${weeksLabel}`}
         </button>
       </div>
-      <p className="text-[11px] mt-2" style={{ color: C.faint }}>For bigger changes across weeks or days, use Adjust with AI.</p>
+      <p className="text-[11px] mt-2" style={{ color: C.faint }}>To change several exercises or days at once, tell Adjust with AI, for example "weeks 2, 3 and 5: drop the main lifts to 3x3".</p>
     </Modal>
   );
 }

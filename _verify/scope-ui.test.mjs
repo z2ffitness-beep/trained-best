@@ -92,12 +92,12 @@ test("a one-block program is not asked a question with one answer", () => {
 
 // ---------- wiring on the coach's editor ----------
 
-test("a coach changing one exercise on the board picks this week or every week", () => {
-  // 29 Oct: the per-day editor with its block strip is gone; the board is
-  // the one place, and a change there is week-only unless the coach says so.
+test("a coach changing one exercise on the board picks any weeks", () => {
+  // 29 Oct: any weeks, not "this week or every week". Starts on the week
+  // being looked at, so a change is never global by accident.
   const body = bodyOf("function BoardExerciseEditor(");
-  assert.match(body, /setScope\("week"\)/);
-  assert.match(body, /scope === "week" && total > 1 \? \[target\.week, target\.week\] : undefined/);
+  assert.match(body, /setPicked\(target\?\.week \? \[target\.week\] : \[\]\)/);
+  assert.match(body, /const weeks = everyWeek \? undefined : sortedPicked\.map\(w => \[w, w\]\);/);
   assert.match(body, /applyAdjustOps\(program, ops/);
 });
 

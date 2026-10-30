@@ -24,7 +24,7 @@ const H = await load(APP, [
   { name: "ADJUST_MAX_WEEKS", kind: "const" },
   { name: "newAdjustId", kind: "const" },
   "storedPhasesValid", "fitPhasesToWeeks", "bakeGeneratedProgression", "skipExerciseInRange",
-  "limitNewExerciseToRange", "programForAI", "applyAdjustOps", "validateAdjustedProgram",
+  "limitNewExerciseToRange", "limitNewExerciseToSpans", "programForAI", "applyAdjustOps", "validateAdjustedProgram",
   "adjustDiff", "formatWeekList", "buildAdjustMessages",
   "buildProgramPlan", "prescribeForWeek", "weekWithinPhase", "applyPhaseIntent", "applyProgression", "applyDeload",
   "programHasWeeklyPlan", "dayHasWeeklyPlan", "programBlocks", "authoredBlocks", "authoredBlockStarts", "authoredBlocksLookReal",
@@ -231,6 +231,32 @@ test("on a program the app progresses itself, only the weeks really changed are 
   const diff = H.adjustDiff(before, program, LIB);
   assert.equal(diff.workouts, 1);
   assert.deepEqual(diff.rows.map(r => [r.dayId, r.weeks]), [["d2", [4]]]);
+});
+
+test("weeks 2, 3 and 5 only, and nothing in between", () => {
+  const { program } = H.applyAdjustOps(written(), [{ op: "update_exercises", exercises: ["x3"], set: { sets: 2 }, weeks: [[2, 3], [5, 5]] }], { exercises: LIB });
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map(w => at(program, "x3", w).sets), [4, 2, 2, 4, 2, 4]);
+});
+
+test("a list of single weeks works too", () => {
+  const { program } = H.applyAdjustOps(written(), [{ op: "update_exercises", exercises: ["x3"], set: { reps: "3" }, weeks: [2, 4, 6] }], { exercises: LIB });
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7].map(w => at(program, "x3", w).reps), ["8", "3", "8", "3", "8", "3", "8"]);
+});
+
+test("two weeks written as [from, to] is still a range", () => {
+  const { program } = H.applyAdjustOps(written(), [{ op: "update_exercises", exercises: ["x3"], set: { sets: 2 }, weeks: [2, 4] }], { exercises: LIB });
+  assert.deepEqual([1, 2, 3, 4, 5].map(w => at(program, "x3", w).sets), [4, 2, 2, 2, 4]);
+});
+
+test("removed from weeks 3 and 6 only", () => {
+  const { program } = H.applyAdjustOps(written(), [{ op: "remove_exercises", exercises: ["x2"], weeks: [[3, 3], [6, 6]] }], { exercises: LIB });
+  assert.deepEqual([2, 3, 4, 5, 6, 7].map(w => !!at(program, "x2", w)), [true, false, true, true, false, true]);
+});
+
+test("added for weeks 2 and 4 only", () => {
+  const { program } = H.applyAdjustOps(written(), [{ op: "add_exercise", days: ["d1"], exercise: { name: "Rower", section: "aerobic" }, weeks: [[2, 2], [4, 4]] }], { exercises: LIB });
+  const x = program.days[0].exercises[2];
+  assert.deepEqual([1, 2, 3, 4, 5].map(w => !!H.resolveExerciseForWeek(x, w)), [false, true, false, true, false]);
 });
 
 test("the newest request carries the program as it is now", () => {
