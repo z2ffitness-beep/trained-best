@@ -454,7 +454,9 @@ const FEATURES = {
   // it is backed by real tables and a locking RPC rather than a stub. Taking
   // card payment for a pack is the next step; the ledger works without it.
   booking: true,
-  programTemplates: false, // the coach's reusable template library + bulk assign
+  // On (Isaiah, 30 Oct): save a program once, give it to several clients, or
+  // copy one client's program to another.
+  programTemplates: true,  // the coach's reusable template library + bulk assign
   athleteGroups: false,    // splitting the roster into named groups
   exerciseLibrary: false,  // the standalone browse-all-exercises screen
   aiAssistant: true,       // the AI chat tab that sits beside the coach thread
@@ -10139,6 +10141,45 @@ async function deleteProgramEverywhere(programId, athleteId, state, setState) {
   return { ok: true };
 }
 
+// Gives a copy of `source` (a template, or another client's program) to one
+// client as their new program, and puts it into the screen's state. The
+// client's previous program stays saved; it just stops being the active one.
+async function giveProgramToAthlete({ source, athlete, coachId, state, setState }) {
+  const res = await assignTemplateToAthlete({ template: source, athlete, coachId, state });
+  if (!res.ok) return res;
+  const created = res.created;
+  setState(s => {
+    const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+    const given = {
+      id: created.id, name: created.name, weeks: created.weeks, sport: created.sport,
+      rationale: created.rationale || null, startedOn: created.started_on || null,
+      athleteId: athlete.id, assignedCount: 1, phases: created.phases || null, days,
+    };
+    return {
+      ...s,
+      exercises: [...s.exercises, ...newExercises],
+      programs: [...s.programs, given],
+      athletes: s.athletes.map(a => (a.id === athlete.id ? { ...a, program: created.id, customProgram: null } : a)),
+    };
+  });
+  return res;
+}
+
+// Saves a copy of a client's program as one of the coach's templates.
+async function saveProgramAsTemplate({ program, coachId, state, setState }) {
+  if (!program || !coachId) return { ok: false, message: "Sign in again to save a template." };
+  const { data, error } = await supabase.from("programs").insert({
+    coach_id: coachId, athlete_id: null,
+    name: `${program.name || "Program"} (template)`,
+    weeks: program.weeks || 4, sport: program.sport || null,
+    days: denormalizeDays(program.days, state),
+  }).select().single();
+  if (error || !data) return { ok: false, message: error?.message || "Couldn't save the template." };
+  const copy = { id: data.id, name: data.name, weeks: data.weeks, sport: data.sport, assignedCount: 0, athleteId: null, days: program.days };
+  setState(s => ({ ...s, programs: [...s.programs, copy] }));
+  return { ok: true, created: data };
+}
+
 async function assignTemplateToAthlete({ template, athlete, coachId, state, allowEmpty = false }) {
   // Each athlete gets their own row rather than pointing at the coach's
   // template: the RLS policy on `programs` only lets an athlete read rows where
@@ -12436,8 +12477,6 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
   // Building from the athlete's signup answers, from this page rather than
   // from the roster's Assign sheet.
@@ -12447,7 +12486,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Isaiah, 26 Oct: when a client's program is up, the coach needs a way to
   // give them a new one from here. The old one stays saved as history.
   const [newProgramOpen, setNewProgramOpen] = useState(false);
-  const [activeDayId, setActiveDayId] = useState(null);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [templateMsg, setTemplateMsg] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
   const [swapTarget, setSwapTarget] = useState(null);
@@ -13001,6 +13041,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building} onClick={buildProgram}>
                 {building ? "Creating…" : "Start blank"}
               </Btn>
+              <Btn variant="secondary" className="w-full mb-2" icon={ClipboardList} onClick={() => setCopyOpen(true)}>
+                From a template or another client
+              </Btn>
               <Btn variant="secondary" className="w-full" icon={ClipboardList} onClick={() => setImportOpen(true)}>
                 Import a program
               </Btn>
@@ -13016,6 +13059,16 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
                 className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
                 {generating || building ? "Creating\u2026" : "Make new program"}
               </button>
+              {/* Save it to reuse for someone else (Isaiah, 30 Oct). */}
+              <button onClick={async () => {
+                  setTemplateMsg("Saving\u2026");
+                  const res = await saveProgramAsTemplate({ program, coachId: myUserId, state, setState });
+                  setTemplateMsg(res.ok ? "Saved to your templates." : res.message);
+                }}
+                className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+                Save as template
+              </button>
+              {templateMsg && <div className="text-[11px]" style={{ color: C.sub }}>{templateMsg}</div>}
               <button onClick={() => setDeleteProgOpen(true)} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
                 Delete this program
               </button>
@@ -13082,11 +13135,6 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         </>)}
       </div>
 
-      <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
-        exercises={state.exercises} defaultPhase={pickerBlock?.phases?.[0]}
-        ownerId={myUserId}
-        onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
-        onPick={(ex) => addExerciseToDay(activeDayId, ex, pickerBlock)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
       <ExerciseSwapModal open={!!swapTarget && !scopeTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
@@ -13157,11 +13205,17 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           onClick={async () => { setNewProgramOpen(false); await buildProgram(); }}>
           Start blank
         </Btn>
+        <Btn variant="secondary" className="w-full mb-2" icon={ClipboardList}
+          onClick={() => { setNewProgramOpen(false); setCopyOpen(true); }}>
+          From a template or another client
+        </Btn>
         <Btn variant="secondary" className="w-full" icon={ClipboardList}
           onClick={() => { setNewProgramOpen(false); setImportOpen(true); }}>
           Import a program
         </Btn>
       </Modal>
+      <CopyProgramModal open={copyOpen} onClose={() => setCopyOpen(false)} athlete={athlete}
+        state={state} setState={setState} coachId={myUserId} />
       {/* Fed this athlete's REAL answers, the same as the roster's Assign
           sheet. An earlier version of that screen passed a hardcoded example
           intake and so built a program for an imaginary MMA fighter whoever
@@ -13666,10 +13720,124 @@ function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase, o
   );
 }
 
+// Pick clients and give each of them a copy of a program (Isaiah, 30 Oct).
+function GiveProgramModal({ open, onClose, source, state, setState, coachId }) {
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  useEffect(() => { if (open) { setPicked([]); setBusy(false); setResult(null); } }, [open, source?.id]);
+  if (!open || !source) return null;
+  const athletes = (state.athletes || []).filter(a => a.program !== source.id);
+  const toggle = (id) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
+  const give = async () => {
+    if (busy || !picked.length) return;
+    setBusy(true);
+    let done = 0;
+    const failed = [];
+    for (const id of picked) {
+      const athlete = state.athletes.find(a => a.id === id);
+      const res = await giveProgramToAthlete({ source, athlete, coachId, state, setState });
+      if (res.ok) done++; else failed.push(`${athlete?.name || "A client"}: ${res.message}`);
+    }
+    setBusy(false);
+    setResult({ done, failed });
+    if (!failed.length) setTimeout(onClose, 900);
+  };
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title={`Give "${source.name}"`}>
+      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+        Each client gets their own copy, set to their training days, and it becomes what they train from. Their old
+        program stays saved. Change anyone's copy afterwards without touching the others.
+      </p>
+      <div className="space-y-2 mb-4">
+        {athletes.length === 0 && <p className="text-[15px]" style={{ color: C.sub }}>No clients to give it to.</p>}
+        {athletes.map(a => {
+          const on = picked.includes(a.id);
+          const current = state.programs.find(p => p.id === a.program);
+          return (
+            <button key={a.id} onClick={() => toggle(a.id)} aria-pressed={on}
+              className="w-full flex items-center gap-3 rounded-lg p-3 text-left"
+              style={{ background: on ? `${C.orange}12` : C.bg, border: `1px solid ${on ? C.orange : C.border}` }}>
+              {on ? <CheckCircle2 size={18} style={{ color: C.orange }} className="shrink-0" /> : <Circle size={18} style={{ color: C.faint }} className="shrink-0" />}
+              <Avatar initials={a.avatar} size={30} photoUrl={a.photoUrl} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{a.name}</div>
+                <div className="text-[11px] truncate" style={{ color: C.sub }}>{current ? `Now on ${current.name}` : "No program yet"}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {result && (
+        <div className="text-[12.5px] mb-3" style={{ color: result.failed.length ? C.red : C.olive }}>
+          {result.done ? `Given to ${result.done} client${result.done === 1 ? "" : "s"}.` : ""}
+          {result.failed.map(f => <div key={f}>{f}</div>)}
+        </div>
+      )}
+      <Btn className="w-full" disabled={busy || !picked.length} onClick={give}>
+        {busy ? "Giving…" : picked.length ? `Give to ${picked.length} client${picked.length === 1 ? "" : "s"}` : "Pick clients"}
+      </Btn>
+    </Modal>
+  );
+}
+
+// For one client: start from a template, or copy another client's program.
+function CopyProgramModal({ open, onClose, athlete, state, setState, coachId }) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => { if (open) { setBusy(null); setError(null); } }, [open]);
+  if (!open || !athlete) return null;
+  const templates = state.programs.filter(p => isTemplate(p) && isSavedTemplate(p));
+  const others = (state.athletes || [])
+    .filter(a => a.id !== athlete.id && a.program)
+    .map(a => ({ a, prog: state.programs.find(p => p.id === a.program) }))
+    .filter(x => x.prog && (x.prog.days || []).length);
+  const pick = async (source) => {
+    if (busy) return;
+    setBusy(source.id);
+    setError(null);
+    const res = await giveProgramToAthlete({ source, athlete, coachId, state, setState });
+    setBusy(null);
+    if (!res.ok) { setError(res.message); return; }
+    onClose();
+  };
+  const row = (key, title, sub, source) => (
+    <button key={key} onClick={() => pick(source)} disabled={!!busy}
+      className="w-full flex items-center gap-3 rounded-lg p-3 text-left"
+      style={{ background: C.bg, border: `1px solid ${C.border}`, opacity: busy && busy !== source.id ? 0.5 : 1 }}>
+      <ClipboardList size={18} style={{ color: C.blue }} className="shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{title}</div>
+        <div className="text-[11px] truncate" style={{ color: C.sub }}>{busy === source.id ? "Copying…" : sub}</div>
+      </div>
+    </button>
+  );
+  const first = (athlete.name || "").split(" ")[0] || "them";
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title={`A program for ${first}`}>
+      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+        {first} gets their own copy, set to their training days. Change it afterwards from their Program tab.
+      </p>
+      {templates.length > 0 && (<>
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Your templates</div>
+        <div className="space-y-2 mb-4">
+          {templates.map(t => row(t.id, t.name, `${t.weeks} weeks · ${t.days.length} days`, t))}
+        </div>
+      </>)}
+      {others.length > 0 && (<>
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Copy another client's program</div>
+        <div className="space-y-2 mb-2">
+          {others.map(({ a, prog }) => row(`c-${a.id}`, prog.name, `${a.name} · ${prog.weeks} weeks`, prog))}
+        </div>
+      </>)}
+      {!templates.length && !others.length && <p className="text-[15px]" style={{ color: C.sub }}>No templates or other programs yet.</p>}
+      {error && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</div>}
+    </Modal>
+  );
+}
+
 function CoachPrograms({ state, setState, nav, myUserId }) {
   const [editing, setEditing] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [activeDayId, setActiveDayId] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiFor, setAiFor] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
@@ -13678,9 +13846,12 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
   const [templateError, setTemplateError] = useState(null);
   const [creating, setCreating] = useState(false);
   const [programDeleteTarget, setProgramDeleteTarget] = useState(null);
+  const [giveOpen, setGiveOpen] = useState(false);
   const exById = id => state.exercises.find(e => e.id === id);
 
-  const prog = state.programs.find(p => p.id === editing && isTemplate(p));
+  // Saved templates only: the built-in examples have no row behind them, so
+  // nothing done to them could be kept.
+  const prog = state.programs.find(p => p.id === editing && isTemplate(p) && isSavedTemplate(p));
 
   // A template is a programs row with coach_id set and athlete_id NULL — the
   // same shape `isTemplate` already keys off. Nothing on this screen used to
@@ -13828,83 +13999,41 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
   const sortedExercises = (day) => [...day.exercises].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase));
 
   if (prog) {
+    // The same one place to change a program as a client's page (Isaiah,
+    // 29-30 Oct): the board, tap-to-edit, and Adjust with AI.
     return (
       <div className="pb-28">
-        <TopBar title={prog.name} right={<button onClick={() => setEditing(null)} style={{ color: C.sub }}><X size={20} /></button>} />
-        <div className="px-5 pt-4 space-y-5">
+        <TopBar title={prog.name} right={<button onClick={() => setEditing(null)} aria-label="Close" style={{ color: C.sub }}><X size={20} /></button>} />
+        <div className="px-5 pt-4">
           {templateError && (
-            <div className="rounded-lg p-3 text-[12.5px] flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+            <div className="rounded-lg p-3 mb-3 text-[12.5px] flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
               <AlertCircle size={14} className="shrink-0 mt-0.5" />
               <span className="flex-1">{templateError}</span>
               <button onClick={() => setTemplateError(null)}><X size={13} /></button>
             </div>
           )}
-
-          {!isSavedTemplate(prog) && (
-            <div className="rounded-xl p-4" style={{ background: `${C.amber}12`, border: `1px solid ${C.amber}55` }}>
-              <div className="flex items-start gap-2 mb-3">
-                <AlertCircle size={15} className="shrink-0 mt-0.5" style={{ color: C.amber }} />
-                <div>
-                  <div className="text-[15px] font-semibold" style={{ color: C.text }}>This is a built-in example</div>
-                  <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                    Changes to it won't be kept. Save your own copy first and everything after that sticks.
-                  </p>
-                </div>
-              </div>
-              <Btn className="w-full" icon={Plus} disabled={creating} onClick={saveDemoAsMine}>
-                {creating ? "Saving…" : "Save a copy I can edit"}
-              </Btn>
-            </div>
-          )}
-
-          <Field label="Program name">
-            <input style={inputStyle} value={prog.name} onChange={e => renameProgram(e.target.value)}
-              disabled={!isSavedTemplate(prog)} placeholder="e.g. Fight Camp — Weeks 1-6" />
-          </Field>
-
-          {prog.days.map(day => (
-            <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
-              </div>
-              <div className="space-y-2">
-                {sortedExercises(day).map(x => {
-                  const ex = exById(x.exerciseId);
-                  const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
-                  return (
-                    <div key={x.id} className="rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                      <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                      <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="flex-1 min-w-0 text-left">
-                        <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{ex?.name || "Exercise"}</div>
-                        <div className="text-[12.5px] tabular-nums mt-0.5" style={{ color: C.sub }}>{x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe} · rest {x.rest}</div>
-                      </button>
-                      <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })} className="shrink-0"><Trash2 size={15} style={{ color: C.sub }} /></button>
-                    </div>
-                  );
-                })}
-              </div>
-              <button onClick={() => { setActiveDayId(day.id); setPickerOpen(true); }}
-                className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                <BookOpen size={15} /> From Library
-              </button>
-            </div>
-          ))}
-          <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
+          <Btn className="w-full mb-4" icon={Users} onClick={() => setGiveOpen(true)} disabled={!state.athletes.length}>Give to clients</Btn>
+          <ProgramBoardWithAI state={state} setState={setState} program={prog} authorId={myUserId}
+            onExerciseClick={setDetailExercise} editable />
+          <div className="mt-3 flex justify-center">
+            <button onClick={() => setProgramDeleteTarget(prog)} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>Delete this template</button>
+          </div>
         </div>
-        <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises}
-          ownerId={myUserId}
-          onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
-          onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
-        <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
-          onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
-          onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
-        <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
-          onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
+        <GiveProgramModal open={giveOpen} onClose={() => setGiveOpen(false)} source={prog}
+          state={state} setState={setState} coachId={myUserId} />
+        <Modal open={!!programDeleteTarget} onClose={() => setProgramDeleteTarget(null)} title="Delete template">
+          <p className="text-[15px] mb-4" style={{ color: C.sub }}>
+            Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Clients already given a copy keep theirs.
+          </p>
+          <div className="flex gap-2.5">
+            <Btn variant="secondary" className="flex-1" onClick={() => setProgramDeleteTarget(null)}>Cancel</Btn>
+            <Btn variant="danger" className="flex-1" icon={Trash2}
+              onClick={() => { deleteProgram(programDeleteTarget.id); setProgramDeleteTarget(null); }}>Delete</Btn>
+          </div>
+        </Modal>
         <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
-        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
-        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
+          canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+          onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       </div>
     );
   }
@@ -13927,8 +14056,17 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
             <button onClick={() => setTemplateError(null)}><X size={13} /></button>
           </div>
         )}
+        <p className="text-[12.5px] mb-3 leading-relaxed" style={{ color: C.sub }}>
+          Your templates. Open one to change it or give it to clients. To make one from a client's program,
+          use "Save as template" at the bottom of their Program tab.
+        </p>
+        {state.programs.filter(p => isTemplate(p) && isSavedTemplate(p)).length === 0 && (
+          <div className="rounded-xl p-4 mb-3 text-[12.5px]" style={{ ...card({ borderRadius: 16 }), color: C.faint }}>
+            No templates yet. Tap + to start one, or save a client's program as a template.
+          </div>
+        )}
         <div className="space-y-3">
-          {state.programs.filter(isTemplate).map(p => {
+          {state.programs.filter(p => isTemplate(p) && isSavedTemplate(p)).map(p => {
             // Seeded demo templates have no database row, so they can't be
             // deleted — only the coach's own saved templates can.
             const saved = isSavedTemplate(p);
@@ -14646,6 +14784,68 @@ function MessageRow({ m, mine, onHold }) {
   );
 }
 
+// One message to several clients at once (Isaiah, 30 Oct). It lands in each
+// client's own thread, as if sent to them one by one, so a reply comes back to
+// that thread rather than to a group.
+function BroadcastModal({ open, onClose, athletes, myUserId, onSent }) {
+  const [text, setText] = useState("");
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (open) { setText(""); setPicked((athletes || []).map(a => a.id)); setBusy(false); setDone(null); setError(null); }
+  }, [open]);
+  if (!open) return null;
+  const all = picked.length === (athletes || []).length;
+  const toggle = (id) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
+  const send = async () => {
+    const body = text.trim();
+    if (!body || !picked.length || busy || !myUserId) return;
+    setBusy(true);
+    setError(null);
+    const rows = picked.map(id => ({ athlete_id: id, sender_id: myUserId, body }));
+    const { error: e } = await supabase.from("messages").insert(rows);
+    setBusy(false);
+    if (e) { setError("That didn't send. Check your connection and try again."); return; }
+    setDone(picked.length);
+    onSent?.();
+    setTimeout(onClose, 900);
+  };
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title="Message everyone">
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+        placeholder="e.g. Gym is closed Monday. Do Monday's session on Tuesday."
+        className="w-full rounded-xl px-3 py-2.5 text-[15px] resize-none"
+        style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+      <div className="flex items-center justify-between mt-3 mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Send to</div>
+        <button onClick={() => setPicked(all ? [] : athletes.map(a => a.id))} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {all ? "Clear" : "Everyone"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {athletes.map(a => {
+          const on = picked.includes(a.id);
+          return (
+            <button key={a.id} onClick={() => toggle(a.id)} aria-pressed={on}
+              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {a.name.split(" ")[0]}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] mb-3" style={{ color: C.faint }}>Each person gets it in their own chat with you, so replies come back one to one.</p>
+      {error && <div className="text-[12.5px] mb-2" style={{ color: C.red }}>{error}</div>}
+      {done != null && <div className="text-[12.5px] mb-2" style={{ color: C.olive }}>Sent to {done}.</div>}
+      <Btn className="w-full" icon={Send} disabled={busy || !text.trim() || !picked.length} onClick={send}>
+        {busy ? "Sending…" : `Send to ${picked.length === athletes.length ? "everyone" : `${picked.length} client${picked.length === 1 ? "" : "s"}`}`}
+      </Btn>
+    </Modal>
+  );
+}
+
 function CoachMessages({ state, setState, nav, myUserId }) {
   const [activeId, setActiveId] = useState(state.athletes[0]?.id);
   // The draft lives in MessageComposer now, with the attachment beside it,
@@ -14655,6 +14855,7 @@ function CoachMessages({ state, setState, nav, myUserId }) {
   const { messages, loading, error, sending, send, deleteForEveryone, hideForMe } = useMessageThread(activeId, myId);
   // Which message the long-press sheet is open on, or null.
   const [actionOn, setActionOn] = useState(null);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, activeId]);
@@ -14668,6 +14869,15 @@ function CoachMessages({ state, setState, nav, myUserId }) {
     <div className="flex flex-col app-screen">
       <TopBar title="Messages" onLogout={nav.logout} />
       <div className="flex gap-2 px-3 py-3 overflow-x-auto shrink-0" style={{ borderBottom: `1px solid ${C.border}` }}>
+        {/* One message to everyone (Isaiah, 30 Oct): "gym closed Monday". */}
+        {state.athletes.length > 1 && (
+          <button onClick={() => setBroadcastOpen(true)} className="flex flex-col items-center gap-1 shrink-0 px-1" aria-label="Message everyone">
+            <div className="rounded-full flex items-center justify-center" style={{ width: 44, height: 44, background: `${C.orange}1f`, border: `1px dashed ${C.orange}` }}>
+              <Users size={18} style={{ color: C.orange }} />
+            </div>
+            <span className="text-[11px]" style={{ color: C.orange }}>Everyone</span>
+          </button>
+        )}
         {state.athletes.map(a => (
           <button key={a.id} onClick={() => setActiveId(a.id)} className="flex flex-col items-center gap-1 shrink-0 px-1">
             <Avatar initials={a.avatar} size={44} photoUrl={a.photoUrl} accent={activeId === a.id ? C.orange : "#5C6066"} />
@@ -14711,6 +14921,8 @@ function CoachMessages({ state, setState, nav, myUserId }) {
           />
         </>
       )}
+      <BroadcastModal open={broadcastOpen} onClose={() => setBroadcastOpen(false)} athletes={state.athletes} myUserId={myId}
+        onSent={() => setActiveId(id => id)} />
     </div>
   );
 }
@@ -15805,17 +16017,8 @@ function CoachProfile({ state, setState, nav }) {
           </div>
         )}
 
-        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Roster Overview</div>
-        <div className="grid grid-cols-3 gap-2.5 mb-5">
-          <StatCard icon={Users} label="Athletes" value={totalAthletes} accent={C.orange} />
-          <StatCard icon={ClipboardList} label="Programs" value={activePrograms} accent={C.blue} />
-          <StatCard icon={Dumbbell} label="Sessions Logged" value={totalSessions} accent={C.olive} />
-        </div>
-        <div className="grid grid-cols-2 gap-2.5 mb-5">
-          <StatCard icon={AlertCircle} label="Flagged Injuries" value={injuredCount} accent={C.red} />
-          <StatCard icon={Target} label="Unassigned" value={unassigned} accent={C.amber} />
-        </div>
-
+        {/* No Roster Overview (Isaiah, 30 Oct): the counts weren't useful.
+            Injuries show on each client's own page. */}
         {mostActive && mostActive.streak > 0 && (
           <>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Top Streak</div>
@@ -20710,7 +20913,10 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         right={
         /* Red, because stopping is the one thing an athlete does mid-session
            that the app had no answer for. The old way out was the back
-           gesture, which said nothing about what happened to the sets. */
+           gesture, which said nothing about what happened to the sets.
+           Only once the workout is being timed (Isaiah, 30 Oct): before
+           that there is nothing running to stop, and Finish Workout ends it. */
+        (timerIsLive || timerMode === "counting") &&
         <button onClick={openStop} aria-label="Stop this workout"
           className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
           style={{ background: `${C.red}1f`, border: `1px solid ${C.red}`, color: C.red }}>
@@ -23421,36 +23627,11 @@ function AthleteProfile({ state, setState, nav }) {
 
         <AthletePreferences state={state} setState={setState} />
 
-        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>More</div>
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <button onClick={() => nav.go("athlete-progress")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.blue}22` }}><TrendingUp size={18} style={{ color: C.blue }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Full Progress</span>
-          </button>
-          <button onClick={() => nav.go("form-checks")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.red}22` }}><Video size={18} style={{ color: C.red }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Form Checks</span>
-          </button>
-          {FEATURES.nutrition && (
-            <button onClick={() => nav.go("nutrition")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-              <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Salad size={18} style={{ color: C.olive }} /></div>
-              <span className="text-[15px] font-medium" style={{ color: C.text }}>Nutrition</span>
-            </button>
-          )}
-          {FEATURES.exerciseLibrary && (
-            <button onClick={() => nav.go("exercise-library")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-              <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><BookOpen size={18} style={{ color: C.orange }} /></div>
-              <span className="text-[15px] font-medium" style={{ color: C.text }}>Exercise Library</span>
-            </button>
-          )}
-          <button onClick={() => nav.go("calendar")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.amber}22` }}><Calendar size={18} style={{ color: C.amber }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Calendar</span>
-          </button>
-        </div>
-
-        {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space
-            and every session is on the Calendar, one button above. */}
+        {/* No "More" section (Isaiah, 30 Oct): Full Progress, Form Checks and
+            Calendar links are gone from the athlete's Profile. The calendar is
+            on the Week tab. */}
+        {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space,
+            and every session is on the Week tab's calendar. */}
         <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
         {/* Required to be reachable from inside the app, not only by writing
@@ -26784,6 +26965,19 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
   const booking = state.booking || EMPTY_BOOKING;
   const myId = state.me.id;
   const coachId = state.me.coachId;
+  const [askingForPack, setAskingForPack] = useState(false);
+  const [askedForPack, setAskedForPack] = useState(false);
+  const askForPack = async () => {
+    if (!myId || askingForPack) return;
+    setAskingForPack(true);
+    const { error } = await supabase.from("messages").insert({
+      athlete_id: myId, sender_id: myId,
+      body: "Hi, I'm out of sessions. Can I get another pack?",
+    });
+    setAskingForPack(false);
+    if (error) setErr("That didn't send. Check your connection and try again.");
+    else setAskedForPack(true);
+  };
   // The coach's notice period, as loaded with their profile.
   const cancelHours = Number(state.coachProfile?.cancellationHours) || DEFAULT_CANCELLATION_HOURS;
   // A booking the athlete is about to cancel inside the window. Held here so
@@ -26894,7 +27088,20 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
           <div className="flex-1 min-w-0 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
             {credits > 0
               ? <>Sessions on your account. Booking uses one; cancelling more than {cancelHours} hours ahead gives it back.</>
-              : <>You're out of sessions. Ask {state.coachProfile?.name || "your coach"} about another pack and they'll show up here.</>}
+              : <>
+                  You're out of sessions. Once {state.coachProfile?.name || "your coach"} adds another pack, they show up here.
+                  {/* One tap to ask (Isaiah, 30 Oct), instead of leaving the
+                      app to find the coach's number. Lands in their thread. */}
+                  <div className="mt-2">
+                    {askedForPack
+                      ? <span className="font-semibold" style={{ color: C.olive }}>Sent. They'll see it in Messages.</span>
+                      : <button onClick={askForPack} disabled={askingForPack}
+                          className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+                          style={{ color: C.blue, border: `1px solid ${C.blue}55`, opacity: askingForPack ? 0.5 : 1 }}>
+                          {askingForPack ? "Sending\u2026" : "Ask for more sessions"}
+                        </button>}
+                  </div>
+                </>}
             {/* Credits that are about to lapse. Said once they are close
                 enough to matter, not from the day they are bought. */}
             {(() => {

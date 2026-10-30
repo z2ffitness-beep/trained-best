@@ -118,7 +118,7 @@ ok("the athlete page offers the build-from-answers button", () => {
   assert.match(detailBody, /\$\{firstName\}'s goals, injuries/);
 });
 
-ok("none of the three start buttons share a row", () => {
+ok("none of the start buttons share a row", () => {
   // Btn carries whitespace-nowrap AND shrink-0, so two side by side beat
   // flex-1 and refuse to shrink. Measured: they spilled past the card.
   // Bounded by the next thing on the page, NOT by a character count. A
@@ -128,7 +128,8 @@ ok("none of the three start buttons share a row", () => {
   const block = card.slice(0, card.indexOf("{/* One place to change a program"));
   assert.ok(!/<div className="flex gap-2\.5">[\s\S]*?<Btn/.test(block),
     "the start options must each be on their own full-width row");
-  assert.equal((block.match(/className="w-full/g) || []).length, 3);
+  // Four since 30 Oct: "From a template or another client".
+  assert.equal((block.match(/className="w-full/g) || []).length, 4);
 });
 
 ok("it opens the generator, and the generator is rendered on this page", () => {
