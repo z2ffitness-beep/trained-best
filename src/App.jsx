@@ -24512,7 +24512,7 @@ function boardDayOrder(days) {
     .map(x => x.d);
 }
 
-function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise }) {
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise, onAddExercise }) {
   const blocks = programBoardWeek(program, day, week, plan, authored);
   return (
     <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
@@ -24531,7 +24531,13 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
       {blocks.length === 0 && <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing this week.</div>}
       {blocks.map(b => (
         <div key={b.key} className="mt-2.5 first:mt-0">
-          <div className="text-[11px] uppercase tracking-[.14em] font-semibold mb-1" style={{ color: b.accent || C.sub }}>{b.label}</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[11px] uppercase tracking-[.14em] font-semibold" style={{ color: b.accent || C.sub }}>{b.label}</div>
+            {onAddExercise && (
+              <button onClick={() => onAddExercise({ day, week, section: (SESSION_BLOCKS.find(sb => sb.key === b.key)?.phases || [])[0] })}
+                aria-label={`Add to ${b.label}`} className="p-1 -m-1"><Plus size={14} style={{ color: b.accent || C.sub }} /></button>
+            )}
+          </div>
           {b.items.map((x, i) => {
             const ex = exById(x.exerciseId);
             const name = ex?.name || x.name || "Exercise";
@@ -24554,11 +24560,18 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
           })}
         </div>
       ))}
+      {onAddExercise && (
+        <button onClick={() => onAddExercise({ day, week, section: "compound" })}
+          className="w-full mt-2.5 rounded-lg py-2 text-[12.5px] font-semibold flex items-center justify-center gap-1.5"
+          style={{ color: C.blue, border: `1px dashed ${C.blue}55` }}>
+          <Plus size={13} /> Add exercise
+        </button>
+      )}
     </div>
   );
 }
 
-function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditExercise = null }) {
+function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditExercise = null, onAddExercise = null }) {
   const wide = useIsWide();
   const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
   const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
@@ -24579,7 +24592,7 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditEx
   const named = storedPhasesValid(program.phases, total) ? program.phases : null;
   const phaseName = (w) => named?.find(ph => w >= ph.startWeek && w <= ph.endWeek)?.name || null;
   const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
-  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise };
+  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise, onAddExercise };
 
   if (!wide) {
     const shown = Math.min(total, Math.max(1, week));
@@ -24916,25 +24929,126 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
   );
 }
 
-// Changing one exercise from the board (Isaiah, 29 Oct): tap it, change the
-// numbers, choose this week or every week. The same engine as Adjust with AI,
-// so a week-only change stays on that week and logged workouts are untouched.
-function BoardExerciseEditor({ target, program, state, setState, onClose, onShow }) {
-  const x = target?.item;
-  const [vals, setVals] = useState({});
-  // Which weeks the change is for: any of them (Isaiah, 29 Oct). Starts on
-  // the week being looked at.
-  const [picked, setPicked] = useState([]);
+// ---------- changing the program by hand, on the board ----------
+//
+// Isaiah, 29-30 Oct: full flexibility by hand as well as with the AI. Tap an
+// exercise to change it, swap it, or remove it; tap + on a section to add one.
+// Either way, pick exactly which days and which weeks it applies to. Every
+// change goes through the same engine as Adjust with AI, so the days and
+// weeks not picked stay exactly as they were.
+
+function WeekPicker({ total, picked, setPicked, anchor }) {
+  if (total <= 1) return null;
+  const all = Array.from({ length: total }, (_, i) => i + 1);
+  const every = picked.length === total;
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Weeks</div>
+        <button onClick={() => setPicked(every ? [anchor] : all)} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {every ? `Just week ${anchor}` : "Every week"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {all.map(w => {
+          const on = picked.includes(w);
+          return (
+            <button key={w} onClick={() => setPicked(p => (p.includes(w) ? p.filter(x => x !== w) : [...p, w]))} aria-pressed={on} aria-label={`Week ${w}`}
+              className="rounded-lg text-[13px] font-semibold tabular-nums"
+              style={{ width: 40, height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {w}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DayPicker({ days, picked, setPicked, label = "Days" }) {
+  if (!days || days.length <= 1) return null;
+  const every = picked.length === days.length;
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{label}</div>
+        <button onClick={() => setPicked(every ? [days[0].id] : days.map(d => d.id))} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {every ? "Just one" : "All of them"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {days.map(d => {
+          const on = picked.includes(d.id);
+          return (
+            <button key={d.id} onClick={() => setPicked(p => (p.includes(d.id) ? p.filter(x => x !== d.id) : [...p, d.id]))} aria-pressed={on}
+              className="rounded-lg px-3 text-[12.5px] font-semibold max-w-full truncate"
+              style={{ height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {d.name}{d.weekday && !String(d.name || "").toLowerCase().includes(d.weekday.toLowerCase()) ? ` · ${d.weekday.slice(0, 3)}` : ""}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Pick a movement from the library by typing, or name a new one.
+function ExerciseSearch({ exercises, value, onChange, placeholder = "Search exercises" }) {
+  const [q, setQ] = useState("");
+  const term = q.trim().toLowerCase();
+  const matches = term
+    ? (exercises || []).filter(e => (e.name || "").toLowerCase().includes(term)).slice(0, 6)
+    : [];
+  const exact = (exercises || []).some(e => (e.name || "").toLowerCase() === term);
+  if (value) {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ background: `${C.orange}12`, border: `1px solid ${C.orange}55` }}>
+        <span className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{value}</span>
+        <button onClick={() => { onChange(null); setQ(""); }} className="text-[12.5px] font-semibold shrink-0" style={{ color: C.blue }}>Change</button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder={placeholder}
+        className="w-full rounded-xl px-3 py-2.5 text-[15px]"
+        style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+      {term && (
+        <div className="mt-1.5 rounded-xl overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+          {matches.map(e => (
+            <button key={e.id} onClick={() => { onChange(e.name); setQ(""); }} className="w-full text-left px-3 py-2 text-[15px]"
+              style={{ background: C.panel, borderTop: `1px solid ${C.border}`, color: C.text }}>{e.name}</button>
+          ))}
+          {!exact && (
+            <button onClick={() => { onChange(q.trim()); setQ(""); }} className="w-full text-left px-3 py-2 text-[15px] font-semibold"
+              style={{ background: C.panel, borderTop: `1px solid ${C.border}`, color: C.blue }}>Use "{q.trim()}" as a new exercise</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const sectionChoices = () => SESSION_BLOCKS.map(b => ({ key: b.phases[0], label: b.label, accent: b.accent }));
+
+function NumberFields({ vals, setVals }) {
+  const field = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "10px 8px", fontSize: 15, width: "100%", textAlign: "center" };
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      {[["sets", "Sets"], ["reps", "Reps"], ["rpe", DIFFICULTY_SHORT], ["rest", "Rest"]].map(([k, label]) => (
+        <div key={k}>
+          <input value={vals[k] ?? ""} onChange={e => setVals(v => ({ ...v, [k]: e.target.value }))} aria-label={label} style={field} />
+          <div className="text-center text-[11px] mt-1" style={{ color: C.faint }}>{label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Runs a list of engine operations against the program and saves it.
+function useBoardRunner(program, state, setState, onDone) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
-  useEffect(() => {
-    if (!x) return;
-    setVals({ sets: x.sets ?? "", reps: x.reps ?? "", rpe: x.rpe ?? "", rest: x.rest ?? "" });
-    setPicked(target?.week ? [target.week] : []); setError(null); setSaving(false);
-  }, [x?.id, target?.week]);
-  if (!x) return null;
-
-  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
   const run = async (ops, summary) => {
     if (saving) return;
     setSaving(true);
@@ -24945,76 +25059,133 @@ function BoardExerciseEditor({ target, program, state, setState, onClose, onShow
       if (problem) throw new Error(problem);
       const ok = await saveWholeProgram(state, setState, result.program, result.newExercises, summary);
       if (!ok) throw new Error("That didn't save. Check your connection and try again.");
-      onClose();
+      onDone();
     } catch (e) {
       setError(e.message || "That didn't save.");
     }
     setSaving(false);
   };
-  const allWeeks = Array.from({ length: total }, (_, i) => i + 1);
-  const everyWeek = total <= 1 || picked.length === total;
-  const sortedPicked = [...picked].sort((a, b) => a - b);
-  const weeks = everyWeek ? undefined : sortedPicked.map(w => [w, w]);
-  const weeksLabel = everyWeek ? "every week" : formatWeekList(sortedPicked).toLowerCase();
-  const toggleWeek = (w) => setPicked(p => (p.includes(w) ? p.filter(x => x !== w) : [...p, w]));
+  return { run, saving, error, setError };
+}
+
+const weeksFor = (picked, total) => (total <= 1 || picked.length === total ? undefined : [...picked].sort((a, b) => a - b).map(w => [w, w]));
+const weeksText = (picked, total) => (total <= 1 || picked.length === total ? "every week" : formatWeekList([...picked].sort((a, b) => a - b)).toLowerCase());
+
+function BoardExerciseEditor({ target, program, state, setState, onClose, onShow }) {
+  const x = target?.item;
+  const [vals, setVals] = useState({});
+  const [swapTo, setSwapTo] = useState(null);
+  const [weeksPicked, setWeeksPicked] = useState([]);
+  const [daysPicked, setDaysPicked] = useState([]);
+  const { run, saving, error, setError } = useBoardRunner(program, state, setState, onClose);
+  useEffect(() => {
+    if (!x) return;
+    setVals({ sets: x.sets ?? "", reps: x.reps ?? "", rpe: x.rpe ?? "", rest: x.rest ?? "" });
+    setSwapTo(null);
+    setWeeksPicked(target?.week ? [target.week] : []);
+    setDaysPicked(target?.day?.id ? [target.day.id] : []);
+    setError(null);
+  }, [x?.id, target?.week]);
+  if (!x) return null;
+
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  // The same movement on other days, so one change can cover all of them.
+  const stored = (program.days || []).flatMap(d => d.exercises || []).find(e => e.id === x.id);
+  const baseId = stored?.exerciseId || x.exerciseId;
+  const sameOn = (program.days || [])
+    .map(d => ({ day: d, ex: (d.exercises || []).find(e => e.exerciseId === baseId) }))
+    .filter(r => r.ex);
+  const ids = sameOn.filter(r => daysPicked.includes(r.day.id)).map(r => r.ex.id);
+  const weeks = weeksFor(weeksPicked, total);
+  const when = weeksText(weeksPicked, total);
+
   const changed = {};
   ["sets", "reps", "rpe", "rest"].forEach(f => {
     const v = String(vals[f] ?? "").trim();
     if (v === String(x[f] ?? "")) return;
     changed[f] = (f === "sets" || f === "rpe") && /^\d+(\.\d+)?$/.test(v) ? Number(v) : v;
   });
-  const save = () => run([{ op: "update_exercises", exercises: [x.id], set: changed, weeks }],
-    `${target.name}, ${weeksLabel}`);
-  const remove = () => run([{ op: "remove_exercises", exercises: [x.id], weeks }],
-    `Removed ${target.name}, ${weeksLabel}`);
+  if (swapTo) changed.name = swapTo;
+  const ready = !saving && ids.length && weeksPicked.length;
+  const save = () => run([{ op: "update_exercises", exercises: ids, set: changed, weeks }], `${target.name}${swapTo ? ` to ${swapTo}` : ""}, ${when}`);
+  const remove = () => run([{ op: "remove_exercises", exercises: ids, weeks }], `Removed ${target.name}, ${when}`);
 
-  const field = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "10px 8px", fontSize: 15, width: "100%", textAlign: "center" };
   return (
     <Modal open={!!x} onClose={() => !saving && onClose()} title={target.name}>
       <div className="text-[12.5px] mb-3" style={{ color: C.sub }}>{target.day?.name} · week {target.week}</div>
-      <div className="grid grid-cols-4 gap-2">
-        {[["sets", "Sets"], ["reps", "Reps"], ["rpe", DIFFICULTY_SHORT], ["rest", "Rest"]].map(([k, label]) => (
-          <div key={k}>
-            <input value={vals[k] ?? ""} onChange={e => setVals(v => ({ ...v, [k]: e.target.value }))} aria-label={label} style={field} />
-            <div className="text-center text-[11px] mt-1" style={{ color: C.faint }}>{label}</div>
-          </div>
-        ))}
+      <NumberFields vals={vals} setVals={setVals} />
+      <div className="mt-4">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Swap for (optional)</div>
+        <ExerciseSearch exercises={state.exercises} value={swapTo} onChange={setSwapTo} placeholder="Type to find another exercise" />
       </div>
-      {total > 1 && (
-        <div className="mt-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Apply to</div>
-            <button onClick={() => setPicked(everyWeek ? [target.week] : allWeeks)} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
-              {everyWeek ? `Just week ${target.week}` : "Every week"}
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {allWeeks.map(w => {
-              const on = picked.includes(w);
-              return (
-                <button key={w} onClick={() => toggleWeek(w)} aria-pressed={on} aria-label={`Week ${w}`}
-                  className="rounded-lg text-[13px] font-semibold tabular-nums"
-                  style={{ width: 40, height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
-                  {w}
-                </button>
-              );
-            })}
-          </div>
-          <div className="text-[11px] mt-1.5" style={{ color: C.faint }}>
-            {picked.length ? `This ${target.day?.name ? "session" : "day"}, ${weeksLabel}.` : "Pick at least one week."}
-          </div>
-        </div>
-      )}
+      <DayPicker days={sameOn.map(r => r.day)} picked={daysPicked} setPicked={setDaysPicked} label={`Days with ${target.name}`} />
+      <WeekPicker total={total} picked={weeksPicked} setPicked={setWeeksPicked} anchor={target.week} />
       {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
-      <Btn className="w-full mt-4" disabled={saving || !picked.length || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
+      <Btn className="w-full mt-4" disabled={!ready || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
       <div className="flex items-center justify-between mt-3">
         <button onClick={() => { const ex = state.exercises.find(e => e.id === x.exerciseId); onClose(); onShow?.({ ...ex, name: target.name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }); }}
           className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>See the exercise</button>
-        <button onClick={remove} disabled={saving || !picked.length} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
-          {everyWeek ? "Remove from every week" : `Remove from ${weeksLabel}`}
+        <button onClick={remove} disabled={!ready} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+          Remove{ids.length > 1 ? ` from ${ids.length} days` : ""}, {when}
         </button>
       </div>
-      <p className="text-[11px] mt-2" style={{ color: C.faint }}>To change several exercises or days at once, tell Adjust with AI, for example "weeks 2, 3 and 5: drop the main lifts to 3x3".</p>
+    </Modal>
+  );
+}
+
+// Adding a movement: any section, any days, any weeks.
+function BoardAddExercise({ target, program, state, setState, onClose }) {
+  const [name, setName] = useState(null);
+  const [section, setSection] = useState("compound");
+  const [vals, setVals] = useState({ sets: "3", reps: "8", rpe: "7", rest: "90s" });
+  const [weeksPicked, setWeeksPicked] = useState([]);
+  const [daysPicked, setDaysPicked] = useState([]);
+  const { run, saving, error, setError } = useBoardRunner(program, state, setState, onClose);
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  useEffect(() => {
+    if (!target) return;
+    setName(null);
+    setSection(target.section || "compound");
+    setVals({ sets: "3", reps: "8", rpe: "7", rest: "90s" });
+    setWeeksPicked(Array.from({ length: total }, (_, i) => i + 1));
+    setDaysPicked(target.day?.id ? [target.day.id] : []);
+    setError(null);
+  }, [target?.day?.id, target?.section, target?.week]);
+  if (!target) return null;
+
+  const when = weeksText(weeksPicked, total);
+  const num = (v) => (/^\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim());
+  const add = () => run([{
+    op: "add_exercise", days: daysPicked,
+    exercise: { name, section, sets: num(vals.sets), reps: String(vals.reps).trim(), rpe: num(vals.rpe), rest: String(vals.rest).trim() },
+    weeks: weeksFor(weeksPicked, total),
+  }], `Added ${name}, ${when}`);
+
+  return (
+    <Modal open={!!target} onClose={() => !saving && onClose()} title="Add an exercise">
+      <ExerciseSearch exercises={state.exercises} value={name} onChange={setName} placeholder="Type an exercise name" />
+      <div className="mt-4">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Section</div>
+        <div className="flex flex-wrap gap-1.5">
+          {sectionChoices().map(b => {
+            const on = section === b.key;
+            return (
+              <button key={b.key} onClick={() => setSection(b.key)} aria-pressed={on}
+                className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+                style={{ background: on ? `${b.accent}1f` : C.panel, border: `1px solid ${on ? b.accent : C.border}`, color: on ? b.accent : C.sub }}>
+                {b.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-4"><NumberFields vals={vals} setVals={setVals} /></div>
+      <DayPicker days={program.days || []} picked={daysPicked} setPicked={setDaysPicked} />
+      <WeekPicker total={total} picked={weeksPicked} setPicked={setWeeksPicked} anchor={target.week} />
+      {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
+      <Btn className="w-full mt-4" icon={Plus} disabled={saving || !name || !daysPicked.length || !weeksPicked.length} onClick={add}>
+        {saving ? "Adding…" : `Add${daysPicked.length > 1 ? ` to ${daysPicked.length} days` : ""}, ${when}`}
+      </Btn>
     </Modal>
   );
 }
@@ -25026,14 +25197,17 @@ function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClic
   const wide = useIsWide();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(null);
   const board = (
     <>
       <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay}
-        onEditExercise={editable ? setEditing : null} />
-      {editable && (
+        onEditExercise={editable ? setEditing : null} onAddExercise={editable ? setAdding : null} />
+      {editable && (<>
         <BoardExerciseEditor target={editing} program={program} state={state} setState={setState}
           onClose={() => setEditing(null)} onShow={onExerciseClick} />
-      )}
+        <BoardAddExercise target={adding} program={program} state={state} setState={setState}
+          onClose={() => setAdding(null)} />
+      </>)}
     </>
   );
   if (!program || !(program.days || []).length) return board;

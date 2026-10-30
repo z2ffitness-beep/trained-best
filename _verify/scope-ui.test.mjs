@@ -92,13 +92,17 @@ test("a one-block program is not asked a question with one answer", () => {
 
 // ---------- wiring on the coach's editor ----------
 
-test("a coach changing one exercise on the board picks any weeks", () => {
-  // 29 Oct: any weeks, not "this week or every week". Starts on the week
-  // being looked at, so a change is never global by accident.
-  const body = bodyOf("function BoardExerciseEditor(");
-  assert.match(body, /setPicked\(target\?\.week \? \[target\.week\] : \[\]\)/);
-  assert.match(body, /const weeks = everyWeek \? undefined : sortedPicked\.map\(w => \[w, w\]\);/);
-  assert.match(body, /applyAdjustOps\(program, ops/);
+test("a coach changing the board picks any days and any weeks", () => {
+  // 30 Oct: by hand, with full flexibility. A change starts on the day and
+  // week being looked at, so it is never global by accident.
+  const ed = bodyOf("function BoardExerciseEditor(");
+  assert.match(ed, /setWeeksPicked\(target\?\.week \? \[target\.week\] : \[\]\)/);
+  assert.match(ed, /setDaysPicked\(target\?\.day\?\.id \? \[target\.day\.id\] : \[\]\)/);
+  assert.match(ed, /op: "update_exercises", exercises: ids/);
+  assert.match(ed, /if \(swapTo\) changed\.name = swapTo;/);
+  const add = bodyOf("function BoardAddExercise(");
+  assert.match(add, /op: "add_exercise", days: daysPicked/);
+  assert.match(bodyOf("function useBoardRunner("), /applyAdjustOps\(program, ops/);
 });
 
 test("the coach's plan honours authored blocks and the fight taper", () => {
