@@ -228,15 +228,13 @@ test("the fighter follow-up shows for fighters and not for anyone else", () => {
     "the fighter question shows before any sport has been picked");
 });
 
-test("session style is not asked on any screen", () => {
-  // The point of the rebuild. If it comes back as a question, deriveSplit is
-  // being overridden by a screen and the week no longer decides the split.
-  for (const screens of Object.values(SIGNUP_V2_STEPS)) {
-    for (const screen of screens) {
-      assert.ok(!leavesOf(screen, {}).includes("🧩 Session Style"),
-        `"${screen}" still asks for a session style`);
-    }
-  }
+test("the week split is asked on the Your Week screen, with the suggestion pre-picked (Isaiah, 31 Oct)", () => {
+  // It was taken out on the grounds that the days decide it. People have a
+  // preference, so it is a question again; the days still decide the default.
+  assert.ok(leavesOf("📅 Your Week", {}).includes("🧩 Session Style"), "the split is not asked");
+  assert.ok(stepComplete("📅 Your Week", { trainingDays: ["Monday"], equipment: ["Full gym access"] }, "athlete"),
+    "not touching the split blocks the screen");
+  assert.ok(SIGNUP_KEYS.week.includes("splitStyle"));
 });
 
 test("the coached athlete sees the coach before the password", () => {

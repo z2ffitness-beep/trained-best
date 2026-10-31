@@ -270,7 +270,10 @@ test("the step renders and cannot block anyone", () => {
   const body = src.slice(at, src.indexOf('case "🎂 Birthday": {', at));
   assert.ok(/SPLIT_STYLES\.map/.test(body), "it must offer the real list, not a hardcoded copy");
   assert.ok(/set\("splitStyle", opt\.key\)/.test(body));
-  assert.ok(/opt\.key === DEFAULT_SPLIT/.test(body), "full body should be marked as recommended");
+  // Isaiah, 31 Oct: the suggestion for their number of days is the one marked
+  // and pre-picked, so tapping nothing still gets a sensible split.
+  assert.ok(/opt\.key === suggested/.test(body), "the suggested split should be marked");
+  assert.ok(/deriveSplit\(data\.trainingDays\)/.test(body), "the suggestion must come from their days");
   const gates = (src.match(/case "🧩 Session Style": return true;/g) || []).length;
   assert.equal(gates, 2, "it defaults to full body, so Next is never blocked — in both flows");
 });
