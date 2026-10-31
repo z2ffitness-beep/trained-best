@@ -8,7 +8,8 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle
+  Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle,
+  Mic, MicOff,
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -6189,13 +6190,66 @@ function HeightDial({ unit, valueCm, onChange }) {
 // to be worth listing. Nobody has the old value stored, so this renames
 // cleanly - but anything added here later must stay a value the generator can
 // read, because it goes into the prompt verbatim.
-// Main focus (Isaiah, 30 Oct): General Fitness or a Sport, each with its own
-// list. What is stored under "🥊 Sport / Focus" is the most specific answer
-// ("Powerlifting", "Soccer"), because the generator reads it verbatim, and
-// "General Fitness" when no style is picked. "focusType" remembers which of
-// the two was chosen while the sport itself is still being picked.
-const FOCUS_GENERAL = ["Bodybuilding", "Powerlifting", "HYROX", "Calisthenics"];
-const SPORTS = ["Soccer", "Basketball", "Football", "Track and Field", "Combat Sports", "Other"];
+// Main focus: General Fitness, or a Sport from this list (Isaiah, 30 and 31
+// Oct). What is stored under "🥊 Sport / Focus" is "General Fitness" or the
+// sport itself, because the generator reads it verbatim. "focusType" remembers
+// which of the two was chosen while the sport is still being picked.
+const SPORTS = [
+  "Soccer", "Basketball", "Football (American or Canadian)", "Track and Field", "Combat Sports",
+  "Tennis", "Golf", "Baseball or Softball", "Ice Hockey", "Volleyball",
+  "Rugby", "Cricket", "Swimming", "Cycling", "Badminton",
+  "Table Tennis", "Field Hockey", "Gymnastics", "Lacrosse", "Distance Running or Triathlon",
+  "Bodybuilding", "Powerlifting", "Other",
+];
+
+// The sport follow-up (everything but combat sports, which has its own).
+// Season first; "Not applicable" is the fan, not the athlete, and skips the
+// rest and gets a general fitness program.
+const SPORT_SEASONS = [
+  { key: "Off season", sub: "Building up between seasons" },
+  { key: "Pre-season", sub: "Getting ready, the season starts soon" },
+  { key: "In season", sub: "Competing right now" },
+  { key: "Post-season", sub: "Season just ended, recovering" },
+  { key: "Not applicable", sub: "I play for fun, no sport-specific program" },
+];
+const SPORT_LEVELS = ["Recreational", "High school", "College or university", "Semi-pro or pro"];
+const SPORT_POSITION_HINT = {
+  "Soccer": "e.g. Goalkeeper, centre back, midfielder, striker",
+  "Basketball": "e.g. Point guard, forward, centre",
+  "Football (American or Canadian)": "e.g. Lineman, receiver, linebacker, quarterback",
+  "Track and Field": "e.g. Sprints, hurdles, jumps, throws, middle distance",
+  "Tennis": "e.g. Singles, doubles",
+  "Golf": "e.g. Handicap, how often you play",
+  "Baseball or Softball": "e.g. Pitcher, catcher, infield, outfield",
+  "Ice Hockey": "e.g. Forward, defence, goalie",
+  "Volleyball": "e.g. Setter, outside hitter, middle, libero",
+  "Rugby": "e.g. Prop, lock, back row, scrum half, wing",
+  "Cricket": "e.g. Fast bowler, spinner, batter, wicketkeeper",
+  "Swimming": "e.g. Sprint freestyle, 200 fly, distance",
+  "Cycling": "e.g. Road, track, mountain bike, criterium",
+  "Badminton": "e.g. Singles, doubles",
+  "Table Tennis": "e.g. Singles, doubles",
+  "Gymnastics": "e.g. Artistic, rhythmic, events you compete in",
+  "Lacrosse": "e.g. Attack, midfield, defence, goalie",
+  "Field Hockey": "e.g. Forward, midfield, defence, goalie",
+  "Distance Running or Triathlon": "e.g. 10K, marathon, Olympic distance, Ironman",
+  "Bodybuilding": "e.g. Classic physique, men's physique, bikini",
+  "Powerlifting": "e.g. Weight class, equipped or raw",
+  "Other": "Which sport, and your position or event",
+};
+
+// A new sport starts its follow-up from blank.
+const NO_SPORT_PROFILE = { sportSeason: null, sportSeasonEnd: null, sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null };
+
+function sportProfileApplies(data) {
+  const v = data?.["🥊 Sport / Focus"];
+  return focusTypeOf(data) === "sport" && !!v && v !== "General Fitness" && !isCombatFocus(v);
+}
+
+// True when the program should be built for the sport, not general fitness.
+function sportProgramOn(intake) {
+  return sportProfileApplies(intake) && !!intake?.sportSeason && intake.sportSeason !== "Not applicable";
+}
 
 // The fighter questions and the fight camp apply to combat sports. "MMA" is
 // what everyone who signed up before 30 Oct has stored.
@@ -6207,7 +6261,7 @@ function focusTypeOf(data) {
   if (data?.focusType === "general" || data?.focusType === "sport") return data.focusType;
   const v = data?.["🥊 Sport / Focus"];
   if (!v) return null;
-  return v === "General Fitness" || FOCUS_GENERAL.includes(v) ? "general" : "sport";
+  return v === "General Fitness" ? "general" : "sport";
 }
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 // Head to toe, so someone scanning for their own complaint finds it where they
@@ -7377,7 +7431,8 @@ const SIGNUP_KEYS = {
   // Sport lives here too. It has no screen of its own in the design and it
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
-  goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate"],
+  goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate",
+    "sportSeason", "sportSeasonEnd", "sportPosition", "sportLevel", "sportPractices", "sportGames"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
@@ -7439,6 +7494,7 @@ const SIGNUP_V2_SECTIONS = {
     // Was a screen of its own that was skipped for everyone but fighters.
     // Inline and conditional says the same thing without the empty step.
     { step: "🥋 Sport Details", label: "Your fighting", when: d => isCombatFocus(d["🥊 Sport / Focus"]) },
+    { step: "🏟️ Sport Profile", label: "Your sport", when: d => sportProfileApplies(d) },
     { step: "💪 Training Experience", label: "How long you have trained" },
   ],
   "📅 Your Week": [
@@ -7507,6 +7563,7 @@ function stepComplete(stepName, data, role) {
     case "🧬 Sex": return !!data.sex;
     case "🥊 Sport / Focus": return focusComplete(data);
     case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
+    case "🏟️ Sport Profile": return !!data.sportSeason;
     case "🎯 Goals": return (data.goals || []).length > 0;
     // An area picked with no side is a half-answered question, so Continue
     // waits. Everything else on this step stays skippable.
@@ -7626,7 +7683,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     // 3. health
     "🩹 Injuries",
     // 4. programming
-    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
+    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
     "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
     "📸 Profile Photo",
   ];
@@ -7661,6 +7718,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   const shouldSkip = (name) => {
     if (role !== "athlete" && role !== "athlete_coached") return false;
     if (name === "🥋 Sport Details" && !isCombatFocus(data["🥊 Sport / Focus"])) return true;
+    if (name === "🏟️ Sport Profile" && !sportProfileApplies(data)) return true;
     return false;
   };
 
@@ -8421,7 +8479,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       const pickType = (t) => {
         if (t === type) return;
         setData(d => ({ ...d, focusType: t, "🥊 Sport / Focus": t === "general" ? "General Fitness" : null,
-          ...(t === "general" ? { isFighter: undefined, fightDate: null } : {}) }));
+          ...NO_SPORT_PROFILE, ...(t === "general" ? { isFighter: undefined, fightDate: null } : {}) }));
       };
       const choice = (t, label) => (
         <button key={t} onClick={() => pickType(t)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
@@ -8433,23 +8491,83 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       return (
         <div className="grid grid-cols-1 gap-2.5">
           {choice("general", "General Fitness")}
-          {type === "general" && (
-            <select aria-label="Type of training" style={inputStyle}
-              value={FOCUS_GENERAL.includes(value) ? value : ""}
-              onChange={e => set("🥊 Sport / Focus", e.target.value || "General Fitness")}>
-              <option value="">General fitness (optional: pick a style)</option>
-              {FOCUS_GENERAL.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-          )}
           {choice("sport", "Sport")}
           {type === "sport" && (
             <select aria-label="Your sport" style={inputStyle}
               value={SPORTS.includes(value) ? value : value === "MMA" ? "Combat Sports" : ""}
-              onChange={e => setData(d => ({ ...d, "🥊 Sport / Focus": e.target.value || null,
-                ...(isCombatFocus(e.target.value) ? {} : { isFighter: undefined, fightDate: null }) }))}>
+              onChange={e => {
+                const v = e.target.value || null;
+                set("🥊 Sport / Focus", v);
+                setData(d => ({ ...d, ...NO_SPORT_PROFILE, ...(isCombatFocus(v) ? {} : { isFighter: undefined, fightDate: null }) }));
+              }}>
               <option value="">Pick your sport</option>
               {SPORTS.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
+          )}
+        </div>
+      );
+    }
+    case "🏟️ Sport Profile": {
+      const sport = data["🥊 Sport / Focus"];
+      const season = data.sportSeason;
+      const pill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text });
+      const count = (n) => Array.from({ length: n }, (_, i) => i);
+      return (
+        <div>
+          <Field label="Where are you in your season?">
+            <div className="grid grid-cols-1 gap-2">
+              {SPORT_SEASONS.map(o => (
+                <button key={o.key} type="button"
+                  onClick={() => setData(d => ({ ...d, sportSeason: o.key,
+                    ...(o.key === "Not applicable" ? { sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null } : {}),
+                    ...(o.key !== "In season" ? { sportSeasonEnd: null } : {}) }))}
+                  className="text-left rounded-lg px-4 py-3 flex items-center justify-between gap-3" style={pill(season === o.key)}>
+                  <span>
+                    <span className="block text-[15px]" style={{ fontWeight: season === o.key ? 600 : 500 }}>{o.key}</span>
+                    <span className="block text-[12.5px] mt-0.5" style={{ color: C.sub }}>{o.sub}</span>
+                  </span>
+                  {season === o.key && <Check size={16} style={{ color: C.orange }} />}
+                </button>
+              ))}
+            </div>
+          </Field>
+          {season === "In season" && (
+            <Field label="When does your season end? (optional)">
+              <input type="date" style={inputStyle} min={todayISO()}
+                value={data.sportSeasonEnd || ""} onChange={e => set("sportSeasonEnd", e.target.value || null)} />
+            </Field>
+          )}
+          {season && season !== "Not applicable" && (
+            <>
+              <Field label={sport === "Other" ? "Which sport, and your position or event" : "Position or event (optional)"}>
+                <input style={inputStyle} placeholder={SPORT_POSITION_HINT[sport] || "Your position or event"}
+                  value={data.sportPosition || ""} onChange={e => set("sportPosition", e.target.value)} />
+              </Field>
+              <Field label="Level">
+                <div className="grid grid-cols-2 gap-2">
+                  {SPORT_LEVELS.map(l => (
+                    <button key={l} type="button" onClick={() => set("sportLevel", l)}
+                      className="rounded-lg px-3 py-3 text-[15px] text-center" style={pill(data.sportLevel === l)}>{l}</button>
+                  ))}
+                </div>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Practices a week">
+                  <select style={inputStyle} aria-label="Practices a week" value={data.sportPractices ?? ""}
+                    onChange={e => set("sportPractices", e.target.value === "" ? null : Number(e.target.value))}>
+                    <option value="">Pick</option>
+                    {count(8).map(n => <option key={n} value={n}>{n === 7 ? "7 or more" : n}</option>)}
+                  </select>
+                </Field>
+                <Field label="Games a week">
+                  <select style={inputStyle} aria-label="Games a week" value={data.sportGames ?? ""}
+                    onChange={e => set("sportGames", e.target.value === "" ? null : Number(e.target.value))}>
+                    <option value="">Pick</option>
+                    {count(5).map(n => <option key={n} value={n}>{n === 4 ? "4 or more" : n}</option>)}
+                  </select>
+                </Field>
+              </div>
+            </>
           )}
         </div>
       );
@@ -9464,12 +9582,38 @@ function intakeIsUsable(intake) {
   return (i.trainingDays || []).length > 0 && (i.equipment || []).length > 0;
 }
 
+// The sport program block (Isaiah, 31 Oct): the generator works as an NSCA
+// strength and conditioning coach for THIS sport, built around where the
+// athlete is in their season.
+function sportPromptBlock(intake) {
+  if (!sportProgramOn(intake)) return "";
+  const sport = intake["🥊 Sport / Focus"];
+  const season = intake.sportSeason;
+  const guide = {
+    "Off season": "OFF SEASON: the highest training volume of the year. Build general and maximal strength, add muscle where the sport rewards it, correct imbalances and old injuries, and introduce power work. Conditioning builds the aerobic base the sport sits on.",
+    "Pre-season": "PRE-SEASON: convert strength into power and speed. Volume comes down and intensity goes up. Conditioning becomes sport-specific: match the work-to-rest pattern and energy systems of this sport and position.",
+    "In season": "IN SEASON: maintain, do not build. Low volume, high quality: 2 to 3 main lifts per session, sets kept short, power work kept in. Nothing may leave the athlete sore or slow for practice or games. Keep sessions shorter than the time available if needed; the sport itself is the main stress.",
+    "Post-season": "POST-SEASON: recovery and restoration. Low intensity, variety, mobility, and rehabilitating anything the season left behind. Light strength work to stop detraining, no maximal efforts.",
+  }[season] || "";
+  return `SPORT PROGRAM — this outranks the generic advice elsewhere when they conflict.
+You are a high-level NSCA-certified strength and conditioning coach (CSCS) programming for a ${intake.sportLevel ? intake.sportLevel.toLowerCase() + " " : ""}${sport} athlete${intake.sportPosition ? ` (${intake.sportPosition})` : ""}.
+- ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}
+- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose exercises that transfer to the sport.
+- Include prehab for the injuries this sport commonly causes (for example knees and ankles in court and field sports, shoulders and elbows in throwing and racket sports, hamstrings in sprinting sports, lower back in rotational sports).
+- They also have ${intake.sportPractices ?? "an unknown number of"} practices and ${intake.sportGames ?? "an unknown number of"} games a week. Count that as training load: total stress across the week must leave them fresh for games.
+- Say in the rationale how the program fits their sport and their season.`;
+}
+
 function buildAIPrompt(intake) {
-  return `You are an elite strength & conditioning coach. Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
+  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${intake["🥊 Sport / Focus"]}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
 Athlete intake:
 - Sex: ${intake.sex || "unspecified"}
-- Sport/focus: ${intake["🥊 Sport / Focus"] || "General Fitness"}
+- Sport/focus: ${sportProfileApplies(intake) && intake.sportSeason === "Not applicable" ? `General Fitness (plays ${intake["🥊 Sport / Focus"]} for fun; do NOT build a sport-specific program)` : (intake["🥊 Sport / Focus"] || "General Fitness")}${sportProgramOn(intake) ? `
+- Season: ${intake.sportSeason}${intake.sportSeasonEnd ? ` (ends ${intake.sportSeasonEnd})` : ""}
+- Position or event: ${intake.sportPosition || "not given"}
+- Level: ${intake.sportLevel || "not given"}
+- Practices a week: ${intake.sportPractices ?? "not given"}; games a week: ${intake.sportGames ?? "not given"}` : ""}
 - Fighter status: ${intake.isFighter ? "Competing fighter" : "Training only"}
 - Discipline: ${intake.discipline || "n/a"}
 - Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
@@ -9508,6 +9652,8 @@ WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
   • Neck: Neck CARs, Chin Tucks, Banded Neck Iso Holds.
 - This is performance training, not physiotherapy: the targeted drills are mobility and activation to prepare the area, never rehab protocols or treatment claims. For a CURRENT injury, keep the drills easy and pain-free and mention in the rationale that pain during a drill means skip it and check with a physio.
 - A fully recovered injury needs no special treatment beyond a normal thorough warm-up.
+
+${sportPromptBlock(intake)}
 
 BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - The program is split into ${PHASE_WEEKS}-week phases (mesocycles). A program of ${MIN_WEEKS_FOR_DELOAD} weeks or more gets a DELOAD on the last week of every block except the final one — the app automatically cuts sets by about 40% and drops the difficulty target by ${DELOAD_DIFFICULTY_DROP} points on those weeks.
@@ -10575,6 +10721,233 @@ function LoadingEstimate({ expectedMs = 2500, label, detail, big = false, small 
   return <LoadingPercent fraction={fraction} label={label} detail={detail} big={big} />;
 }
 
+// ---------- Voice Log ----------
+//
+// Isaiah, 31 Oct: say the workout instead of typing it, on each exercise or
+// for the whole session at once. The phone turns speech into text (the
+// browser's own speech recognition while this is being tested; the keyboard's
+// mic works too, since the text box is editable), the AI turns the text into
+// numbers, and nothing is written until the athlete has seen what it heard.
+
+// What each way of measuring an exercise is logged by.
+const VOICE_FIELDS = {
+  load: ["weight", "reps"],
+  time: ["minutes"],
+  hold: ["seconds"],
+  distance: ["meters", "weight"],
+  intervals: ["work", "rest"],
+};
+const VOICE_LIMITS = { weight: 2000, reps: 999, minutes: 600, seconds: 36000, meters: 200000, work: 36000, rest: 36000 };
+const VOICE_MODE_WORDS = {
+  load: "weight and reps",
+  time: "minutes",
+  hold: "seconds held",
+  distance: "distance in metres (and weight, if loaded)",
+  intervals: "work and rest seconds per round",
+};
+
+function voiceLogSystem(scope, unit) {
+  const list = (scope || []).map(e =>
+    `- id: ${e.id} | ${e.name} | logged by: ${VOICE_MODE_WORDS[e.mode] || VOICE_MODE_WORDS.load} | prescribed: ${e.sets} x ${e.reps}`).join("\n");
+  return `You turn what an athlete SAID about their training into numbers for their workout log. They talk the way people talk: filler words, half sentences, corrections. Respond ONLY with JSON, no markdown, in exactly this shape:
+{"exercises":[{"id":"<an id from the list>","sets":[{"set":1,"weight":225,"unit":"lb","reps":5}]}],"unclear":"<one short sentence about anything you could not place, or empty>"}
+
+The exercises in this log:
+${list}
+
+Rules:
+- Only use ids from the list. Match what they said to the closest exercise by name, nickname or description ("bench" is a bench press, "the run" is the run). If only one exercise is listed, everything they said is about that one.
+- Fields per exercise: weight and reps; or minutes; or seconds; or meters (and weight if a carry or sled); or work and rest in seconds for intervals. Use only the fields that fit how the exercise is logged.
+- Weight: give "unit" as "lb" or "kg" as they said it. If they did not say, use "${unit}".
+- Distance: convert to meters (1 km = 1000, 1 mile = 1609, 1 yard = 0.9144). Time: minutes for timed work, seconds for holds and intervals.
+- "3 sets of 5 at 225" is three sets of 5 reps at 225. "Same again" or "same weight" repeats the set before. A correction ("no, actually 6") replaces what it corrects.
+- Number sets in the order they were done, starting at 1. Never invent a set they did not describe, and never more sets than prescribed.
+- Leave out exercises they did not mention.`;
+}
+
+// Cleans what the AI sent back: only exercises in scope, only the fields
+// that exercise is measured by, only plausible numbers, weights converted
+// to the athlete's unit, and no more sets than the exercise has.
+function normalizeVoiceLog(raw, scope, unit) {
+  const byId = new Map((scope || []).map(e => [String(e.id), e]));
+  const out = [];
+  for (const entry of (raw && Array.isArray(raw.exercises) ? raw.exercises : [])) {
+    const ex = byId.get(String(entry?.id));
+    if (!ex || out.some(o => o.id === ex.id)) continue;
+    const fields = VOICE_FIELDS[ex.mode] || VOICE_FIELDS.load;
+    const max = Math.max(0, Number(ex.sets) || 0);
+    const sets = [];
+    let next = 0;
+    for (const s of (Array.isArray(entry.sets) ? entry.sets : [])) {
+      const n = Number(s?.set);
+      const index = Number.isInteger(n) && n >= 1 && n <= max && !sets.some(x => x.index === n - 1) ? n - 1 : next;
+      if (index >= max) break;
+      const row = { index };
+      for (const f of fields) {
+        let v = Number(s?.[f]);
+        if (!Number.isFinite(v) || v < 0 || v > VOICE_LIMITS[f]) continue;
+        if (f === "weight") {
+          const said = s?.unit === "kg" || s?.unit === "lb" ? s.unit : unit;
+          if (said !== unit) v = said === "kg" ? v * 2.20462 : v / 2.20462;
+          v = Math.round(v * 2) / 2;
+        } else if (f === "reps") v = Math.round(v);
+        else v = Math.round(v * 10) / 10;
+        row[f] = v;
+      }
+      if (Object.keys(row).length > 1) { sets.push(row); next = Math.max(next, index + 1); }
+    }
+    if (sets.length) out.push({ id: ex.id, sets: sets.sort((a, b) => a.index - b.index) });
+  }
+  return { entries: out, unclear: typeof raw?.unclear === "string" ? raw.unclear.trim() : "" };
+}
+
+// One set, read back in words: "225 lb x 5", "12 min", "45 s", "400 m".
+function describeVoiceSet(row, mode, unit) {
+  if (mode === "time") return `${row.minutes} min`;
+  if (mode === "hold") return `${row.seconds} s`;
+  if (mode === "intervals") return [row.work != null && `${row.work} s on`, row.rest != null && `${row.rest} s off`].filter(Boolean).join(", ");
+  if (mode === "distance") return [row.meters != null && `${row.meters} m`, row.weight != null && `${row.weight} ${unit}`].filter(Boolean).join(" with ");
+  if (row.weight != null && row.reps != null) return `${row.weight} ${unit} x ${row.reps}`;
+  if (row.reps != null) return `${row.reps} reps`;
+  return `${row.weight} ${unit}`;
+}
+
+function speechRecognitionCtor() {
+  if (typeof window === "undefined") return null;
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+// Speech to text, with the browser doing the listening.
+function useSpeechToText(text, setText) {
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState(null);
+  const recRef = useRef(null);
+  const supported = !!speechRecognitionCtor();
+  const stop = () => { try { recRef.current?.stop(); } catch { /* already stopped */ } setListening(false); };
+  const start = () => {
+    const Ctor = speechRecognitionCtor();
+    if (!Ctor) return;
+    setError(null);
+    const base = (text || "").trim();
+    const rec = new Ctor();
+    rec.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (e) => {
+      let heard = "";
+      for (let i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript;
+      setText([base, heard.trim()].filter(Boolean).join(" "));
+    };
+    rec.onerror = (e) => {
+      setError(e?.error === "not-allowed" || e?.error === "service-not-allowed"
+        ? "The microphone is blocked. Allow it for this site in your phone's settings, or use the mic on your keyboard."
+        : e?.error === "no-speech" ? "Didn't hear anything. Tap the mic and try again." : "Listening stopped. Tap the mic to carry on, or type it.");
+    };
+    rec.onend = () => setListening(false);
+    recRef.current = rec;
+    try { rec.start(); setListening(true); } catch { setListening(false); }
+  };
+  useEffect(() => () => { try { recRef.current?.abort(); } catch { /* gone */ } }, []);
+  return { supported, listening, error, start, stop };
+}
+
+function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
+  const [text, setText] = useState("");
+  const [stage, setStage] = useState("talk");
+  const [result, setResult] = useState(null);
+  const [failure, setFailure] = useState(null);
+  const speech = useSpeechToText(text, setText);
+  useEffect(() => {
+    if (open) { setText(""); setStage("talk"); setResult(null); setFailure(null); }
+    else speech.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  if (!open) return null;
+  const many = (scope || []).length > 1;
+  const nameOf = (id) => scope.find(e => e.id === id)?.name || "Exercise";
+  const modeOf = (id) => scope.find(e => e.id === id)?.mode || "load";
+
+  const understand = async () => {
+    speech.stop();
+    if (!text.trim()) return;
+    setStage("working"); setFailure(null);
+    try {
+      const reply = await callAI({ model: MODEL_CHAT, maxTokens: 1500, system: voiceLogSystem(scope, unit),
+        messages: [{ role: "user", content: text.trim() }] });
+      const clean = normalizeVoiceLog(parseAIJson(reply), scope, unit);
+      if (!clean.entries.length) {
+        setFailure(clean.unclear || "Couldn't find any sets in that. Try saying the weight and reps, like \"225 for 5\".");
+        setStage("talk");
+        return;
+      }
+      setResult(clean); setStage("confirm");
+    } catch (err) {
+      setFailure(errText(err)); setStage("talk");
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title={many ? "Voice Log: whole workout" : `Voice Log: ${title}`}>
+      {stage === "talk" && (
+        <div>
+          <p className="text-[13px] mb-3" style={{ color: C.sub }}>
+            {many
+              ? "Say what you did, exercise by exercise. For example: \"Squats, 225 for 5, 5 and 4. Bench, 3 sets of 8 at 155. Then a 20 minute run.\""
+              : "Say what you did. For example: \"225 for 5, then 5 again, last set only 4\"."}
+          </p>
+          <div className="flex flex-col items-center gap-2 mb-3">
+            {speech.supported && (
+              <button type="button" onClick={speech.listening ? speech.stop : speech.start}
+                aria-label={speech.listening ? "Stop listening" : "Start talking"}
+                className="rounded-full flex items-center justify-center"
+                style={{ width: 76, height: 76, background: speech.listening ? C.red : C.orange, color: "#fff",
+                  boxShadow: speech.listening ? `0 0 0 8px ${C.red}33` : "none", transition: "box-shadow 200ms" }}>
+                {speech.listening ? <MicOff size={30} /> : <Mic size={30} />}
+              </button>
+            )}
+            <div className="text-[12.5px]" style={{ color: speech.listening ? C.red : C.faint }}>
+              {speech.supported ? (speech.listening ? "Listening... tap to stop" : "Tap the mic and talk") : "Tap the box, then the mic on your keyboard"}
+            </div>
+          </div>
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={4}
+            aria-label="What you said" placeholder="What you say shows up here. You can fix it before going on."
+            style={{ ...inputStyle, resize: "vertical", minHeight: 96 }} />
+          {(speech.error || failure) && (
+            <p className="text-[12.5px] mt-2" style={{ color: C.red }}>{failure || speech.error}</p>
+          )}
+          <Btn className="w-full mt-3" disabled={!text.trim()} onClick={understand}>Fill it in</Btn>
+        </div>
+      )}
+      {stage === "working" && (
+        <div className="py-8 text-center"><LoadingEstimate expectedMs={5000} label="Reading what you said" /></div>
+      )}
+      {stage === "confirm" && result && (
+        <div>
+          <p className="text-[13px] mb-3" style={{ color: C.sub }}>Here's what I heard. Check the numbers, then save.</p>
+          <div className="flex flex-col gap-2.5">
+            {result.entries.map(e => (
+              <div key={e.id} className="rounded-xl p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                {many && <div className="text-[15px] font-semibold mb-1.5" style={{ color: C.text }}>{nameOf(e.id)}</div>}
+                {e.sets.map(row => (
+                  <div key={row.index} className="flex items-center justify-between text-[15px] py-1 tabular-nums">
+                    <span style={{ color: C.sub }}>Set {row.index + 1}</span>
+                    <span className="font-semibold" style={{ color: C.text }}>{describeVoiceSet(row, modeOf(e.id), unit)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {result.unclear && <p className="text-[12.5px] mt-3" style={{ color: C.amber }}>{result.unclear}</p>}
+          <div className="flex gap-2 mt-4">
+            <Btn variant="secondary" onClick={() => setStage("talk")}>Try again</Btn>
+            <Btn className="flex-1" onClick={() => { onApply(result.entries); onClose(); }}>Save to my sets</Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // How far into the workout: exercises finished out of the day's exercises.
 // Sits in the sticky header, so it stays on screen while scrolling.
 function WorkoutProgressBar({ finished, total }) {
@@ -11247,7 +11620,7 @@ function ModeSwitch({ training, onChange, className = "mb-4" }) {
 // those three taken out - and it renders through the same step bodies, so the
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
-  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
+  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
   "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
 ];
 
@@ -11262,7 +11635,8 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const [error, setError] = useState(null);
 
   // Same rule as signup: the fighter follow-up only makes sense for fighters.
-  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || isCombatFocus(data["🥊 Sport / Focus"]));
+  const steps = TRAINING_INTAKE_STEPS.filter(n => (n !== "🥋 Sport Details" || isCombatFocus(data["🥊 Sport / Focus"]))
+    && (n !== "🏟️ Sport Profile" || sportProfileApplies(data)));
   const stepName = steps[step];
   const isLast = step === steps.length - 1;
 
@@ -11272,6 +11646,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       case "🧬 Sex": return !!data.sex;
       case "🥊 Sport / Focus": return focusComplete(data);
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
+      case "🏟️ Sport Profile": return !!data.sportSeason;
       case "🎯 Goals": return (data.goals || []).length > 0;
       case "🎂 Birthday": return isUsableBirthday(data.birthday);
       case "📅 Training Schedule": return (data.trainingDays || []).length > 0;
@@ -20119,6 +20494,8 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
   // would take the place of, worked out when the sheet is opened rather than
   // read out of storage on every render.
   const [stopOpen, setStopOpen] = useState(null);
+  // Voice Log: null, or the exercises a recording is about.
+  const [voiceScope, setVoiceScope] = useState(null);
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -20992,6 +21369,70 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     );
   }
 
+  // Voice Log. The exercises a recording can fill, as the AI is told them.
+  const voiceScopeFor = (items) => (items || []).filter(isTrackedExercise).map(item => ({
+    id: item.id, name: exById(swappedMap[item.id] || item.exerciseId)?.name || "Exercise",
+    mode: metricModeFor(item), sets: Number(item.sets) || 0, reps: item.reps,
+  }));
+  // Writes what was heard into the same boxes typing would, marks those sets
+  // done, and counts the weights as typed by hand so the fill-down never
+  // overwrites them.
+  const applyVoiceLog = (entries) => {
+    const take = (id, f) => (entries.find(e => e.id === id)?.sets || []).filter(r => r[f] != null);
+    setSetWeights(w => {
+      const out = { ...w };
+      for (const e of entries) {
+        const list = [...(out[e.id] || [])];
+        for (const r of take(e.id, "weight")) list[r.index] = String(r.weight);
+        out[e.id] = list;
+      }
+      return out;
+    });
+    setHandSet(h => {
+      const out = { ...h };
+      for (const e of entries) {
+        const list = [...(out[e.id] || [])];
+        for (const r of take(e.id, "weight")) list[r.index] = true;
+        out[e.id] = list;
+      }
+      return out;
+    });
+    setSetReps(rp => {
+      const out = { ...rp };
+      for (const e of entries) {
+        const list = [...(out[e.id] || [])];
+        for (const r of take(e.id, "reps")) list[r.index] = String(r.reps);
+        out[e.id] = list;
+      }
+      return out;
+    });
+    setSetMetrics(m => {
+      const out = { ...m };
+      for (const e of entries) {
+        const list = [...(out[e.id] || [])];
+        for (const r of e.sets) {
+          const fields = {};
+          for (const f of ["minutes", "seconds", "meters", "work", "rest"]) if (r[f] != null) fields[f] = String(r[f]);
+          if (Object.keys(fields).length) list[r.index] = { ...(list[r.index] || {}), ...fields };
+        }
+        out[e.id] = list;
+      }
+      return out;
+    });
+    const nextChecks = { ...checksRef.current };
+    for (const e of entries) {
+      const cur = new Set(nextChecks[e.id] || []);
+      for (const r of e.sets) cur.add(r.index);
+      nextChecks[e.id] = [...cur].sort((a, b) => a - b);
+    }
+    checksRef.current = nextChecks;
+    setSetChecks(sc => {
+      const out = { ...sc };
+      for (const e of entries) out[e.id] = nextChecks[e.id];
+      return out;
+    });
+  };
+
   // How far through the workout, by exercises finished (Isaiah, 30 Oct). An
   // exercise is finished when every set of it is ticked; a warm-up or
   // cool-down, which has no sets that count, when it is ticked at all. Read
@@ -21023,6 +21464,12 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         below={<>
           {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
           {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
+          {voiceScopeFor(progressItems).length > 1 && (
+            <button type="button" onClick={() => setVoiceScope({ title: day.name, items: voiceScopeFor(progressItems) })}
+              className="mt-2 inline-flex items-center gap-1.5 text-[12.5px] font-semibold" style={{ color: C.orange }}>
+              <Mic size={14} /> Voice Log the whole workout
+            </button>
+          )}
         </>}
         right={
         /* Red, because stopping is the one thing an athlete does mid-session
@@ -21133,6 +21580,13 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               <span>{x.sets} {tracked && metricMode !== "intervals" && metricMode !== "time" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
+            {tracked && (
+              <button type="button" onClick={() => setVoiceScope({ title: ex?.name || "This exercise", items: voiceScopeFor(block?.items) })}
+                className="mt-3 inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-semibold"
+                style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}66`, color: C.orange }}>
+                <Mic size={15} /> Voice Log
+              </button>
+            )}
             {x.note && (
               <p className="text-[13px] mt-2 leading-relaxed rounded-lg px-3 py-2" style={{ color: C.text, background: C.bg, border: `1px solid ${C.border}` }}>
                 <span className="font-semibold" style={{ color: C.sub }}>Note: </span>{x.note}
@@ -21645,6 +22099,9 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
             </Btn>
           : <Btn className="flex-1" disabled={!dayIsScheduled} onClick={() => setFinishOpen(true)}>Finish Workout</Btn>}
       </div>
+
+      <VoiceLogSheet open={!!voiceScope} onClose={() => setVoiceScope(null)}
+        title={voiceScope?.title} scope={voiceScope?.items || []} unit={weightUnit} onApply={applyVoiceLog} />
 
       {/* Two choices (Isaiah, 28 Oct). Pausing the clock lives on the timer
           strip itself; closing this sheet is "keep going". */}
