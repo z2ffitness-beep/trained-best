@@ -24,7 +24,7 @@ const src = readSource(APP);
 const H = await load(APP, [
   { name: "EMAIL_RE", kind: "const" },
   { name: "looksLikeEmail", kind: "const" },
-  "accountStepProblems", "accountStepValid",
+  "accountStepProblems", "accountStepValid", "emailTaken",
 ]);
 
 const ok = { name: "Sam Okafor", email: "sam@example.com", password: "hunter2x", confirmPassword: "hunter2x" };

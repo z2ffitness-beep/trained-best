@@ -5682,27 +5682,6 @@ function ChalkDivider({ label }) {
 // Label on top with its icon, then the number. The old layout put a big icon
 // tile beside the value, which read as decoration; the label says what the
 // number is, so it belongs with it.
-// A progress ring. Used for check-in scores, adherence, the rest timer and
-// session credits - four places that were four different bars before.
-function Ring({ value, max = 5, size = 54, stroke = 5, color, track, children }) {
-  const r = (size - stroke) / 2;
-  const circ = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(1, max ? value / max : 0));
-  return (
-    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
-      <svg width={size} height={size} style={{ display: "block", transform: "rotate(-90deg)" }}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track || C.border} strokeWidth={stroke} />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color || C.olive} strokeWidth={stroke}
-          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)} />
-      </svg>
-      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-                    alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 // The feature panel: a fixed dark-navy slab that stays dark in light mode.
 // Colours come from HERO, never from C, which is what keeps light mode feeling
 // like this design instead of a bleached copy of it.
@@ -5913,49 +5892,6 @@ function DayDot({ label, date, state: st, onClick }) {
   );
 }
 
-// Today's check-in as four rings. The four scales are the ones the app already
-// stores (CHECKIN_SCALES), and the values are read from today's entry if there
-// is one - an empty ring reading "-/5" is an honest "not answered yet", not a
-// zero, which would be a score the athlete never gave.
-function CheckinRings({ progress, onOpen }) {
-  const today = todayISO();
-  const entry = (progress || []).find(p => p.date === today) || null;
-  const icons = { sleepQuality: Moon, energy: Zap, soreness: Leaf, stress: Heart };
-  const short = { sleepQuality: "Sleep", energy: "Energy", soreness: "Recovery", stress: "Stress" };
-  return (
-    <div className="p-4" style={card()}>
-      <div className="flex items-center justify-between mb-4">
-        <div style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 700, letterSpacing: "-.02em", color: C.text }}>Today's Check-in</div>
-        <button onClick={onOpen} style={{ fontSize: 13.5, fontWeight: 700, color: C.blue }}>
-          {entry ? "Update" : "Check in"}
-        </button>
-      </div>
-      <div className="grid grid-cols-4" style={{ gap: 6 }}>
-        {CHECKIN_SCALES.map(scale => {
-          const v = entry ? normalizeScale(entry[scale.key]) : null;
-          const Icon = icons[scale.key] || Heart;
-          // Under 2.5 out of 5 is the threshold the coach's alerts already use,
-          // so the ring turns amber at the same point the coach gets told.
-          const colour = v == null ? C.steel : v <= 2 ? C.amber : C.olive;
-          return (
-            <div key={scale.key} className="flex flex-col items-center text-center" style={{ gap: 4 }}>
-              <Ring value={v || 0} max={CHECKIN_SCALE_MAX} size={54} stroke={4.5} color={colour}>
-                <Icon size={17} style={{ color: v == null ? C.faint : colour }} />
-              </Ring>
-              <b style={{ fontFamily: DISPLAY, fontSize: 16, color: C.text, fontVariantNumeric: "tabular-nums" }}>
-                {v == null ? "\u2013" : v}<small style={{ fontSize: 11, color: C.sub, fontWeight: 500 }}>/{CHECKIN_SCALE_MAX}</small>
-              </b>
-              <span style={{ fontSize: 12, color: C.sub }}>{short[scale.key]}</span>
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-center mt-3" style={{ fontSize: 12.5, color: C.sub }}>
-        Ten seconds. Your coach sees the weekly average.
-      </p>
-    </div>
-  );
-}
 
 function StatCard({ icon: Icon, label, value, sub, accent = C.orange }) {
   return (
@@ -6253,7 +6189,7 @@ function HeightDial({ unit, valueCm, onChange }) {
 // to be worth listing. Nobody has the old value stored, so this renames
 // cleanly - but anything added here later must stay a value the generator can
 // read, because it goes into the prompt verbatim.
-const SPORTS = ["MMA", "General Fitness", "Other"];
+const SPORTS = ["General Fitness", "Other", "MMA"];
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 // Head to toe, so someone scanning for their own complaint finds it where they
 // expect. Neck, thigh/hamstring and shin were missing entirely: a fighter with
@@ -7100,6 +7036,55 @@ function errText(e) {
   catch { return String(e); }
 }
 
+// Sign in or sign up with Google (Isaiah, 30 Oct; Apple later). Google sends
+// them back here signed in. Someone new has no profile yet, so they land in
+// the signup questions with the account step left out, the same path as a
+// confirmed email. `before` runs first, so signup can keep its answers.
+// Needs Google turned on under Authentication, Providers in Supabase; until
+// then this shows Supabase's reason instead of doing nothing.
+function GoogleButton({ label = "Continue with Google", before }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const go = async () => {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      before?.();
+      const { error: e } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: window.location.origin },
+      });
+      if (e) { setError(/not enabled|unsupported provider/i.test(e.message || "") ? "Google sign in isn't switched on yet." : errText(e)); setBusy(false); }
+    } catch (err) { setError(errText(err)); setBusy(false); }
+  };
+  return (
+    <div>
+      <button type="button" onClick={go} disabled={busy}
+        className="w-full rounded-xl py-3.5 flex items-center justify-center gap-2.5 text-[15px] font-semibold"
+        style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text, opacity: busy ? 0.6 : 1 }}>
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+          <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/>
+          <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+          <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+          <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/>
+        </svg>
+        {busy ? "Opening Google…" : label}
+      </button>
+      {error && <p className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</p>}
+    </div>
+  );
+}
+
+function OrLine() {
+  return (
+    <div className="flex items-center gap-3 my-5">
+      <div className="flex-1 h-px" style={{ background: C.border }} />
+      <span className="text-[12.5px]" style={{ color: C.faint }}>or</span>
+      <div className="flex-1 h-px" style={{ background: C.border }} />
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin, onSwitchToSignup }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -7171,6 +7156,9 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
         <Btn className="w-full mt-2" onClick={submit} disabled={loading || !email || !password}>
           {loading ? "Logging in..." : "Log In"}
         </Btn>
+
+        <OrLine />
+        <GoogleButton />
 
         <button onClick={forgotPassword} disabled={sendingReset}
           className="w-full text-center text-[15px] mt-4" style={{ color: C.sub, opacity: sendingReset ? 0.6 : 1 }}>
@@ -7265,7 +7253,7 @@ const SIGNUP_DRAFT_KEY = "tb_signup_draft";
 
 function saveSignupDraft(role, step, data) {
   try {
-    const { password, confirmPassword, showPassword, signupError, photoUrl, ...keep } = data || {};
+    const { password, confirmPassword, showPassword, signupError, emailTakenFor, photoUrl, ...keep } = data || {};
     localStorage.setItem(SIGNUP_DRAFT_KEY, JSON.stringify({ role, step, data: keep, at: Date.now() }));
   } catch { /* private window, or storage full - the flow still works */ }
 }
@@ -7297,6 +7285,14 @@ function signupNeedsLogin(message) {
   return /already exists|already registered|log(ging)? in instead/i.test(message || "");
 }
 
+// Set by the check on the account screen (migration 015), for the exact
+// email that was found. Typing a different one clears it by not matching.
+// Isaiah, 30 Oct: say so while they are typing the email, not after the
+// last screen.
+function emailTaken(data) {
+  return !!data?.emailTakenFor && data.emailTakenFor === (data?.email || "").trim().toLowerCase();
+}
+
 function accountStepProblems(data) {
   const out = {};
   if ((data?.name || "").trim().length < 2) out.name = "Please enter your name.";
@@ -7304,6 +7300,8 @@ function accountStepProblems(data) {
     out.email = (data?.email || "").trim()
       ? "That doesn't look like an email address."
       : "We need an email to get you back into your account.";
+  } else if (emailTaken(data)) {
+    out.email = "This email already has an account.";
   }
   if ((data?.password || "").length < 6) out.password = "At least 6 characters.";
   else if (data?.confirmPassword !== data?.password) out.confirmPassword = "Those two don't match.";
@@ -7360,7 +7358,7 @@ const SIGNUP_KEYS = {
   // Sport lives here too. It has no screen of its own in the design and it
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
-  goal: ["goals", "goalNotes", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "timeframe", "fightDate"],
+  goal: ["goals", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "fightDate"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
@@ -7394,7 +7392,7 @@ const SIGNUP_V2_STEPS = {
   // no error anywhere. signup-v2.test.mjs now fails on a missing key rather
   // than letting the list and the contract drift apart.
   athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
-  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"],
+  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Clients"],
 };
 
 // How the combined screens are built.
@@ -7423,7 +7421,6 @@ const SIGNUP_V2_SECTIONS = {
     // Inline and conditional says the same thing without the empty step.
     { step: "🥋 Sport Details", label: "Your fighting", when: d => d["🥊 Sport / Focus"] === "MMA" },
     { step: "💪 Training Experience", label: "How long you have trained" },
-    { step: "🔍 Goal Depth", label: "What is in the way, and by when" },
   ],
   "📅 Your Week": [
     // Session style is not here, and not anywhere. See deriveSplit.
@@ -7468,7 +7465,7 @@ function stepComplete(stepName, data, role) {
       case "💼 Business Name": return true;
       case "🖼️ Logo": return true; // optional, and changeable under Settings
       case "📩 Invite Athletes": return true; // optional by design
-      case "📩 Invite Your Athletes": return true; // nothing to fill in
+      case "📩 Invite Your Clients": return true; // nothing to fill in
       case "📸 Profile Photo": return true; // optional by design
       case "🔐 Create Account": return accountStepValid(data);
       default: return true;
@@ -7485,7 +7482,6 @@ function stepComplete(stepName, data, role) {
     case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
     case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
     case "🎯 Goals": return (data.goals || []).length > 0;
-    case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
     // An area picked with no side is a half-answered question, so Continue
     // waits. Everything else on this step stays skippable.
     case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
@@ -7509,13 +7505,18 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   const pickerWide = useWide();
   // A signup left halfway comes back where it was. Not used in resume mode:
   // there the profile is the record of what was answered, not this draft.
-  const draft = existingUser ? null : readSignupDraft();
+  // Back from Google: the answers given before they left (the role, a coach
+  // code) are kept, and only those, since this account is new.
+  const draft = existingUser
+    ? (() => { const d = readSignupDraft(); return d?.data?.viaGoogle ? { ...d, step: 0 } : null; })()
+    : readSignupDraft();
   const [role, setRole] = useState(draft?.role ?? null);
   const [step, setStep] = useState(draft?.step ?? 0);
   const [submitting, setSubmitting] = useState(false);
   const [data, setData] = useState({
     weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
     email: existingUser?.email || undefined,
+    ...(existingUser?.user_metadata?.full_name ? { name: existingUser.user_metadata.full_name } : {}),
     // From the coach's join link, so "I have a coach" opens with it filled in.
     ...(joinCodeFromLink() ? { inviteCode: joinCodeFromLink() } : {}),
     ...(draft?.data || {}),
@@ -7599,7 +7600,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     // 3. health
     "🩹 Injuries",
     // 4. programming
-    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
     "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
     "📸 Profile Photo",
   ];
@@ -7699,6 +7700,26 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Does this email already have an account? Asked while they are on the
+  // account screen, a moment after they stop typing, so the answer arrives
+  // beside the email box rather than as a failure after the last screen.
+  // If the check itself fails (offline, or migration 015 not applied) it
+  // says nothing, and the old catch at the end still applies.
+  const emailToCheck = stepName === "🔐 Create Account" && !existingUser && looksLikeEmail(data.email)
+    ? data.email.trim().toLowerCase() : null;
+  useEffect(() => {
+    if (!emailToCheck) return;
+    let live = true;
+    const t = setTimeout(async () => {
+      try {
+        const { data: taken, error } = await supabase.rpc("email_has_account", { p_email: emailToCheck });
+        if (!live || error) return;
+        setData(d => ({ ...d, emailTakenFor: taken === true ? emailToCheck : (d.emailTakenFor === emailToCheck ? null : d.emailTakenFor) }));
+      } catch { /* the final signUp still catches it */ }
+    }, 450);
+    return () => { live = false; clearTimeout(t); };
+  }, [emailToCheck]);
 
   // The navy panel: the photo carousel, with the logo over it. One definition,
   // used by the welcome page and by every sign-up step, so the logo does not
@@ -7840,6 +7861,16 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           happened at all. Two people with existing accounts hit exactly this
           and had no way of knowing why the app was ignoring them. */}
       <div className="px-6 shrink-0">
+        {stepName === "🔐 Create Account" && emailTaken(data) && onSwitchToLogin && (
+          <div className="rounded-xl px-4 py-3 mb-1 flex items-center justify-between gap-3" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
+            <p className="text-[13px]" style={{ color: C.red }}>This email already has an account.</p>
+            <button type="button" onClick={onSwitchToLogin}
+              className="text-[13px] font-semibold underline shrink-0"
+              style={{ color: C.red }}>
+              Log in instead
+            </button>
+          </div>
+        )}
         {data.signupError && (
           <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
             <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
@@ -8056,7 +8087,7 @@ function InviteCodeStep({ code, setData, set }) {
           Couldn't check that code — you may be offline. Try again in a moment.
         </div>
       )}
-      <p className="text-[12.5px] text-center" style={{ color: C.faint }}>Don't have a code? Ask your coach — it's under Athletes → + in their app.</p>
+      <p className="text-[12.5px] text-center" style={{ color: C.faint }}>Don't have a code? Ask your coach — it's under Clients → + in their app.</p>
     </div>
   );
 }
@@ -8128,7 +8159,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             style={{ ...inputStyle, fontSize: 18, padding: "14px" }}
           />
           <p className="text-[12.5px] mt-2" style={{ color: C.faint }}>
-            Optional. This is the name your athletes see when they enter your invite code. Leave it
+            Optional. This is the name your clients see when they enter your invite code. Leave it
             blank to use your own name.
           </p>
         </div>
@@ -8170,12 +8201,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             )}
           </div>
           <p className="text-[12.5px] mt-3" style={{ color: C.faint }}>
-            Optional. A square image works best. Your athletes see it beside your business name.
+            Optional. A square image works best. Your clients see it beside your business name.
           </p>
         </div>
       );
     }
-    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Athletes") {
+    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Clients") {
       // This step used to show an email input with no value/onChange and an
       // "Add another" button with no onClick — a coach could type their whole
       // roster, tap the button, watch nothing happen, and continue believing
@@ -8187,12 +8218,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <div className="rounded-xl p-4 mb-4" style={{ background: `${C.orange}10`, border: `1px solid ${C.orange}44` }}>
             <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>You'll get an invite code</div>
             <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-              As soon as your account is created we'll generate a 6-character code. Athletes choose
-              “I have a coach” when they sign up, enter your code, and land on your roster automatically.
+              As soon as your account is created we'll generate a 6-character code. Clients choose
+              “I have a coach” when they sign up, enter your code, and land on your client list automatically.
             </p>
           </div>
           <p className="text-[12.5px]" style={{ color: C.faint }}>
-            You'll find your code any time under Athletes → +.
+            You'll find your code any time under Clients → +.
           </p>
         </div>
       );
@@ -8221,7 +8252,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   if (stepName === "👤 Your Name") {
     return (
       <div>
-        <p className="text-[15px] mb-6" style={{ color: C.sub }}>What should we call you? This is how you'll appear to {role === "coach" ? "your athletes" : "your coach"}.</p>
+        <p className="text-[15px] mb-6" style={{ color: C.sub }}>What should we call you? This is how you'll appear to {role === "coach" ? "your clients" : "your coach"}.</p>
         <input
           type="text"
           autoFocus
@@ -8256,8 +8287,11 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   if (stepName === "🔐 Create Account") {
     return (
       <div>
+        <GoogleButton label="Sign up with Google"
+          before={() => saveSignupDraft(role, 0, { ...data, viaGoogle: true })} />
+        <OrLine />
         <p className="text-[15px] mb-6" style={{ color: C.sub }}>
-          This is how you get back in, and how you reset your password if you forget it.
+          Or use your email. This is how you get back in, and how you reset your password if you forget it.
         </p>
         <Field label="Your name">
           <input type="text" autoFocus autoComplete="name" placeholder="First and last"
@@ -8316,7 +8350,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
         {accountStepProblems(data) && Object.keys(touched).length > 0 && (
           <p className="text-[12.5px] mt-1" style={{ color: C.faint }}>
             Still needed: {Object.entries(accountStepProblems(data))
-              .map(([k]) => ({ name: "your name", email: "a valid email", password: "a password", confirmPassword: "the password typed twice" }[k]))
+              .map(([k]) => ({ name: "your name", email: emailTaken(data) ? "a different email" : "a valid email", password: "a password", confirmPassword: "the password typed twice" }[k]))
               .join(", ")}.
           </p>
         )}
@@ -8374,7 +8408,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Are you a fighter (competing) or training for fitness/skill?">
             <div className="grid grid-cols-2 gap-3">
               {["Competing fighter", "Training only"].map(opt => (
-                <button key={opt} onClick={() => set("isFighter", opt === "Competing fighter")}
+                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") set("fightDate", null); }}
                   className="rounded-lg p-3.5 text-center text-[15px] font-medium"
                   style={{ background: data.isFighter === (opt === "Competing fighter") ? `${C.orange}18` : C.panel, border: `1px solid ${data.isFighter === (opt === "Competing fighter") ? C.orange : C.border}`, color: data.isFighter === (opt === "Competing fighter") ? C.orange : C.text }}>
                   {opt}
@@ -8385,6 +8419,15 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Discipline (optional)">
             <input style={inputStyle} placeholder="e.g. Muay Thai, BJJ, MMA, Boxing" value={data.discipline || ""} onChange={e => set("discipline", e.target.value)} />
           </Field>
+          {/* The one part of the old "what is in the way, and by when" screen
+              that anything used: the fight date drives the camp taper.
+              Isaiah, 30 Oct: the rest of that screen is gone. */}
+          {data.isFighter === true && (
+            <Field label="Next fight date (optional)">
+              <input type="date" style={inputStyle} min={todayISO()}
+                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+            </Field>
+          )}
         </div>
       );
     }
@@ -8411,60 +8454,6 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               <Sparkles size={15} style={{ color: C.blue }} className="mt-0.5 shrink-0" />
               <span className="text-[12.5px]" style={{ color: C.blue }}>Condensed model: we'll blend {current.join(" + ")} into one program instead of separate plans.</span>
             </div>
-          )}
-        </div>
-      );
-    }
-    case "🔍 Goal Depth": {
-      const weeksOut = data.fightDate ? Math.max(1, Math.round((new Date(data.fightDate) - new Date()) / (1000 * 60 * 60 * 24 * 7))) : null;
-      return (
-        <div>
-          <Field label="What's holding you back right now?">
-            <p className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>Select all that apply.</p>
-            <div className="grid grid-cols-1 gap-2">
-              {["Lack of structured program", "Lack of support / accountability", "Injuries or physical limitations", "Lack of information / knowledge", "Time constraints", "Plateaued on current routine", "Recovery / fatigue issues", "Nutrition gaps", "Mental blocks / motivation"].map(opt => {
-                const isActive = (data.barriers || []).includes(opt);
-                return (
-                  <button key={opt} onClick={() => set("barriers", isActive ? (data.barriers || []).filter(x => x !== opt) : [...(data.barriers || []), opt])}
-                    className="text-left rounded-lg px-3.5 py-3 flex items-center justify-between"
-                    style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
-                    <span className="text-[15px]" style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
-                    {isActive && <Check size={15} style={{ color: C.orange }} />}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
-          <Field label="Target timeframe">
-            <div className="grid grid-cols-2 gap-2.5">
-              {["N/A — no event", "4-6 weeks", "8-12 weeks", "Competition date"].map(opt => (
-                <button key={opt} onClick={() => { set("timeframe", opt); if (opt !== "Competition date") set("fightDate", null); }}
-                  className="rounded-lg p-3 text-center text-[15px]"
-                  style={{ background: data.timeframe === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data.timeframe === opt ? C.orange : C.border}`, color: data.timeframe === opt ? C.orange : C.text }}>
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </Field>
-          {data.timeframe === "Competition date" && (
-            <Field label="Pick your competition date">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value)} />
-              {weeksOut !== null && weeksOut > 0 && (
-                <div className="mt-3 rounded-lg p-3.5 flex items-start gap-2.5" style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}55` }}>
-                  <Target size={15} style={{ color: C.orange }} className="mt-0.5 shrink-0" />
-                  <div>
-                    <div className="text-[15px] font-semibold" style={{ color: C.orange }}>{weeksOut} weeks out</div>
-                    <div className="text-[12.5px] mt-0.5" style={{ color: C.text }}>
-                      {weeksOut >= 12 ? "Full periodized camp — enough time for accumulation, intensification and peak phases." :
-                        weeksOut >= 8 ? "Standard 8-week camp — we'll compress into intensification and a short peak." :
-                        weeksOut >= 6 ? "Short camp — direct prep focus, minimal volume, max specificity." :
-                        "Very short turnaround — we'll keep it sharp and specific, no new stimuli."}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </Field>
           )}
         </div>
       );
@@ -9434,8 +9423,7 @@ Athlete intake:
 - Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
 - Training experience: ${intake.experience || "Beginner"}
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
-- Goal notes: ${intake.goalNotes || "n/a"}
-- Timeframe: ${intake.timeframe || "n/a"}${intake.fightDate ? ` (competition date: ${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out)` : ""}
+- Competition date: ${intake.fightDate ? `${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out` : "none"}
 - Injuries: ${injuryLines(intake)}
   * Each one reads "area — what it is, whether it is a problem now". Treat "bothering them now" as a CURRENT injury and "had it before" as a PREVIOUS one, per the rules further down.
   * The KIND changes what to do, not just the area. Tendon pain wants controlled loading, not avoidance. A sprain or instability wants stability and controlled range. Joint pain or arthritis wants the range limited and the joint kept out of deep loaded flexion. Nerve pain wants nothing that reproduces the symptoms at all. Post-surgery wants the most conservative reading of everything above. "Not sure" wants the cautious option.
@@ -10502,6 +10490,58 @@ function LoadingPercent({ fraction, label, detail, big = false }) {
   );
 }
 
+// A percentage for waits nothing can measure (Isaiah, 30 Oct: loading screens
+// should show a number). An estimate, said plainly: it climbs quickly at
+// first and slows as it nears 90, and never passes 90 on its own. The screen
+// it sits on goes away the moment the real thing has loaded, so it never says
+// 100 early; on a slow connection it waits near 90.
+function estimatedFraction(elapsedMs, expectedMs) {
+  const t = Math.max(0, Number(elapsedMs) || 0) / Math.max(1, Number(expectedMs) || 1);
+  return 0.9 * (1 - Math.exp(-2.3 * t));
+}
+
+function LoadingEstimate({ expectedMs = 2500, label, detail, big = false, small = false }) {
+  const [started] = useState(() => Date.now());
+  const [now, setNow] = useState(started);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 120);
+    return () => clearInterval(t);
+  }, []);
+  const fraction = estimatedFraction(now - started, expectedMs);
+  if (small) {
+    const pct = Math.round(fraction * 100);
+    return (
+      <span className="inline-flex items-center gap-2 tabular-nums">
+        <span className="font-semibold" style={{ color: C.orange }}>{pct}%</span>
+        <span className="inline-block h-1.5 w-20 rounded-full overflow-hidden" style={{ background: C.border }}>
+          <span className="block h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 200ms linear" }} />
+        </span>
+        {label}
+      </span>
+    );
+  }
+  return <LoadingPercent fraction={fraction} label={label} detail={detail} big={big} />;
+}
+
+// How far into the workout: exercises finished out of the day's exercises.
+// Sits in the sticky header, so it stays on screen while scrolling.
+function WorkoutProgressBar({ finished, total }) {
+  const pct = total > 0 ? Math.round((Math.min(finished, total) / total) * 100) : 0;
+  const done = total > 0 && finished >= total;
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between text-[12.5px] mb-1.5 tabular-nums">
+        <span style={{ color: C.sub }}>{done ? "Every exercise done" : `${Math.min(finished, total)} of ${total} exercises done`}</span>
+        <span className="font-semibold" style={{ color: done ? C.olive : C.orange }}>{pct}%</span>
+      </div>
+      <div className="h-2 rounded-full overflow-hidden" style={{ background: C.border }}
+        role="progressbar" aria-label="Workout progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <div className="h-full rounded-full" style={{ background: done ? C.olive : C.orange, width: `${pct}%`, transition: "width 300ms ease-out" }} />
+      </div>
+    </div>
+  );
+}
+
 // Holds the highest percentage seen, so the bar never steps backwards.
 function useBuildProgress() {
   const [fraction, setFraction] = useState(0);
@@ -10666,14 +10706,14 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
           <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.orange}22` }}>
             <Bot size={26} style={{ color: C.orange }} />
           </div>
-          <p className="text-[15px] mb-1" style={{ color: C.text }}>Generate a program from this athlete's intake data.</p>
+          <p className="text-[15px] mb-1" style={{ color: C.text }}>Generate a program from this client's intake data.</p>
           <p className="text-[12.5px] mb-6" style={{ color: C.sub }}>Goals, injuries, sport, schedule, and equipment will all be factored in — with correct phase ordering.</p>
           <Btn className="w-full" icon={Sparkles} onClick={generate}>Generate Program</Btn>
         </div>
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the athlete's profile. Usually two to four minutes." />
+          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the client's profile. Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -10781,7 +10821,7 @@ function PhotosNeededPanel({ state }) {
         <CheckCircle2 size={16} style={{ color: C.olive }} className="shrink-0" />
         <div className="min-w-0">
           <div className="text-[15px] font-semibold" style={{ color: C.text }}>Every exercise has a photo</div>
-          <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Nothing on your roster is missing a demonstration.</p>
+          <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Nothing for your clients is missing a demonstration.</p>
         </div>
       </div>
     );
@@ -10830,7 +10870,7 @@ function PhotosNeededPanel({ state }) {
       )}
       <p className="text-[11px] mt-3 leading-relaxed" style={{ color: C.faint }}>
         Programs are generated from the exercises that already have photos wherever possible. These are
-        the ones that came up anyway — usually because an injury, a piece of equipment or the athlete's
+        the ones that came up anyway — usually because an injury, a piece of equipment or the client's
         sport called for something specific.
       </p>
     </div>
@@ -10961,7 +11001,7 @@ function AttentionPanel({ state, nav }) {
   if (rows.length === 0) {
     return (
       <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
-        <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody on your roster yet</div>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>No clients yet</div>
         <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Share your invite code above and they will appear here.</p>
       </div>
     );
@@ -11017,7 +11057,7 @@ function CoachTodayPanel({ state, nav }) {
     return (
       <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
         <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody training today</div>
-        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>No sessions are scheduled across your roster.</p>
+        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>No sessions are scheduled for your clients.</p>
       </div>
     );
   }
@@ -11155,7 +11195,7 @@ function ModeSwitch({ training, onChange, className = "mb-4" }) {
 // those three taken out - and it renders through the same step bodies, so the
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
-  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
   "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
 ];
 
@@ -11221,7 +11261,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       <div className="px-5 pt-6 pb-2">
         <div className="text-2xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>Your training</div>
         <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>
-          The same screening your athletes answer. Once, then your program builds from it.
+          The same screening your clients answer. Once, then your program builds from it.
         </div>
       </div>
 
@@ -11424,10 +11464,10 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
         <ChalkDivider label="Who needs you" />
         <AttentionPanel state={state} nav={nav} />
 
-        <ChalkDivider label="Your roster" />
+        <ChalkDivider label="Your clients" />
         <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
-          <StatCard icon={Users} label="Athletes" value={totalAthletes} />
+          <StatCard icon={Users} label="Clients" value={totalAthletes} />
           <StatCard icon={ClipboardList} label="Programs" value={activePrograms} accent={C.blue} />
         </div>
         {FEATURES.payments && (
@@ -11480,7 +11520,7 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
           )}
           <button onClick={() => nav.go("coach-athletes")} className="w-full rounded-xl p-4 text-left" style={card({ borderRadius: 16 })}>
             <Users size={20} style={{ color: C.blue }} className="mb-2" />
-            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Manage Roster</div>
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Manage Clients</div>
           </button>
         </div>
       </div>
@@ -11615,7 +11655,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   // a profile's owner update it. Same shape as assign_program_to_athlete.
   const moveToGroup = async (athleteId, groupId) => {
     const { error } = await supabase.rpc("set_athlete_group", { p_athlete: athleteId, p_group: groupId });
-    if (error) { setGroupError(error.message || "Couldn't move that athlete."); return; }
+    if (error) { setGroupError(error.message || "Couldn't move that client."); return; }
     setGroupError(null);
     setState(s => ({ ...s, athletes: s.athletes.map(a => (a.id === athleteId ? { ...a, groupId } : a)) }));
     // If that was the last ungrouped athlete, the Ungrouped pill disappears —
@@ -11719,7 +11759,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       // `bulkProgress` set — a permanent spinner in a modal whose close button
       // is gated on `assigning`, recoverable only by reloading the page.
       console.error("Bulk assign failed:", err);
-      setAssignError("Something went wrong partway through. Check the roster before retrying.");
+      setAssignError("Something went wrong partway through. Check your clients before retrying.");
     } finally {
       setBulkProgress(null);
       setAssigning(false);
@@ -11747,12 +11787,12 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
 
   return (
     <div className="pb-28">
-      <TopBar title="Athletes" onLogout={nav.logout}
-        right={<Btn size="sm" icon={Plus} onClick={() => setInviteOpen(true)}>Add athlete</Btn>} />
+      <TopBar title="Clients" onLogout={nav.logout}
+        right={<Btn size="sm" icon={Plus} onClick={() => setInviteOpen(true)}>Add client</Btn>} />
       <div className="px-5 pt-4">
         <div className="relative mb-3">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.faint }} />
-          <input style={{ ...inputStyle, paddingLeft: 36 }} placeholder="Search athletes..." value={search} onChange={e => setSearch(e.target.value)} />
+          <input style={{ ...inputStyle, paddingLeft: 36 }} placeholder="Search clients..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
         {assignError && (
@@ -11797,7 +11837,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               the coach logged out and back in — which reads as "the invite
               code didn't work". A reload re-runs the same load path rather
               than duplicating it here, where a second copy could drift. */}
-          <button onClick={() => window.location.reload()} title="Check for new athletes"
+          <button onClick={() => window.location.reload()} title="Check for new clients"
             className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1.5"
             style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.sub }}>
             <RefreshCw size={12} /> Refresh
@@ -11810,22 +11850,22 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
             className="w-full mb-4 rounded-xl py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
             style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
             <ClipboardList size={15} />
-            Assign a program to all {filtered.length} {filtered.length === 1 ? "athlete" : "athletes"}
+            Assign a program to all {filtered.length} {filtered.length === 1 ? "client" : "clients"}
           </button>
         )}
 
         {state.athletes.length === 0 && (
           <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
             <Users size={28} style={{ color: C.faint }} className="mx-auto mb-3" />
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No athletes yet</div>
+            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No clients yet</div>
             <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
-              Athletes appear here once they enter your invite code — either when they sign up,
+              Clients appear here once they enter your invite code — either when they sign up,
               or from Profile → Join your coach if they already have an account.
             </p>
             {inviteCode && (
               <div className="font-mono font-bold mb-4" style={{ fontSize: 26, letterSpacing: 5, color: C.orange }}>{inviteCode}</div>
             )}
-            <Btn icon={Plus} onClick={() => setInviteOpen(true)}>Add an athlete</Btn>
+            <Btn icon={Plus} onClick={() => setInviteOpen(true)}>Add a client</Btn>
             <button onClick={() => window.location.reload()} className="text-[12.5px] mt-3" style={{ color: C.blue }}>
               Someone just joined? Refresh
             </button>
@@ -11842,7 +11882,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               gap: 16, padding: "12px 18px", borderBottom: `1px solid ${C.border}`,
               fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", fontWeight: 700, color: C.faint,
             }}>
-              <span>Athlete</span><span>Program</span><span>This week</span>
+              <span>Client</span><span>Program</span><span>This week</span>
               <span>Compliance</span><span>Streak</span><span>Last active</span><span />
             </div>
             {filtered.map(a => {
@@ -11951,9 +11991,9 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
           nowhere — it just fabricated a local roster entry that disappeared on
           refresh. Athletes actually join by entering the coach's code during
           their own signup, so the modal now hands over that code. */}
-      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Add an Athlete">
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Add a Client">
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          New athletes choose “I have a coach” when they sign up and enter your code.
+          New clients choose “I have a coach” when they sign up and enter your code.
           Anyone who already has an account can join from Profile → Join your coach.
         </p>
         {inviteCode ? (
@@ -11982,12 +12022,12 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       </Modal>
 
       {/* Manage groups */}
-      <Modal open={groupsOpen} onClose={() => { setGroupsOpen(false); setGroupError(null); }} title="Roster Groups">
+      <Modal open={groupsOpen} onClose={() => { setGroupsOpen(false); setGroupError(null); }} title="Client Groups">
         {groupError && (
           <div className="rounded-lg p-3 mb-3 text-[12.5px]" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{groupError}</div>
         )}
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          Organise your roster — a pro team, amateurs, youth classes, general members. Deleting a group doesn't remove anyone; they just become ungrouped.
+          Organise your clients — a pro team, amateurs, youth classes, general members. Deleting a group doesn't remove anyone; they just become ungrouped.
         </p>
 
         <div className="flex gap-2 mb-4">
@@ -12008,7 +12048,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
                 <div className="flex-1 min-w-0">
                   <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{g.name}</div>
                   <div className="text-[12.5px]" style={{ color: C.sub }}>
-                    {state.athletes.filter(a => a.groupId === g.id).length} athletes
+                    {state.athletes.filter(a => a.groupId === g.id).length} clients
                   </div>
                 </div>
                 <button onClick={() => deleteGroup(g.id)} aria-label={`Delete ${g.name}`}>
@@ -12058,7 +12098,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               that opened it counted only the search-narrowed rows — so a coach
               filtering "Pro Team" then typing a name saw "1 athlete" and could
               silently replace all twelve programs. */}
-          These <strong style={{ color: C.text }}>{filtered.length}</strong> {filtered.length === 1 ? "athlete" : "athletes"}
+          These <strong style={{ color: C.text }}>{filtered.length}</strong> {filtered.length === 1 ? "client" : "clients"}
           {search.trim() ? " (matching your search)" : ` in ${groupFilter === "ungrouped" ? "Ungrouped" : groupName(groupFilter)}`} each get their own copy,
           scheduled around their own training days. Anyone with a program already will have it replaced.
         </p>
@@ -12160,7 +12200,7 @@ function CompliancePanel({ logs }) {
       <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
         <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No timed sessions yet</div>
         <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-          This athlete hasn't timed a workout. Either they haven't been asked yet, or they've
+          This client hasn't timed a workout. Either they haven't been asked yet, or they've
           switched the timer off in their own settings — worth asking which.
         </p>
       </div>
@@ -12173,8 +12213,8 @@ function CompliancePanel({ logs }) {
         <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>Building a baseline</div>
         <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
           {timedCount} timed {timedCount === 1 ? "session" : "sessions"} so far. It takes {COMPLIANCE_MIN_SAMPLES} before
-          "normal" means anything for this athlete — comparing against a population average would flag
-          half your roster for no reason.
+          "normal" means anything for this client — comparing against a population average would flag
+          half your clients for no reason.
         </p>
       </div>
     );
@@ -12224,7 +12264,7 @@ function CompliancePanel({ logs }) {
 
       {review.untimedCount > 0 && (
         <p className="text-[11px] mt-3 pt-2.5 leading-relaxed" style={{ borderTop: `1px solid ${C.border}`, color: C.faint }}>
-          {review.untimedCount} of these weren't timed. The athlete can switch their timer off,
+          {review.untimedCount} of these weren't timed. The client can switch their timer off,
           which is theirs to do — but it also means there's nothing to compare, so ask.
         </p>
       )}
@@ -12265,7 +12305,7 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
   const canConfirm = !removing && (!needsTyping || typed.trim().toLowerCase() === firstName.toLowerCase());
 
   return (
-    <Modal open={open} onClose={onClose} title={`Take ${firstName} off your roster?`}>
+    <Modal open={open} onClose={onClose} title={`Take ${firstName} off your client list?`}>
       <p className="text-[15px] mb-3" style={{ color: C.text }}>
         This ends the coaching. You'll stop seeing their sessions and they won't be able to book with you.
       </p>
@@ -12318,7 +12358,7 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
       )}
 
       <Btn variant="danger" className="w-full" disabled={!canConfirm || !known} onClick={onConfirm}>
-        {removing ? "Removing…" : `Take ${firstName} off my roster`}
+        {removing ? "Removing…" : `Take ${firstName} off my client list`}
       </Btn>
       <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Keep coaching {firstName}</Btn>
     </Modal>
@@ -12995,7 +13035,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           <button onClick={() => setOffRosterOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
             style={{ color: C.red, border: `1px solid ${C.red}44` }}>
-            Take {athlete.name.split(" ")[0]} off my roster
+            Take {athlete.name.split(" ")[0]} off my client list
           </button>
           <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
             Ends the coaching. Their account and training history stay with them.
@@ -14046,7 +14086,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.orange}33` }}><Sparkles size={20} style={{ color: C.orange }} /></div>
           <div className="min-w-0">
             <div className="font-semibold text-[15px]" style={{ color: C.text }}>Generate with AI</div>
-            <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Build a program from an athlete's intake automatically</div>
+            <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Build a program from a client's intake automatically</div>
           </div>
         </button>
         {templateError && (
@@ -14094,7 +14134,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
       </div>
       <Modal open={!!programDeleteTarget} onClose={() => setProgramDeleteTarget(null)} title="Delete Program">
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Athletes already assigned a copy of it keep theirs — only this template goes.
+          Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Clients already assigned a copy of it keep theirs — only this template goes.
         </p>
         <div className="flex gap-2.5">
           <Btn variant="secondary" className="flex-1" onClick={() => setProgramDeleteTarget(null)}>Cancel</Btn>
@@ -14114,7 +14154,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           </p>
           <div className="space-y-2">
             {state.athletes.length === 0 && (
-              <p className="text-[15px]" style={{ color: C.sub }}>No athletes on your roster yet.</p>
+              <p className="text-[15px]" style={{ color: C.sub }}>No clients yet.</p>
             )}
             {state.athletes.map(a => {
               const usable = intakeIsUsable(intakeForAthlete(a));
@@ -14888,14 +14928,14 @@ function CoachMessages({ state, setState, nav, myUserId }) {
       {state.athletes.length === 0 ? (
         <div className="flex-1 flex items-center justify-center px-6 text-center">
           <div>
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No athletes yet</div>
-            <p className="text-[12.5px]" style={{ color: C.sub }}>Once someone joins your roster with your invite code, you'll be able to message them here.</p>
+            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No clients yet</div>
+            <p className="text-[12.5px]" style={{ color: C.sub }}>Once someone joins you with your invite code, you'll be able to message them here.</p>
           </div>
         </div>
       ) : (
         <>
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-            {loading && <div className="text-center py-8"><Loader2 size={20} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>}
+            {loading && <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>}
             {!loading && messages.length === 0 && (
               <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>
             )}
@@ -15445,7 +15485,7 @@ function FormChecksPage({ state, nav, isCoach }) {
           </>
         )}
 
-        {loading && <p className="text-[12.5px] py-6 text-center" style={{ color: C.faint }}>Loading…</p>}
+        {loading && <div className="py-6 text-center"><LoadingEstimate expectedMs={1500} /></div>}
 
         {error && (
           <div className="rounded-lg p-3 mb-3 text-[12.5px]" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
@@ -15842,7 +15882,7 @@ function CoachProfile({ state, setState, nav }) {
         <div className="flex flex-col items-center mb-6">
           <EditableAvatar initials={coach.avatar} size={84} photoUrl={coach.photoUrl} onChange={setPhoto} />
           <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{coach.name}</div>
-          <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} athletes · {activePrograms} programs</div>
+          <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} clients · {activePrograms} programs</div>
         </div>
 
         {/* Your branding */}
@@ -15974,7 +16014,7 @@ function CoachProfile({ state, setState, nav }) {
           <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>Today's Workouts</div>
             {state.athletes.length === 0 ? (
-              <div className="text-[15px] text-center py-3" style={{ color: C.faint }}>No athletes yet.</div>
+              <div className="text-[15px] text-center py-3" style={{ color: C.faint }}>No clients yet.</div>
             ) : (
               <div className="space-y-2">
                 {state.athletes.map(a => {
@@ -16042,7 +16082,7 @@ function CoachProfile({ state, setState, nav }) {
         <div className="grid grid-cols-2 gap-3 mb-5">
           <button onClick={() => nav.go("coach-athletes")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
             <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Users size={18} style={{ color: C.orange }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>All Athletes</span>
+            <span className="text-[15px] font-medium" style={{ color: C.text }}>All Clients</span>
           </button>
           <button onClick={() => nav.go("form-checks")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
             <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.red}22` }}><Video size={18} style={{ color: C.red }} /></div>
@@ -16066,7 +16106,7 @@ function CoachProfile({ state, setState, nav }) {
               schedule is on their detail page, where it belongs. */}
         </div>
 
-        <ChalkDivider label="Roster" />
+        <ChalkDivider label="Clients" />
         <div className="space-y-2">
           {state.athletes.map(a => (
             <button key={a.id} onClick={() => nav.go("coach-athlete-detail", a.id)} className="w-full rounded-lg p-3 flex items-center gap-3 text-left" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
@@ -16677,8 +16717,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         {/* Calories and Protein were hardcoded to 0 with nothing anywhere in
             the app able to change them — a permanent "you've eaten nothing"
             on every athlete's home screen. They return with nutrition. */}
-        <div className={`grid gap-2.5 mb-6 ${FEATURES.nutrition ? "grid-cols-3" : "grid-cols-2"}`}>
-          <StatCard icon={Dumbbell} label="Workouts" value={state.workoutLogs.length} accent={C.orange} />
+        {/* No "Workouts" count (Isaiah, 30 Oct). */}
+        <div className={`grid gap-2.5 mb-6 ${FEATURES.nutrition ? "grid-cols-2" : "grid-cols-1"}`}>
           <StatCard icon={Flame} label="Streak" value={state.me.streak || 0} sub="days" accent={C.amber} />
           {FEATURES.nutrition && <StatCard icon={Salad} label="Calories" value="0" sub="kcal" accent={C.olive} />}
         </div>
@@ -16730,7 +16770,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         </div>
 
         <div style={wideHome ? { minWidth: 0, display: "flex", flexDirection: "column", gap: 20 } : undefined}>
-        <CheckinRings progress={state.progress} onOpen={() => nav.go("athlete-progress")} />
+        {/* No "Today's check-in" rings on home (Isaiah, 30 Oct). */}
         {printOpen && todayDay && (
           <PrintSheet
             day={todayDay}
@@ -20892,6 +20932,19 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     );
   }
 
+  // How far through the workout, by exercises finished (Isaiah, 30 Oct). An
+  // exercise is finished when every set of it is ticked; a warm-up or
+  // cool-down, which has no sets that count, when it is ticked at all. Read
+  // from this week's prescription, the same one the log is saved against.
+  const progressItems = sortedExercises
+    .map(raw => prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks), programWeek, programHasWeeklyPlan(myProgram)))
+    .filter(Boolean);
+  const exercisesFinished = progressItems.filter(item => {
+    const checked = setChecks[item.id] || [];
+    const sets = isTrackedExercise(item) ? (item.sets || 0) : 0;
+    return sets > 0 ? checked.filter(i => i < sets).length >= sets : checked.length > 0;
+  }).length;
+
   return (
     <div className="pb-36">
       {timerMode === "counting" && countdownN > 0 && <SessionTimerCountdown n={countdownN} />}
@@ -20907,9 +20960,10 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           is scheduled for today, and jumps straight to any of them instead of
           stepping. */}
       <TopBar title={day.name}
-        below={timerIsLive
-          ? <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />
-          : null}
+        below={<>
+          {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
+          {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
+        </>}
         right={
         /* Red, because stopping is the one thing an athlete does mid-session
            that the app had no answer for. The old way out was the back
@@ -22333,7 +22387,7 @@ function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
           </div>
         )}
         {tab === "coach" && hasCoach && coachLoading && (
-          <div className="text-center py-8"><Loader2 size={20} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>
+          <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>
         )}
         {rendered.length === 0 && !(tab === "coach" && (!hasCoach || coachLoading)) && (
           <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>
@@ -24904,7 +24958,7 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
         ))}
         {busy && (
           <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <Loader2 size={14} className="animate-spin" style={{ color: C.blue }} /> Making the changes
+            <LoadingEstimate small expectedMs={25000} label="Making the changes" />
           </div>
         )}
         {error && <div className="text-[12.5px]" style={{ color: C.red }}>{error}</div>}
@@ -25256,6 +25310,14 @@ function calendarSessionShort(name) {
   return words[0] || "Session";
 }
 
+// Which day of the program a session is: 1 for the first day, and so on,
+// in the program's own order. Isaiah, 30 Oct: the calendar said "Day" and a
+// colour, because a session named "Day 1" was cut to its first word.
+function programDayNumber(program, dayId) {
+  const i = (program?.days || []).findIndex(d => d.id === dayId);
+  return i >= 0 ? i + 1 : null;
+}
+
 function CalendarViewPage({ state, setState, nav }) {
   // Program board first, the month calendar one tap away (Isaiah, 26 Oct).
   const [weekView, setWeekView] = useState("program");
@@ -25374,6 +25436,10 @@ function CalendarViewPage({ state, setState, nav }) {
               // a green tick, today is a ring, the tapped day is filled.
               const sched = scheduledDayFor(ds);
               const tint = sched ? programDayColor(myProgram, sched.id) : C.blue;
+              const dayNo = sched ? programDayNumber(myProgram, sched.id) : null;
+              const dayTag = dayNo ? `Day ${dayNo}` : sched ? calendarSessionShort(sched.name) : "";
+              const restLabel = sched ? calendarSessionLabel(sched.name) : "";
+              const showRest = wideCal && restLabel && !/^day\s*\d+$/i.test(restLabel);
               return (
                 <button key={ds} onClick={() => setOpenDate(ds)}
                   aria-label={`${ds}${sched ? `, ${sched.name}` : ""}${hasLog ? ", done" : ""}`}
@@ -25391,13 +25457,13 @@ function CalendarViewPage({ state, setState, nav }) {
                   {sched && (
                     <span className="mt-1 rounded font-semibold leading-tight"
                       style={{
-                        fontSize: wideCal ? 11 : (calendarSessionShort(sched.name).length > 6 ? 7.5 : calendarSessionShort(sched.name).length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
+                        fontSize: wideCal ? 11 : (dayTag.length > 6 ? 7.5 : dayTag.length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
                         padding: wideCal ? "2px 4px" : "2px 1px 2px 2px", letterSpacing: wideCal ? 0 : "-0.02em",
                         ...(wideCal
                           ? { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }
                           : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
                       }}>
-                      {wideCal ? calendarSessionLabel(sched.name) : calendarSessionShort(sched.name)}
+                      {showRest ? <><b>{dayTag}</b> {restLabel}</> : dayTag}
                     </span>
                   )}
                 </button>
@@ -26383,7 +26449,7 @@ function CoachBooking({ state, setState, nav, myUserId }) {
             <div className="space-y-2">
               {state.athletes.length === 0 && (
                 <div className="rounded-xl p-4 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
-                  No clients on your roster yet.
+                  No clients yet.
                 </div>
               )}
               {state.athletes.map(a => {
@@ -27126,7 +27192,7 @@ function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
       <div className="px-5 pt-5">
         {booking.loaded
           ? <SessionAndBillingHistory booking={booking} athleteId={state.me.id} />
-          : <div className="pt-12 text-center"><Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>}
+          : <div className="pt-12 text-center"><LoadingEstimate expectedMs={1500} /></div>}
       </div>
     </div>
   );
@@ -27231,7 +27297,7 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
       <div className="pb-28">
         {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-16 text-center">
-          <Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} />
+          <LoadingEstimate expectedMs={1500} />
         </div>
       </div>
     );
@@ -27593,7 +27659,7 @@ function NotificationsPage({ state, setState, nav, notifications, onMarkAllRead,
             <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nothing new</div>
             <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
               {isCoach
-                ? "You'll be told here as soon as one of your athletes finishes a session."
+                ? "You'll be told here as soon as one of your clients finishes a session."
                 : "Reminders for your sessions show up here on the day."}
             </p>
           </div>
@@ -27863,7 +27929,7 @@ function CommunityPage({ state, setState, nav, isCoach = false }) {
       {/* Feed */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {!loaded && (
-          <div className="text-center py-16"><Loader2 size={24} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>
+          <div className="text-center py-16"><LoadingEstimate expectedMs={1500} /></div>
         )}
         {loaded && filteredPosts.length === 0 && (
           <div className="text-center py-16">
@@ -28936,7 +29002,7 @@ function AppInner() {
       // photoUrl is stripped too: it's a multi-megabyte base64 data URL that
       // already has its own column, and storing it twice in one row risked
       // blowing the request size and failing the write outright.
-      const { password, confirmPassword, signupError, showPassword, photoUrl, inviteCoachId, logoFile, logoPreview, ...rest } = data;
+      const { password, confirmPassword, signupError, emailTakenFor, viaGoogle, showPassword, photoUrl, inviteCoachId, logoFile, logoPreview, ...rest } = data;
       // Second line of defence behind chooseRole(): whatever route the answers
       // took to get here, an account that isn't on the coached path must not
       // ship an invite code in its intake. hydrateFromProfile's repair step
@@ -29227,7 +29293,7 @@ function AppInner() {
   if (sessionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <Loader2 size={32} className="animate-spin" style={{ color: C.orange }} />
+        <LoadingEstimate expectedMs={2000} label="Loading" />
       </div>
     );
   }
@@ -29291,7 +29357,7 @@ function AppInner() {
   // so a coach could not open their own messages at all.
   const coachNavItems = [
     { key: "coach-dashboard", label: "Home", icon: Home },
-    { key: "coach-athletes", label: "Athletes", icon: Users },
+    { key: "coach-athletes", label: "Clients", icon: Users },
     ...(FEATURES.booking ? [{ key: "coach-booking", label: "Sessions", icon: Calendar }] : []),
     { key: "coach-messages", label: "Messages", icon: MessageSquare, badge: unreadCount },
     ...(FEATURES.community ? [{ key: "community", label: "Community", icon: Trophy }] : []),

@@ -255,9 +255,15 @@ test("Today's Workout is the first thing under the greeting", () => {
   // from the comment instead of from the markup.
   const body = dashboard();
   const session = body.indexOf(">Today's Workout</div>");
-  const stats = body.indexOf('label="Workouts"');
+  const stats = body.indexOf('label="Streak"');
   assert.ok(session > 0, "the session panel is gone");
   assert.ok(stats > session, "the stat tiles come before the session");
+});
+
+test("Home has no Workouts count and no check-in rings (Isaiah, 30 Oct)", () => {
+  const body = dashboard();
+  assert.ok(!/label="Workouts"/.test(body), "the Workouts count is back on Home");
+  assert.ok(!/CheckinRings/.test(src), "the Today's check-in rings are back");
 });
 
 test("no check-in step on Home, and no Start Workout once today is logged", () => {

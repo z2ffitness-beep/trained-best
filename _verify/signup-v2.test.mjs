@@ -30,7 +30,7 @@ const src = readSource(APP);
 // and a gate tested against a stand-in for its own lock is not tested.
 const {
   SIGNUP_KEYS, SIGNUP_V2_STEPS, SIGNUP_V2_SECTIONS, SIGNUP_V2,
-  deriveSplit, withDerivedSplit, stepComplete, DEFAULT_SPLIT, SPLIT_STYLES,
+  deriveSplit, withDerivedSplit, stepComplete, DEFAULT_SPLIT, SPLIT_STYLES, accountStepProblems,
 } = await load(APP, [
   { name: "toLocalISO", kind: "const" },
   { name: "todayISO", kind: "const" },
@@ -39,7 +39,7 @@ const {
   "parseDateParts", "ageFromBirthday", "isUsableBirthday",
   { name: "EMAIL_RE", kind: "const" },
   { name: "looksLikeEmail", kind: "const" },
-  "accountStepProblems", "accountStepValid",
+  "accountStepProblems", "accountStepValid", "emailTaken",
   { name: "INJURY_MIDLINE", kind: "const" },
   { name: "injuryNeedsSide", kind: "const" },
   "injuryDetailFor", "injurySidesMissing", "injurySidesAnswered",
@@ -127,7 +127,7 @@ test("every screen in the flow has a body behind it", () => {
   // Continue button and no way to understand what is wanted.
   for (const [role, screens] of Object.entries(SIGNUP_V2_STEPS)) {
     for (const screen of screens) {
-      if (screen === "📩 Invite Your Athletes") continue; // explainer, no inputs
+      if (screen === "📩 Invite Your Clients") continue; // explainer, no inputs
       const leaves = leavesOf(screen, { "🥊 Sport / Focus": "MMA" });
       assert.ok(leaves.length > 0, `${role}'s "${screen}" expands to nothing`);
       for (const leaf of leaves) keysWrittenBy(leaf); // throws if missing
@@ -157,7 +157,7 @@ const keysAskedOn = (role) => {
     // Both branches, so a key only a fighter is asked for still counts.
     for (const data of [{}, { "🥊 Sport / Focus": "MMA" }]) {
       for (const leaf of leavesOf(screen, data)) {
-        if (leaf === "📩 Invite Your Athletes") continue;
+        if (leaf === "📩 Invite Your Clients") continue;
         for (const k of keysWrittenBy(leaf)) asked.add(k);
       }
     }
@@ -350,7 +350,6 @@ const athlete = {
   name: "Alex Reid", email: "a@b.com", password: "abcdefgh", confirmPassword: "abcdefgh",
   sex: "Male", birthday: "1990-01-01", heightCm: 178, weightLb: 175,
   goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", experience: "Advanced (3+ years)",
-  timeframe: "N/A — no event",
   trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"],
   injuries: ["None currently"],
 };
@@ -366,7 +365,7 @@ test("one missing answer anywhere on a screen holds the whole screen", () => {
   // blank must not read as done, or the blank one is never filled in.
   const required = {
     "👤 About You": ["sex", "birthday", "heightCm", "weightLb"],
-    "🎯 Your Goal": ["goals", "🥊 Sport / Focus", "experience", "timeframe"],
+    "🎯 Your Goal": ["goals", "🥊 Sport / Focus", "experience"],
     "📅 Your Week": ["trainingDays", "equipment"],
   };
   for (const [screen, keys] of Object.entries(required)) {
@@ -399,11 +398,25 @@ test("a fighter cannot skip past the question only they are asked", () => {
     "saying you do not compete counts as not having answered");
 });
 
-test("a competition date is required once a competition is named", () => {
-  const comp = { ...athlete, timeframe: "Competition date" };
-  assert.equal(stepComplete("🎯 Your Goal", comp, "athlete"), false,
-    "a camp can be planned with no date to peak for");
-  assert.ok(stepComplete("🎯 Your Goal", { ...comp, fightDate: "2026-12-01" }, "athlete"));
+test("'What is in the way, and by when' is gone, and the fight date is not lost with it", () => {
+  // Isaiah, 30 Oct: take the question out. The fight date it held drives the
+  // camp taper, so it moved to the fighter's own question, and stays optional.
+  assert.ok(!/Goal Depth/.test(src), "the old screen is still there");
+  assert.ok(!/What is in the way/.test(src), "the old label is still there");
+  assert.ok(stepComplete("🎯 Your Goal", { ...athlete, "🥊 Sport / Focus": "MMA", isFighter: true }, "athlete"),
+    "a fighter is held on the goal screen for a date they do not have yet");
+  assert.ok(/Next fight date \(optional\)/.test(src), "fighters can no longer give a fight date");
+});
+
+test("an email that already has an account blocks the account screen, and says so", () => {
+  const ok = { name: "Alex Reid", email: "A@b.com", password: "abcdefgh", confirmPassword: "abcdefgh" };
+  assert.ok(stepComplete("🔐 Create Account", ok, "athlete"));
+  const taken = { ...ok, emailTakenFor: "a@b.com" };
+  assert.equal(stepComplete("🔐 Create Account", taken, "athlete"), false, "Continue is open on a taken email");
+  assert.match(accountStepProblems(taken).email, /already has an account/);
+  assert.ok(stepComplete("🔐 Create Account", { ...taken, email: "new@b.com" }, "athlete"),
+    "a different email is still held by the old answer");
+  assert.ok(/supabase\.rpc\("email_has_account"/.test(src), "nothing asks while they are on the screen");
 });
 
 test("the invite code must resolve to a real coach, not just be six long", () => {
@@ -419,7 +432,7 @@ test("the coach brand screen never blocks", () => {
   const coach = { name: "Casey Lin", email: "c@d.com", password: "abcdefgh", confirmPassword: "abcdefgh" };
   assert.ok(stepComplete("🏅 Your Coaching Business", coach, "coach"));
   assert.ok(stepComplete("🏅 Your Coaching Business", { ...coach, businessName: "Lin Strength" }, "coach"));
-  assert.ok(stepComplete("📩 Invite Your Athletes", coach, "coach"));
+  assert.ok(stepComplete("📩 Invite Your Clients", coach, "coach"));
 });
 
 // ---------- the split that is no longer asked for ----------
@@ -503,7 +516,7 @@ console.log(`${passed}/${tests.length} passed`);
 
 test("the coach signup is the account, the brand and the invite code", () => {
   // Isaiah, 28 Oct: business name and logo, nothing about years coached.
-  assert.deepEqual(SIGNUP_V2_STEPS.coach, ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"]);
+  assert.deepEqual(SIGNUP_V2_STEPS.coach, ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Clients"]);
   assert.deepEqual(SIGNUP_V2_SECTIONS["🏅 Your Coaching Business"].map(x => x.step), ["💼 Business Name", "🖼️ Logo"]);
   assert.ok(/logoFile, logoPreview, \.\.\.rest \} = data;/.test(src), "the picked logo file would be written into the intake");
   assert.ok(/uploadCoachLogo\(userId, logoFile\)/.test(src), "the logo picked at signup is never uploaded");

@@ -313,7 +313,8 @@ test("every caller drops the holes at its own site", () => {
   // Five call sites since 26 Oct: the program board (programBoardWeek).
   // Seven since 28 Oct: Adjust with AI writes the shown weeks out first
   // (bakeGeneratedProgression) and counts what changed (adjustDiff).
-  assert.equal(sites.length, 8, "one declaration plus seven call sites");
+  // Eight since 30 Oct: the workout progress bar counts the week's exercises.
+  assert.equal(sites.length, 9, "one declaration plus eight call sites");
 
   const [, ...calls] = sites;
   calls.forEach((at) => {
