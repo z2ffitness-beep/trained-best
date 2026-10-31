@@ -3074,7 +3074,7 @@ function exerciseBudget(minutes) {
 // Lunge is a priority pattern but not a main lift: it belongs in Secondary
 // Movements, which is where the coach's own programs put it.
 const SPLIT_STYLES = [
-  { key: "full_body", label: "Full body every session",
+  { key: "full_body", label: "Full body",
     hint: "Every session covers a lower-body lift, a press and a pull. Best for 2–4 days a week." },
   { key: "upper_lower", label: "Upper / lower",
     hint: "Alternating upper-body and lower-body days." },
@@ -7436,7 +7436,7 @@ const SIGNUP_KEYS = {
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
-  week: ["trainingDays", "sessionMinutes", "equipment"],
+  week: ["trainingDays", "sessionMinutes", "equipment", "splitStyle"],
   injuries: ["injuries", "injuryNotes"],
   // Coached athletes only, and asked FIRST - the code decides whose roster
   // they land on, and showing the coach's card before anything else is what
@@ -7500,6 +7500,10 @@ const SIGNUP_V2_SECTIONS = {
   "📅 Your Week": [
     // Session style is not here, and not anywhere. See deriveSplit.
     { step: "📅 Training Schedule", label: "Your days" },
+    // Back as a question (Isaiah, 31 Oct): people have a preference. The
+    // suggestion for their number of days is picked for them, so tapping
+    // nothing still gets the split this screen used to choose silently.
+    { step: "🧩 Session Style", label: "Week split" },
     { step: "🏋️ Equipment", label: "What you can train with" },
   ],
   "🏅 Your Coaching Business": [
@@ -8763,7 +8767,9 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       );
     }
     case "🧩 Session Style": {
-      const chosen = splitStyleOf(data);
+      const dayCount = (data.trainingDays || []).length;
+      const suggested = dayCount ? deriveSplit(data.trainingDays) : DEFAULT_SPLIT;
+      const chosen = SPLIT_STYLES.some(s => s.key === data.splitStyle) ? data.splitStyle : suggested;
       return (
         <div className="grid grid-cols-1 gap-2.5">
           {SPLIT_STYLES.map(opt => {
@@ -8774,9 +8780,9 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 style={{ background: active ? `${C.orange}18` : C.panel, border: `1px solid ${active ? C.orange : C.border}` }}>
                 <div className="flex items-center gap-2">
                   <span className="text-[15px] font-semibold flex-1" style={{ color: active ? C.orange : C.text }}>{opt.label}</span>
-                  {opt.key === DEFAULT_SPLIT && (
+                  {opt.key === suggested && (
                     <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0"
-                      style={{ background: `${C.olive}22`, color: C.olive }}>Recommended</span>
+                      style={{ background: `${C.olive}22`, color: C.olive }}>{dayCount ? `Suggested for ${dayCount} day${dayCount === 1 ? "" : "s"}` : "Suggested"}</span>
                   )}
                   {active && <Check size={16} style={{ color: C.orange }} className="shrink-0" />}
                 </div>
@@ -8785,9 +8791,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             );
           })}
           <p className="text-[12.5px] mt-1" style={{ color: C.faint }}>
-            Full body means every session covers a lower-body lift, a press and a pull, with the
-            variations rotating week to week. On a small number of training days it trains everything
-            often enough to matter — which a split can't.
+            Pick the one you like training. You can change it on the next screen once your plan is built.
           </p>
         </div>
       );
@@ -8988,8 +8992,11 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
 // home screen and has to go looking for what those answers did. This closes
 // the loop - here is what you told us, here is what is left of your week -
 // and then gets out of the way.
-function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart }) {
+function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart, onChangeSplit = null }) {
   const rows = planReadySummary(intake, splitStyle);
+  const current = SPLIT_STYLES.some(x => x.key === splitStyle) ? splitStyle : deriveSplit((intake?.trainingDays || []).filter(Boolean));
+  const [picking, setPicking] = useState(false);
+  const [pick, setPick] = useState(current);
   const todayName = WEEKDAY_ORDER[(new Date().getDay() + 6) % 7];
   const thisWeek = planReadyWeek(days, todayName);
   const total = (days || []).length;
@@ -9018,9 +9025,44 @@ function PlanReadyScreen({ intake, splitStyle, days, programName, weeks, onStart
               style={i === 0 ? undefined : { borderTop: `1px solid ${C.border}` }}>
               <div className="text-[12.5px] shrink-0" style={{ color: C.sub, width: 104 }}>{r.label}</div>
               <div className="text-[14px] flex-1" style={{ color: C.text }}>{r.value}</div>
+              {r.label === "Week split" && onChangeSplit && !picking && (
+                <button type="button" onClick={() => { setPick(current); setPicking(true); }}
+                  className="text-[13px] font-semibold shrink-0" style={{ color: C.orange }}>Change</button>
+              )}
             </div>
           ))}
         </div>
+        {/* The split, as a choice (Isaiah, 31 Oct). A different one rebuilds
+            the plan, which takes as long as the first build, so it says so. */}
+        {picking && onChangeSplit && (
+          <div className="rounded-2xl p-4 mt-3" style={card()}>
+            <div className="text-[15px] font-semibold mb-2.5" style={{ color: C.text }}>How do you like to split your week?</div>
+            <div className="grid grid-cols-1 gap-2">
+              {SPLIT_STYLES.map(opt => {
+                const on = pick === opt.key;
+                return (
+                  <button key={opt.key} type="button" onClick={() => setPick(opt.key)}
+                    className="text-left rounded-xl px-3.5 py-3"
+                    style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[15px] font-semibold flex-1" style={{ color: on ? C.orange : C.text }}>{opt.label}</span>
+                      {opt.key === current && <span className="text-[11px] font-semibold" style={{ color: C.sub }}>Your plan now</span>}
+                      {on && <Check size={16} style={{ color: C.orange }} />}
+                    </div>
+                    <div className="text-[12px] mt-0.5" style={{ color: C.sub }}>{opt.hint}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {pick !== current && (
+              <p className="text-[12.5px] mt-3" style={{ color: C.sub }}>Your plan will be rebuilt as {SPLIT_STYLES.find(x => x.key === pick)?.label.toLowerCase()}. That takes 2 to 4 minutes.</p>
+            )}
+            <div className="flex gap-2 mt-3">
+              <Btn variant="secondary" onClick={() => setPicking(false)}>Cancel</Btn>
+              <Btn className="flex-1" disabled={pick === current} onClick={() => onChangeSplit(pick)}>Rebuild my plan</Btn>
+            </div>
+          </div>
+        )}
 
         <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mt-7 mb-1" style={{ color: C.sub }}>
           The rest of this week
@@ -10887,7 +10929,7 @@ function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
   };
 
   return (
-    <Modal open onClose={onClose} title={many ? "Voice Log: whole workout" : `Voice Log: ${title}`}>
+    <Modal open onClose={onClose} title={`Voice Log: ${title}`}>
       {stage === "talk" && (
         <div>
           <p className="text-[13px] mb-3" style={{ color: C.sub }}>
@@ -21465,7 +21507,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
           {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
           {voiceScopeFor(progressItems).length > 1 && (
-            <button type="button" onClick={() => setVoiceScope({ title: day.name, items: voiceScopeFor(progressItems) })}
+            <button type="button" onClick={() => setVoiceScope({ title: "whole workout", items: voiceScopeFor(progressItems) })}
               className="mt-2 inline-flex items-center gap-1.5 text-[12.5px] font-semibold" style={{ color: C.orange }}>
               <Mic size={14} /> Voice Log the whole workout
             </button>
@@ -21999,6 +22041,16 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
             underneath is identical - round N is set index N-1 - so nothing
             about logging, history or "last time" needs to know the
             difference. */}
+        {/* Voice Log for a superset or circuit too (Isaiah, 31 Oct): the
+            single-exercise heading that carries the button is not shown for
+            a grouped block, so it had no way to talk the sets in. */}
+        {block?.grouped && voiceScopeFor(block.items).length > 0 && (
+          <button type="button" onClick={() => setVoiceScope({ title: voiceScopeFor(block.items).map(e => e.name).join(" + "), items: voiceScopeFor(block.items) })}
+            className="mb-4 inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-semibold"
+            style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}66`, color: C.orange }}>
+            <Mic size={15} /> Voice Log
+          </button>
+        )}
         {block?.grouped && (
           <GroupedBlock
             block={block}
@@ -29467,6 +29519,64 @@ function AppInner() {
   }, []);
 
 
+  // Builds the athlete's first program and shows "Your plan is ready". Used at
+  // signup and again when they pick a different week split on that screen.
+  const buildFirstProgram = async (userId, data) => {
+    signupProgress.reset();
+    try {
+      const text = await callAI({
+        messages: [{ role: "user", content: buildAIPrompt(data) }],
+        maxTokens: 32000,
+        onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
+      });
+      const parsed = parseAIJson(text);
+      parsed.days = attachWeekdays(parsed.days, data.trainingDays);
+      const weeks = parsed.weeks || 6;
+      const sport = data["🥊 Sport / Focus"] || "General Fitness";
+      const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days, parsed.rationale || null) : null;
+      if (userId && !dbId) throw new Error("We built your program but couldn't save it. Please try again from the Workout tab.");
+      setState(s => applyGeneratedProgram(parsed, s, data, dbId));
+      // A note left behind from an earlier failed attempt would otherwise
+      // keep showing the athlete an error over a program that now exists.
+      await clearProgramFailure(userId);
+      // Inside the try, after the save: nothing announces a plan that was
+      // not written down.
+      setPlanReady({ intake: data, splitStyle: data.splitStyle, days: parsed.days, programName: parsed.programName, weeks });
+    } catch (err) {
+      // This catch used to be empty. A failed generation dropped the athlete
+      // on a dashboard with no program and no error, staring at a "your
+      // program is being built" message that nothing would ever resolve.
+      // Record the failure so the Program tab can offer a retry.
+      console.error("Program generation failed:", err);
+      const message = err.message || "We couldn't build your program automatically.";
+      setState(s => ({ ...s, programGenerationError: message }));
+      // Written to the profile as well as to state. In memory it lasted
+      // exactly as long as the tab: one athlete's build failed at signup,
+      // and by the time anyone looked there was no program, no error and
+      // no log left to say why.
+      await recordProgramFailure(userId, message);
+    }
+  };
+
+  // "Your plan is ready" with a different week split (Isaiah, 31 Oct). The
+  // split is saved on their answers first, so the next build, and any later
+  // one, uses it too.
+  const rebuildPlanWithSplit = async (split) => {
+    const prev = planReady;
+    if (!prev || !SPLIT_STYLES.some(x => x.key === split)) return;
+    const userId = state.me?.id || null;
+    const data = { ...prev.intake, splitStyle: split };
+    setPlanReady(null);
+    setGeneratingProgram(true);
+    const intake = { ...(state.me?.intake || {}), splitStyle: split };
+    setState(s => ({ ...s, me: { ...s.me, intake } }));
+    if (userId) {
+      try { await supabase.from("profiles").update({ intake }).eq("id", userId); } catch { /* the program still builds with it */ }
+    }
+    await buildFirstProgram(userId, data);
+    setGeneratingProgram(false);
+  };
+
   // Signup is two phases because email confirmation may sit between them:
   // create the auth account, then (once a session exists) write the profile.
   const handleOnboardComplete = async (role, data) => {
@@ -29597,40 +29707,7 @@ function AppInner() {
         }
 
         setGeneratingProgram(true);
-        signupProgress.reset();
-        try {
-          const text = await callAI({
-            messages: [{ role: "user", content: buildAIPrompt(data) }],
-            maxTokens: 32000,
-            onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
-          });
-          const parsed = parseAIJson(text);
-          parsed.days = attachWeekdays(parsed.days, data.trainingDays);
-          const weeks = parsed.weeks || 6;
-          const sport = data["🥊 Sport / Focus"] || "General Fitness";
-          const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days, parsed.rationale || null) : null;
-          if (userId && !dbId) throw new Error("We built your program but couldn't save it. Please try again from the Workout tab.");
-          setState(s => applyGeneratedProgram(parsed, s, data, dbId));
-          // A note left behind from an earlier failed attempt would otherwise
-          // keep showing the athlete an error over a program that now exists.
-          await clearProgramFailure(userId);
-          // Inside the try, after the save: nothing announces a plan that was
-          // not written down.
-          setPlanReady({ intake: data, splitStyle: data.splitStyle, days: parsed.days, programName: parsed.programName, weeks });
-        } catch (err) {
-          // This catch used to be empty. A failed generation dropped the athlete
-          // on a dashboard with no program and no error, staring at a "your
-          // program is being built" message that nothing would ever resolve.
-          // Record the failure so the Program tab can offer a retry.
-          console.error("Program generation failed:", err);
-          const message = err.message || "We couldn't build your program automatically.";
-          setState(s => ({ ...s, programGenerationError: message }));
-          // Written to the profile as well as to state. In memory it lasted
-          // exactly as long as the tab: one athlete's build failed at signup,
-          // and by the time anyone looked there was no program, no error and
-          // no log left to say why.
-          await recordProgramFailure(userId, message);
-        }
+        await buildFirstProgram(userId, data);
         setGeneratingProgram(false);
         setView("athlete-dashboard");
       } else {
@@ -29862,7 +29939,7 @@ function AppInner() {
   if (planReady) {
     return (
       <div style={{ fontFamily: "DM Sans, system-ui, sans-serif" }}>
-        <PlanReadyScreen {...planReady} onStart={() => setPlanReady(null)} />
+        <PlanReadyScreen {...planReady} onStart={() => setPlanReady(null)} onChangeSplit={rebuildPlanWithSplit} />
       </div>
     );
   }

@@ -93,7 +93,7 @@ test("the split shown is the one the programme was built on", () => {
   assert.equal(valueOf(planReadySummary({ ...intake, trainingDays: five }), "Week split"),
     "Upper / lower");
   assert.equal(valueOf(planReadySummary(intake), "Week split"),
-    "Full body every session");
+    "Full body");
   // An explicit choice wins here too, the same as everywhere else.
   assert.equal(valueOf(planReadySummary({ ...intake, trainingDays: five }, "push_pull_legs"), "Week split"),
     "Push / pull / legs");
