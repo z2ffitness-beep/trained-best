@@ -6189,7 +6189,26 @@ function HeightDial({ unit, valueCm, onChange }) {
 // to be worth listing. Nobody has the old value stored, so this renames
 // cleanly - but anything added here later must stay a value the generator can
 // read, because it goes into the prompt verbatim.
-const SPORTS = ["General Fitness", "Other", "MMA"];
+// Main focus (Isaiah, 30 Oct): General Fitness or a Sport, each with its own
+// list. What is stored under "🥊 Sport / Focus" is the most specific answer
+// ("Powerlifting", "Soccer"), because the generator reads it verbatim, and
+// "General Fitness" when no style is picked. "focusType" remembers which of
+// the two was chosen while the sport itself is still being picked.
+const FOCUS_GENERAL = ["Bodybuilding", "Powerlifting", "HYROX", "Calisthenics"];
+const SPORTS = ["Soccer", "Basketball", "Football", "Track and Field", "Combat Sports", "Other"];
+
+// The fighter questions and the fight camp apply to combat sports. "MMA" is
+// what everyone who signed up before 30 Oct has stored.
+function isCombatFocus(v) {
+  return v === "Combat Sports" || v === "MMA";
+}
+
+function focusTypeOf(data) {
+  if (data?.focusType === "general" || data?.focusType === "sport") return data.focusType;
+  const v = data?.["🥊 Sport / Focus"];
+  if (!v) return null;
+  return v === "General Fitness" || FOCUS_GENERAL.includes(v) ? "general" : "sport";
+}
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 // Head to toe, so someone scanning for their own complaint finds it where they
 // expect. Neck, thigh/hamstring and shin were missing entirely: a fighter with
@@ -7358,7 +7377,7 @@ const SIGNUP_KEYS = {
   // Sport lives here too. It has no screen of its own in the design and it
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
-  goal: ["goals", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "fightDate"],
+  goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
@@ -7416,10 +7435,10 @@ const SIGNUP_V2_SECTIONS = {
   ],
   "🎯 Your Goal": [
     { step: "🎯 Goals", label: "What you want" },
-    { step: "🥊 Sport / Focus", label: "Sport or focus" },
+    { step: "🥊 Sport / Focus", label: "Main focus" },
     // Was a screen of its own that was skipped for everyone but fighters.
     // Inline and conditional says the same thing without the empty step.
-    { step: "🥋 Sport Details", label: "Your fighting", when: d => d["🥊 Sport / Focus"] === "MMA" },
+    { step: "🥋 Sport Details", label: "Your fighting", when: d => isCombatFocus(d["🥊 Sport / Focus"]) },
     { step: "💪 Training Experience", label: "How long you have trained" },
   ],
   "📅 Your Week": [
@@ -7447,6 +7466,13 @@ const SIGNUP_V2 = true;
 // screen is complete when every section on it is - including, exactly, the
 // sections that are actually showing, so a non-fighter is never held on
 // "🎯 Your Goal" by a question they were never asked.
+// General Fitness can stand on its own; a Sport needs the sport.
+function focusComplete(data) {
+  const v = data?.["🥊 Sport / Focus"];
+  if (!v) return false;
+  return focusTypeOf(data) === "sport" ? (SPORTS.includes(v) || v === "MMA") : true;
+}
+
 function stepComplete(stepName, data, role) {
   const sections = SIGNUP_V2_SECTIONS[stepName];
   if (sections) {
@@ -7479,7 +7505,7 @@ function stepComplete(stepName, data, role) {
     // signup believing they'd joined a roster they were never linked to.
     case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
     case "🧬 Sex": return !!data.sex;
-    case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+    case "🥊 Sport / Focus": return focusComplete(data);
     case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
     case "🎯 Goals": return (data.goals || []).length > 0;
     // An area picked with no side is a half-answered question, so Continue
@@ -7634,7 +7660,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // skip "🥋 Sport Details" if not MMA (no fighter-specific follow-up needed)
   const shouldSkip = (name) => {
     if (role !== "athlete" && role !== "athlete_coached") return false;
-    if (name === "🥋 Sport Details" && (data["🥊 Sport / Focus"] !== "MMA" || data["🥊 Sport / Focus"] === "New to training (weightlifting focus)")) return true;
+    if (name === "🥋 Sport Details" && !isCombatFocus(data["🥊 Sport / Focus"])) return true;
     return false;
   };
 
@@ -8390,15 +8416,41 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       );
     }
     case "🥊 Sport / Focus": {
+      const type = focusTypeOf(data);
+      const value = data["🥊 Sport / Focus"];
+      const pickType = (t) => {
+        if (t === type) return;
+        setData(d => ({ ...d, focusType: t, "🥊 Sport / Focus": t === "general" ? "General Fitness" : null,
+          ...(t === "general" ? { isFighter: undefined, fightDate: null } : {}) }));
+      };
+      const choice = (t, label) => (
+        <button key={t} onClick={() => pickType(t)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
+          style={{ background: type === t ? `${C.orange}18` : C.panel, border: `1px solid ${type === t ? C.orange : C.border}` }}>
+          <span style={{ color: type === t ? C.orange : C.text, fontWeight: type === t ? 600 : 400 }}>{label}</span>
+          {type === t && <Check size={16} style={{ color: C.orange }} />}
+        </button>
+      );
       return (
         <div className="grid grid-cols-1 gap-2.5">
-          {SPORTS.map(opt => (
-            <button key={opt} onClick={() => set("🥊 Sport / Focus", opt)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
-              style={{ background: data["🥊 Sport / Focus"] === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data["🥊 Sport / Focus"] === opt ? C.orange : C.border}` }}>
-              <span style={{ color: data["🥊 Sport / Focus"] === opt ? C.orange : C.text, fontWeight: data["🥊 Sport / Focus"] === opt ? 600 : 400 }}>{opt}</span>
-              {data["🥊 Sport / Focus"] === opt && <Check size={16} style={{ color: C.orange }} />}
-            </button>
-          ))}
+          {choice("general", "General Fitness")}
+          {type === "general" && (
+            <select aria-label="Type of training" style={inputStyle}
+              value={FOCUS_GENERAL.includes(value) ? value : ""}
+              onChange={e => set("🥊 Sport / Focus", e.target.value || "General Fitness")}>
+              <option value="">General fitness (optional: pick a style)</option>
+              {FOCUS_GENERAL.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
+          {choice("sport", "Sport")}
+          {type === "sport" && (
+            <select aria-label="Your sport" style={inputStyle}
+              value={SPORTS.includes(value) ? value : value === "MMA" ? "Combat Sports" : ""}
+              onChange={e => setData(d => ({ ...d, "🥊 Sport / Focus": e.target.value || null,
+                ...(isCombatFocus(e.target.value) ? {} : { isFighter: undefined, fightDate: null }) }))}>
+              <option value="">Pick your sport</option>
+              {SPORTS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
         </div>
       );
     }
@@ -11210,7 +11262,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const [error, setError] = useState(null);
 
   // Same rule as signup: the fighter follow-up only makes sense for fighters.
-  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || data["🥊 Sport / Focus"] === "MMA");
+  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || isCombatFocus(data["🥊 Sport / Focus"]));
   const stepName = steps[step];
   const isLast = step === steps.length - 1;
 
@@ -11218,7 +11270,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
     switch (stepName) {
       case "💪 Training Experience": return !!data.experience;
       case "🧬 Sex": return !!data.sex;
-      case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+      case "🥊 Sport / Focus": return focusComplete(data);
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
       case "🎯 Goals": return (data.goals || []).length > 0;
       case "🎂 Birthday": return isUsableBirthday(data.birthday);

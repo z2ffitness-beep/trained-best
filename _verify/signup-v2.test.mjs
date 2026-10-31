@@ -40,6 +40,9 @@ const {
   { name: "EMAIL_RE", kind: "const" },
   { name: "looksLikeEmail", kind: "const" },
   "accountStepProblems", "accountStepValid", "emailTaken",
+  { name: "FOCUS_GENERAL", kind: "const" },
+  { name: "SPORTS", kind: "const" },
+  "isCombatFocus", "focusTypeOf", "focusComplete",
   { name: "INJURY_MIDLINE", kind: "const" },
   { name: "injuryNeedsSide", kind: "const" },
   "injuryDetailFor", "injurySidesMissing", "injurySidesAnswered",
@@ -406,6 +409,21 @@ test("'What is in the way, and by when' is gone, and the fight date is not lost 
   assert.ok(stepComplete("🎯 Your Goal", { ...athlete, "🥊 Sport / Focus": "MMA", isFighter: true }, "athlete"),
     "a fighter is held on the goal screen for a date they do not have yet");
   assert.ok(/Next fight date \(optional\)/.test(src), "fighters can no longer give a fight date");
+});
+
+test("main focus: General Fitness or a Sport, and a sport has to be picked", () => {
+  const base = { ...athlete };
+  delete base["🥊 Sport / Focus"];
+  const goal = "🎯 Your Goal";
+  assert.ok(stepComplete(goal, { ...base, focusType: "general", "🥊 Sport / Focus": "General Fitness" }, "athlete"));
+  assert.ok(stepComplete(goal, { ...base, focusType: "general", "🥊 Sport / Focus": "HYROX" }, "athlete"));
+  assert.equal(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": null }, "athlete"), false,
+    "Sport can be left without saying which sport");
+  assert.ok(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Soccer" }, "athlete"));
+  // Combat sports still get the fighter question; so does everyone already stored as MMA.
+  assert.equal(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Combat Sports" }, "athlete"), false);
+  assert.ok(stepComplete(goal, { ...base, "🥊 Sport / Focus": "Combat Sports", isFighter: false }, "athlete"));
+  assert.ok(/label: "Main focus"/.test(src), "the question is not called Main focus");
 });
 
 test("an email that already has an account blocks the account screen, and says so", () => {
