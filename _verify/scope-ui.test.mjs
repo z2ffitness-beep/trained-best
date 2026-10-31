@@ -92,11 +92,17 @@ test("a one-block program is not asked a question with one answer", () => {
 
 // ---------- wiring on the coach's editor ----------
 
-test("the coach editor has a block strip at last", () => {
-  const body = bodyOf("function CoachAthleteDetail(");
-  assert.ok(/setEditBlockStart\(b\.startWeek\)/.test(body),
-    "without this there is no week on screen and every edit is necessarily global");
-  assert.ok(/coachPlan\.blocks\.length > 1 && \(/.test(body), "and it hides itself when there is one block");
+test("a coach changing the board picks any days and any weeks", () => {
+  // 30 Oct: by hand, with full flexibility. A change starts on the day and
+  // week being looked at, so it is never global by accident.
+  const ed = bodyOf("function BoardExerciseEditor(");
+  assert.match(ed, /setWeeksPicked\(target\?\.week \? \[target\.week\] : \[\]\)/);
+  assert.match(ed, /setDaysPicked\(target\?\.day\?\.id \? \[target\.day\.id\] : \[\]\)/);
+  assert.match(ed, /op: "update_exercises", exercises: ids/);
+  assert.match(ed, /if \(swapTo\) changed\.name = swapTo;/);
+  const add = bodyOf("function BoardAddExercise(");
+  assert.match(add, /op: "add_exercise", days: daysPicked/);
+  assert.match(bodyOf("function useBoardRunner("), /applyAdjustOps\(program, ops/);
 });
 
 test("the coach's plan honours authored blocks and the fight taper", () => {
@@ -155,17 +161,6 @@ test("no resolved day ever reaches a save", () => {
   }
   assert.deepEqual(offenders, [],
     "a resolved single-week day was handed straight to a save path");
-});
-
-test("the coach editor renders the resolved day but saves the stored one", () => {
-  const body = bodyOf("function CoachAthleteDetail(");
-  assert.ok(/buildSessionBlocks\(sortedExercises\(dayForEdit\(day\)\)\)/.test(body),
-    "the screen must show what that block actually prescribes");
-  // ensureCustom deep-clones `program` — the stored one — and saves its days.
-  const ec = body.slice(body.indexOf("const ensureCustom ="), body.indexOf("const ensureCustom =") + 420);
-  assert.ok(/JSON\.parse\(JSON\.stringify\(program\)\)/.test(ec),
-    "the save must start from the stored program, never from a resolved copy");
-  assert.ok(!/dayForEdit/.test(ec));
 });
 
 test("dayForEdit is documented as display-only", () => {

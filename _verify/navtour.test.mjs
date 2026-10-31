@@ -88,13 +88,15 @@ test("the My Workout tab opens today's session, or says there is none", () => {
   const at = src.indexOf("function MyWorkoutTab");
   assert.ok(at > 0, "the My Workout tab is gone");
   const body = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/isDayScheduledOn\(d, todayIso\)/.test(body), "nothing works out which session is today");
+  // 28 Oct: today's session can also be one pulled forward from a later day.
+  assert.ok(/sessionForToday\(myProgram, moves, state\.workoutLogs, todayIso\)/.test(body), "nothing works out which session is today");
   assert.ok(/<Workout [^>]*dayId=\{today\.id\}/.test(body), "My Workout does not open today's session");
   assert.ok(/No workout today/.test(body), "a rest day has no message");
   // 27 Oct: a workout already logged today is not reopened.
   assert.ok(/You're done for today/.test(body), "a finished day has no message");
   assert.ok(/today && !done/.test(body), "a finished workout would open again");
-  assert.ok(/onExit=\{\(\) => setDone\(true\)\}/.test(body), "Done on the summary does not lead to the done state");
+  assert.ok(/const exit = \(\) => \{ setEarlyDayId\(null\); setDone\(true\); \};/.test(body) && /onExit=\{exit\}/.test(body),
+    "Done on the summary does not lead to the done state");
   assert.ok(!/Back to My Program/.test(src), "the summary still points at a screen that no longer exists");
   assert.ok(/"athlete-program": <MyWorkoutTab /.test(src), "the tab does not route to My Workout");
   assert.ok(!/function ProgramWorkoutTabs/.test(src), "the My Program | My Workout switch is back");
@@ -253,9 +255,15 @@ test("Today's Workout is the first thing under the greeting", () => {
   // from the comment instead of from the markup.
   const body = dashboard();
   const session = body.indexOf(">Today's Workout</div>");
-  const stats = body.indexOf('label="Workouts"');
+  const stats = body.indexOf('label="Streak"');
   assert.ok(session > 0, "the session panel is gone");
   assert.ok(stats > session, "the stat tiles come before the session");
+});
+
+test("Home has no Workouts count and no check-in rings (Isaiah, 30 Oct)", () => {
+  const body = dashboard();
+  assert.ok(!/label="Workouts"/.test(body), "the Workouts count is back on Home");
+  assert.ok(!/CheckinRings/.test(src), "the Today's check-in rings are back");
 });
 
 test("no check-in step on Home, and no Start Workout once today is logged", () => {

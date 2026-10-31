@@ -95,10 +95,10 @@ test("the tab bar is rendered, and is driven by the list", () => {
 
 const SECTIONS = {
   // needle in the source            -> the tab it belongs behind
-  "Client Goals": "overview",
+  "Client Details": "overview",
   "Weekly accountability tracker": "overview",
   '<ChalkDivider label="End Coaching" />': "overview",
-  '<ChalkDivider label="Assigned Program — Edit" />': "program",
+  "Delete this program": "program",
   '<ChalkDivider label="Progress History" />': "progress",
   "<CheckinSummaryPanel": "progress",
   '<ChalkDivider label="Recent Sessions" />': "notes",
@@ -118,9 +118,9 @@ test("ending the coaching is not beside the programme editor", () => {
   // anything routine. Splitting into tabs could easily have dropped it next
   // to the editor's own delete button, which is a different destructive
   // action about a different thing.
-  assert.ok(inTab("overview", "Take {athlete.name.split(\" \")[0]} off my roster"),
+  assert.ok(inTab("overview", "Take {athlete.name.split(\" \")[0]} off my client list"),
     "removing an athlete is not on the overview");
-  assert.ok(!inTab("program", "off my roster"),
+  assert.ok(!inTab("program", "off my client list"),
     "removing the athlete sits on the programme tab, beside deleting their programme");
 });
 

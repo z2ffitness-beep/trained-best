@@ -204,22 +204,17 @@ test("swap and send-to-coach sit on one row", () => {
     "send-to-coach is no longer beside swap");
 });
 
-test("the selected weekday is a ring, not a filled block", () => {
+test("the weekday picker is a list of the week that says what is on each day", () => {
+  // Isaiah, 31 Oct: the lettered squares with dots under them were hard to read.
   const at = src.indexOf("function DayWeekdayPicker");
   const fn = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(!/background: isActive \? activeColor :/.test(fn),
-    "the solid fill is back");
-  assert.ok(/boxShadow: isActive \? `inset 0 0 0 1px \$\{activeColor\}`/.test(fn),
-    "selection has to stay visible once the fill is gone");
-  assert.ok(!/color: isActive \? "#fff"/.test(fn),
-    "white text only works on a solid fill");
-});
-
-test("the ring does not move the squares when selection changes", () => {
-  const at = src.indexOf("function DayWeekdayPicker");
-  const fn = src.slice(at, src.indexOf("\n}\n", at));
-  assert.ok(/border: `1px solid \$\{isActive \?/.test(fn),
-    "a thicker border on the selected square would shift the whole row by a pixel");
+  assert.ok(/WEEKDAY_ORDER\.map/.test(fn), "not one row per weekday");
+  assert.ok(/"Free"/.test(fn), "free days are not labelled");
+  assert.ok(/\(this one\)/.test(fn), "the session being edited is not marked");
+  assert.ok(/>Swap</.test(fn), "a day with a session does not say tapping it swaps");
+  assert.ok(!/Dotted days/.test(src), "the old dotted-days hint is still there");
+  assert.ok(/onClick=\{\(\) => !isActive && onChange\(day\)\}/.test(fn),
+    "tapping the current day must not clear it");
 });
 
 for (const [name, fn] of tests) {

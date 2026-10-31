@@ -70,8 +70,7 @@ Next session card with date) is pushed, NOT merged yet.
   Background/Specialties/Style removed. #19 delete account removes the
   user's storage files (form-checks, message-media, progress-photos,
   coach-logos) before the RPC. Migration 010 (delete notices about the user
-  from the coach's list) written; Isaiah approved, first apply attempt timed
-  out on the approval prompt, NOT applied yet. Deletion email waits on an
+  from the coach's list) APPLIED 28 Oct (approved by Isaiah). Deletion email waits on an
   email provider (suggested Resend; Isaiah to supply the key).
 - Branch `simplify-batch-4` (28 Oct): #8 upload your own rest sound in
   Settings. Kept on the phone (IndexedDB), checked before saving, cut off at
@@ -85,8 +84,18 @@ Next session card with date) is pushed, NOT merged yet.
   weeks) with Undo of the newest change. A program the app progresses
   itself is written out first so untouched weeks keep their numbers.
   Exercise `note` field added (board + workout). Migration 011 (programs.
-  phases column + program_ai_messages table with RLS) written, NOT applied;
-  needs Isaiah's approval. Tests: _verify/adjust-ai.test.mjs.
+  phases column + program_ai_messages table with RLS) APPLIED 28 Oct
+  (approved by Isaiah). Tests: _verify/adjust-ai.test.mjs.
+- Branch `coach-session-reply` (off batch 5, 28-29 Oct): coach reply on a
+  logged session + fix weight/reps (RPC coach_update_session, migration
+  012); coach edits client goals/injuries/days/body (RPC
+  coach_update_athlete, 014); notification kind check widened (013, it was
+  blocking 009's 7 AM notices and 012's replies); do a future workout today
+  (My Workout + Week calendar, a "pull" move; calendar now shows moves);
+  branding: coach colour is the app accent (made readable), any colour,
+  brand shows with logo alone, phone remembers brand for sign-in/welcome,
+  tab title, home-screen icon and name. Migrations 012, 013, 014 APPLIED
+  (approved by Isaiah).
 - Still open: #20 hidden features, Isaiah to pick the order.
 ### Adjust with AI (Isaiah, 27 Oct): REQUIRED, high priority
 A coach can change ANYTHING in a client's program, en masse, by typing it in

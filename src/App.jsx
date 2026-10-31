@@ -8,7 +8,7 @@ import {
   ChevronUp, Star, CheckCircle2, Circle, Edit3, Trash2, Sparkles, Bot, RefreshCw,
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
-  Moon, Leaf, Heart, Phone, Minus, Printer
+  Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -454,7 +454,9 @@ const FEATURES = {
   // it is backed by real tables and a locking RPC rather than a stub. Taking
   // card payment for a pack is the next step; the ledger works without it.
   booking: true,
-  programTemplates: false, // the coach's reusable template library + bulk assign
+  // On (Isaiah, 30 Oct): save a program once, give it to several clients, or
+  // copy one client's program to another.
+  programTemplates: true,  // the coach's reusable template library + bulk assign
   athleteGroups: false,    // splitting the roster into named groups
   exerciseLibrary: false,  // the standalone browse-all-exercises screen
   aiAssistant: true,       // the AI chat tab that sits beside the coach thread
@@ -551,7 +553,85 @@ const HERO = {
 };
 
 // The soft glow behind primary buttons and the "today" marker, both themes.
-const GLOW = "rgba(46,134,255,.35)";
+// `let` because a coach's brand colour replaces it (see setBrandAccent).
+let GLOW = "rgba(46,134,255,.35)";
+
+// ---------- the coach's colour across the whole app ----------
+//
+// Isaiah, 28 Oct: the app should look like the coach's or gym's own. Their
+// brand colour becomes the app's accent (buttons, highlights, today's
+// marker) for them and for every client on their roster. Any colour can be
+// picked, so it is nudged lighter or darker until white text on it and the
+// colour itself on the page are both readable, in light and dark mode.
+const GLOW_DEFAULT = GLOW;
+const HERO_DEFAULTS = { ...HERO };
+let brandAccentHex = null;
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex([r, g, b]) {
+  return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+function relativeLuminance(rgb) {
+  const [r, g, b] = rgb.map(v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function mixRgb(a, b, t) { return a.map((v, i) => v + (b[i] - v) * t); }
+function rgbaOf(hex, alpha) { const c = hexToRgb(hex) || [46, 134, 255]; return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`; }
+
+// White text on it needs luminance at most 0.30 (3:1). On a dark page it also
+// needs at least 0.118 to stand out (3:1 against the navy). A colour outside
+// that is blended toward black or white, keeping its hue, until it fits.
+function readableAccent(hex, theme) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+  const max = 0.30;
+  const min = theme === "dark" ? 0.118 : 0;
+  let L = relativeLuminance(rgb);
+  if (L > max) {
+    for (let t = 0.05; t <= 1; t += 0.05) {
+      const c = mixRgb(rgb, [0, 0, 0], t);
+      if (relativeLuminance(c) <= max) return rgbToHex(c);
+    }
+  }
+  if (L < min) {
+    for (let t = 0.05; t <= 1; t += 0.05) {
+      const c = mixRgb(rgb, [255, 255, 255], t);
+      if (relativeLuminance(c) >= min) return rgbToHex(c);
+    }
+  }
+  return rgbToHex(rgb);
+}
+
+// Applies (or, with null, removes) the brand colour and repaints.
+function setBrandAccent(hex) {
+  const next = hexToRgb(hex) ? String(hex).toUpperCase() : null;
+  if (next === brandAccentHex) return;
+  brandAccentHex = next;
+  applyTheme(storedTheme());
+  themeWatchers.forEach(fn => { try { fn(); } catch { /* unmounted */ } });
+}
+
+// The brand this phone last showed, so the sign-in screen can show it too:
+// a client opening their coach's app sees their coach's logo before they have
+// typed a password. Public information only (name, logo, colour).
+const LAST_BRAND_KEY = "tb_last_brand";
+function rememberedBrand() {
+  try {
+    const b = JSON.parse(localStorage.getItem(LAST_BRAND_KEY) || "null");
+    return b && b.name ? b : null;
+  } catch { return null; }
+}
+function rememberBrand(brand) {
+  try {
+    if (brand && brand.name) localStorage.setItem(LAST_BRAND_KEY, JSON.stringify({ name: brand.name, logoUrl: brand.logoUrl || null, color: brand.color || null, initials: brand.initials || null }));
+    else localStorage.removeItem(LAST_BRAND_KEY);
+  } catch { /* storage blocked */ }
+}
 
 const THEME_KEY = "trainedbest:theme";
 
@@ -607,6 +687,27 @@ const card = (extra = {}) => ({
 function applyTheme(mode) {
   const resolved = resolveTheme(mode);
   Object.assign(C, resolved === "light" ? LIGHT_PALETTE : DARK_PALETTE);
+  Object.assign(HERO, HERO_DEFAULTS);
+  GLOW = GLOW_DEFAULT;
+  if (brandAccentHex) {
+    const a = readableAccent(brandAccentHex, resolved);
+    const aRgb = hexToRgb(a);
+    C.orange = a;
+    C.gradTo = a;
+    C.gradFrom = rgbToHex(mixRgb(aRgb, [255, 255, 255], 0.18));
+    // The second accent (links, dates, small highlights) follows it too, or
+    // half the app stays the default blue. Lighter on dark, where it is text
+    // on navy.
+    C.blue = resolved === "dark"
+      ? rgbToHex(mixRgb(hexToRgb(readableAccent(brandAccentHex, "dark")), [255, 255, 255], 0.3))
+      : a;
+    GLOW = rgbaOf(a, 0.35);
+    // The navy feature panels are dark in both themes.
+    const h = readableAccent(brandAccentHex, "dark");
+    HERO.accent = h;
+    HERO.accentText = rgbToHex(mixRgb(hexToRgb(h), [255, 255, 255], 0.3));
+    HERO.glow = `radial-gradient(circle at 85% 0%, ${rgbaOf(h, 0.55)}, transparent 55%)`;
+  }
   // The page behind the app is painted by index.css, which can't see `C`. Both
   // are set so there's no dark gutter under a short page or behind the
   // rubber-band overscroll on iOS.
@@ -620,7 +721,9 @@ function applyTheme(mode) {
   return resolved;
 }
 
-// Applied at module load, before React mounts.
+// Applied at module load, before React mounts. The colour of the brand this
+// phone last showed comes first, so the sign-in screen is already theirs.
+brandAccentHex = hexToRgb(rememberedBrand()?.color) ? String(rememberedBrand().color).toUpperCase() : null;
 applyTheme(storedTheme());
 
 // System mode has to follow the device while the app is OPEN, not only at
@@ -646,6 +749,45 @@ try {
     themeWatchers.forEach(fn => { try { fn(); } catch { /* a subscriber that unmounted mid-flight */ } });
   });
 } catch { /* no matchMedia, or no addEventListener on it */ }
+
+// ---------- the coach's join link ----------
+//
+// Isaiah, 29 Oct: a new client should see their coach's logo on the very
+// first screen, before they have an account. The phone can't know whose
+// client someone is until they say, so the coach shares a link with their
+// invite code in it (…/?join=ABC123). Opening it looks the coach up, shows
+// their logo, name and colour on the welcome and sign-in screens, and fills
+// the code in for them when they choose "I have a coach".
+const JOIN_CODE_KEY = "tb_join_code";
+function joinCodeFromLink() {
+  try { return localStorage.getItem(JOIN_CODE_KEY) || null; } catch { return null; }
+}
+(function readJoinLink() {
+  try {
+    const raw = new URLSearchParams(window.location.search).get("join");
+    const code = (raw || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return;
+    localStorage.setItem(JOIN_CODE_KEY, code);
+    // Someone already signed in keeps their own coach's brand; the link is
+    // for the first screens only.
+    supabase.auth.getSession().then(({ data: auth }) => auth?.session ? null : supabase.rpc("coach_by_invite_code", { p_code: code })).then((res) => {
+      if (!res) return;
+      const { data } = res;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) return;
+      rememberBrand({
+        name: row.business_name || row.name || "Your coach",
+        logoUrl: coachLogoUrl(row.logo_path),
+        color: row.brand_color || null,
+        initials: row.avatar || null,
+      });
+      brandAccentHex = hexToRgb(row.brand_color) ? String(row.brand_color).toUpperCase() : null;
+      applyTheme(storedTheme());
+      // Repaint even when the colour didn't change: the logo and name did.
+      themeWatchers.forEach(fn => { try { fn(); } catch { /* unmounted */ } });
+    }, () => { /* offline: the code is still kept for signup */ });
+  } catch { /* no window, or storage blocked */ }
+})();
 
 // ---------- phase ordering (the canonical workout structure) ----------
 const PHASES = [
@@ -2174,11 +2316,39 @@ const SET_SECONDS = { warmup: 30, power: 20, strength: 45, accessory: 40, condit
 // gives the movement; anything unrecognised stays reps and weight.
 const TIME_PHASES = new Set(["aerobic", "zone2", "steady_state"]);
 const INTERVAL_PHASES = new Set(["lactic", "intervals", "interval", "hiit", "alactic", "anaerobic"]);
+// Isaiah, 29 Oct: not everything is pounds. Past the phase, the prescription
+// itself says what to measure, by the unit on its FIRST number:
+//   "15 min" -> time (minutes)       "30-45 sec/side", "30s" -> hold (seconds)
+//   "20 m/side", "10 m @ 80%" -> distance (metres, with an optional weight
+//   for a loaded carry or sled)
+// "8/side, 2-sec hold" and "3 x 3-5 sec" start with a rep count, so they stay
+// reps and weight.
+const LEAD_NUMBER = String.raw`^\s*~?\s*\d+(?:\.\d+)?(?:\s*[\u2013\u2014-]\s*\d+(?:\.\d+)?)?\s*\+?\s*`;
+const LEAD_MINUTES = new RegExp(LEAD_NUMBER + String.raw`(?:min|mins|minutes?)\b`, "i");
+const LEAD_SECONDS = new RegExp(LEAD_NUMBER + String.raw`(?:s|sec|secs|seconds?)\b`, "i");
+const LEAD_DISTANCE = new RegExp(LEAD_NUMBER + String.raw`(?:m|meters?|metres?|yd|yds|yards?|km|mi|miles?)\b`, "i");
 function metricModeFor(item) {
   const p = String(item?.phase || "").toLowerCase();
+  const rx = String(item?.reps ?? "");
   if (TIME_PHASES.has(p)) return "time";
-  if (INTERVAL_PHASES.has(p)) return "intervals";
+  // A sled push or hill sprint "20 m" is distance even inside conditioning.
+  if (INTERVAL_PHASES.has(p)) return LEAD_DISTANCE.test(rx) ? "distance" : "intervals";
+  if (LEAD_MINUTES.test(rx)) return "time";
+  if (LEAD_SECONDS.test(rx)) return "hold";
+  if (LEAD_DISTANCE.test(rx)) return "distance";
   return "load";
+}
+// The first distance in a prescription, in metres. "20 m/side" -> 20,
+// "25 yd" -> 23, "1 km" -> 1000.
+function prescribedMeters(text) {
+  const m = /(\d+(?:\.\d+)?)\s*(?:[\u2013\u2014-]\s*\d+(?:\.\d+)?\s*)?(m|meters?|metres?|yd|yds|yards?|km|mi|miles?)\b/i.exec(String(text || ""));
+  if (!m) return null;
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  if (u.startsWith("y")) return Math.round(n * 0.9144);
+  if (u === "km") return n * 1000;
+  if (u === "mi" || u.startsWith("mile")) return Math.round(n * 1609);
+  return n;
 }
 
 // The first number in a prescription, read as minutes or seconds.
@@ -3846,6 +4016,10 @@ function describeNotification(n) {
   if (n?.kind === "sessions_today") {
     return { title: n.title, detail: n.body || "Open the Dashboard to see who", accent: C.orange, icon: Calendar };
   }
+  // A coach's reply on a logged session, or a number they corrected (012).
+  if (n?.kind === "session_note") {
+    return { title: n.title, detail: n.body || "", accent: C.blue, icon: MessageCircle };
+  }
   if (n?.kind === "program_changed") {
     const d = n.data || {};
     // The summary when a caller knew what changed, the program's name when it
@@ -5508,27 +5682,6 @@ function ChalkDivider({ label }) {
 // Label on top with its icon, then the number. The old layout put a big icon
 // tile beside the value, which read as decoration; the label says what the
 // number is, so it belongs with it.
-// A progress ring. Used for check-in scores, adherence, the rest timer and
-// session credits - four places that were four different bars before.
-function Ring({ value, max = 5, size = 54, stroke = 5, color, track, children }) {
-  const r = (size - stroke) / 2;
-  const circ = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(1, max ? value / max : 0));
-  return (
-    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
-      <svg width={size} height={size} style={{ display: "block", transform: "rotate(-90deg)" }}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track || C.border} strokeWidth={stroke} />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color || C.olive} strokeWidth={stroke}
-          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)} />
-      </svg>
-      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-                    alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 // The feature panel: a fixed dark-navy slab that stays dark in light mode.
 // Colours come from HERO, never from C, which is what keeps light mode feeling
 // like this design instead of a bleached copy of it.
@@ -5739,49 +5892,6 @@ function DayDot({ label, date, state: st, onClick }) {
   );
 }
 
-// Today's check-in as four rings. The four scales are the ones the app already
-// stores (CHECKIN_SCALES), and the values are read from today's entry if there
-// is one - an empty ring reading "-/5" is an honest "not answered yet", not a
-// zero, which would be a score the athlete never gave.
-function CheckinRings({ progress, onOpen }) {
-  const today = todayISO();
-  const entry = (progress || []).find(p => p.date === today) || null;
-  const icons = { sleepQuality: Moon, energy: Zap, soreness: Leaf, stress: Heart };
-  const short = { sleepQuality: "Sleep", energy: "Energy", soreness: "Recovery", stress: "Stress" };
-  return (
-    <div className="p-4" style={card()}>
-      <div className="flex items-center justify-between mb-4">
-        <div style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 700, letterSpacing: "-.02em", color: C.text }}>Today's Check-in</div>
-        <button onClick={onOpen} style={{ fontSize: 13.5, fontWeight: 700, color: C.blue }}>
-          {entry ? "Update" : "Check in"}
-        </button>
-      </div>
-      <div className="grid grid-cols-4" style={{ gap: 6 }}>
-        {CHECKIN_SCALES.map(scale => {
-          const v = entry ? normalizeScale(entry[scale.key]) : null;
-          const Icon = icons[scale.key] || Heart;
-          // Under 2.5 out of 5 is the threshold the coach's alerts already use,
-          // so the ring turns amber at the same point the coach gets told.
-          const colour = v == null ? C.steel : v <= 2 ? C.amber : C.olive;
-          return (
-            <div key={scale.key} className="flex flex-col items-center text-center" style={{ gap: 4 }}>
-              <Ring value={v || 0} max={CHECKIN_SCALE_MAX} size={54} stroke={4.5} color={colour}>
-                <Icon size={17} style={{ color: v == null ? C.faint : colour }} />
-              </Ring>
-              <b style={{ fontFamily: DISPLAY, fontSize: 16, color: C.text, fontVariantNumeric: "tabular-nums" }}>
-                {v == null ? "\u2013" : v}<small style={{ fontSize: 11, color: C.sub, fontWeight: 500 }}>/{CHECKIN_SCALE_MAX}</small>
-              </b>
-              <span style={{ fontSize: 12, color: C.sub }}>{short[scale.key]}</span>
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-center mt-3" style={{ fontSize: 12.5, color: C.sub }}>
-        Ten seconds. Your coach sees the weekly average.
-      </p>
-    </div>
-  );
-}
 
 function StatCard({ icon: Icon, label, value, sub, accent = C.orange }) {
   return (
@@ -6079,7 +6189,26 @@ function HeightDial({ unit, valueCm, onChange }) {
 // to be worth listing. Nobody has the old value stored, so this renames
 // cleanly - but anything added here later must stay a value the generator can
 // read, because it goes into the prompt verbatim.
-const SPORTS = ["MMA", "General Fitness", "Other"];
+// Main focus (Isaiah, 30 Oct): General Fitness or a Sport, each with its own
+// list. What is stored under "🥊 Sport / Focus" is the most specific answer
+// ("Powerlifting", "Soccer"), because the generator reads it verbatim, and
+// "General Fitness" when no style is picked. "focusType" remembers which of
+// the two was chosen while the sport itself is still being picked.
+const FOCUS_GENERAL = ["Bodybuilding", "Powerlifting", "HYROX", "Calisthenics"];
+const SPORTS = ["Soccer", "Basketball", "Football", "Track and Field", "Combat Sports", "Other"];
+
+// The fighter questions and the fight camp apply to combat sports. "MMA" is
+// what everyone who signed up before 30 Oct has stored.
+function isCombatFocus(v) {
+  return v === "Combat Sports" || v === "MMA";
+}
+
+function focusTypeOf(data) {
+  if (data?.focusType === "general" || data?.focusType === "sport") return data.focusType;
+  const v = data?.["🥊 Sport / Focus"];
+  if (!v) return null;
+  return v === "General Fitness" || FOCUS_GENERAL.includes(v) ? "general" : "sport";
+}
 const GOALS = ["Weight Loss", "Build Muscle", "Strength", "Explosive Training", "Conditioning / Endurance", "Flexibility", "Injury Recovery"];
 // Head to toe, so someone scanning for their own complaint finds it where they
 // expect. Neck, thigh/hamstring and shin were missing entirely: a fighter with
@@ -6926,6 +7055,55 @@ function errText(e) {
   catch { return String(e); }
 }
 
+// Sign in or sign up with Google (Isaiah, 30 Oct; Apple later). Google sends
+// them back here signed in. Someone new has no profile yet, so they land in
+// the signup questions with the account step left out, the same path as a
+// confirmed email. `before` runs first, so signup can keep its answers.
+// Needs Google turned on under Authentication, Providers in Supabase; until
+// then this shows Supabase's reason instead of doing nothing.
+function GoogleButton({ label = "Continue with Google", before }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const go = async () => {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      before?.();
+      const { error: e } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: window.location.origin },
+      });
+      if (e) { setError(/not enabled|unsupported provider/i.test(e.message || "") ? "Google sign in isn't switched on yet." : errText(e)); setBusy(false); }
+    } catch (err) { setError(errText(err)); setBusy(false); }
+  };
+  return (
+    <div>
+      <button type="button" onClick={go} disabled={busy}
+        className="w-full rounded-xl py-3.5 flex items-center justify-center gap-2.5 text-[15px] font-semibold"
+        style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text, opacity: busy ? 0.6 : 1 }}>
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+          <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/>
+          <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+          <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+          <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/>
+        </svg>
+        {busy ? "Opening Google…" : label}
+      </button>
+      {error && <p className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</p>}
+    </div>
+  );
+}
+
+function OrLine() {
+  return (
+    <div className="flex items-center gap-3 my-5">
+      <div className="flex-1 h-px" style={{ background: C.border }} />
+      <span className="text-[12.5px]" style={{ color: C.faint }}>or</span>
+      <div className="flex-1 h-px" style={{ background: C.border }} />
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin, onSwitchToSignup }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -6970,7 +7148,12 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={{ background: C.bg }}>
-      <Dumbbell size={40} style={{ color: C.orange }} />
+      {(() => {
+        const b = rememberedBrand();
+        return b
+          ? <CoachBrandMark name={b.name} logoUrl={b.logoUrl} color={b.color} initials={b.initials} size={56} />
+          : <Dumbbell size={40} style={{ color: C.orange }} />;
+      })()}
       <h1 className="mt-4 text-3xl tracking-tight text-center" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>WELCOME BACK</h1>
 
       <div className="mt-10 w-full max-w-sm">
@@ -6992,6 +7175,9 @@ function LoginScreen({ onLogin, onSwitchToSignup }) {
         <Btn className="w-full mt-2" onClick={submit} disabled={loading || !email || !password}>
           {loading ? "Logging in..." : "Log In"}
         </Btn>
+
+        <OrLine />
+        <GoogleButton />
 
         <button onClick={forgotPassword} disabled={sendingReset}
           className="w-full text-center text-[15px] mt-4" style={{ color: C.sub, opacity: sendingReset ? 0.6 : 1 }}>
@@ -7086,7 +7272,7 @@ const SIGNUP_DRAFT_KEY = "tb_signup_draft";
 
 function saveSignupDraft(role, step, data) {
   try {
-    const { password, confirmPassword, showPassword, signupError, photoUrl, ...keep } = data || {};
+    const { password, confirmPassword, showPassword, signupError, emailTakenFor, photoUrl, ...keep } = data || {};
     localStorage.setItem(SIGNUP_DRAFT_KEY, JSON.stringify({ role, step, data: keep, at: Date.now() }));
   } catch { /* private window, or storage full - the flow still works */ }
 }
@@ -7118,6 +7304,14 @@ function signupNeedsLogin(message) {
   return /already exists|already registered|log(ging)? in instead/i.test(message || "");
 }
 
+// Set by the check on the account screen (migration 015), for the exact
+// email that was found. Typing a different one clears it by not matching.
+// Isaiah, 30 Oct: say so while they are typing the email, not after the
+// last screen.
+function emailTaken(data) {
+  return !!data?.emailTakenFor && data.emailTakenFor === (data?.email || "").trim().toLowerCase();
+}
+
 function accountStepProblems(data) {
   const out = {};
   if ((data?.name || "").trim().length < 2) out.name = "Please enter your name.";
@@ -7125,6 +7319,8 @@ function accountStepProblems(data) {
     out.email = (data?.email || "").trim()
       ? "That doesn't look like an email address."
       : "We need an email to get you back into your account.";
+  } else if (emailTaken(data)) {
+    out.email = "This email already has an account.";
   }
   if ((data?.password || "").length < 6) out.password = "At least 6 characters.";
   else if (data?.confirmPassword !== data?.password) out.confirmPassword = "Those two don't match.";
@@ -7181,7 +7377,7 @@ const SIGNUP_KEYS = {
   // Sport lives here too. It has no screen of its own in the design and it
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
-  goal: ["goals", "goalNotes", "experience", "🥊 Sport / Focus", "isFighter", "discipline", "timeframe", "fightDate"],
+  goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
@@ -7215,7 +7411,7 @@ const SIGNUP_V2_STEPS = {
   // no error anywhere. signup-v2.test.mjs now fails on a missing key rather
   // than letting the list and the contract drift apart.
   athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
-  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Athletes"],
+  coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Clients"],
 };
 
 // How the combined screens are built.
@@ -7239,12 +7435,11 @@ const SIGNUP_V2_SECTIONS = {
   ],
   "🎯 Your Goal": [
     { step: "🎯 Goals", label: "What you want" },
-    { step: "🥊 Sport / Focus", label: "Sport or focus" },
+    { step: "🥊 Sport / Focus", label: "Main focus" },
     // Was a screen of its own that was skipped for everyone but fighters.
     // Inline and conditional says the same thing without the empty step.
-    { step: "🥋 Sport Details", label: "Your fighting", when: d => d["🥊 Sport / Focus"] === "MMA" },
+    { step: "🥋 Sport Details", label: "Your fighting", when: d => isCombatFocus(d["🥊 Sport / Focus"]) },
     { step: "💪 Training Experience", label: "How long you have trained" },
-    { step: "🔍 Goal Depth", label: "What is in the way, and by when" },
   ],
   "📅 Your Week": [
     // Session style is not here, and not anywhere. See deriveSplit.
@@ -7271,6 +7466,13 @@ const SIGNUP_V2 = true;
 // screen is complete when every section on it is - including, exactly, the
 // sections that are actually showing, so a non-fighter is never held on
 // "🎯 Your Goal" by a question they were never asked.
+// General Fitness can stand on its own; a Sport needs the sport.
+function focusComplete(data) {
+  const v = data?.["🥊 Sport / Focus"];
+  if (!v) return false;
+  return focusTypeOf(data) === "sport" ? (SPORTS.includes(v) || v === "MMA") : true;
+}
+
 function stepComplete(stepName, data, role) {
   const sections = SIGNUP_V2_SECTIONS[stepName];
   if (sections) {
@@ -7289,7 +7491,7 @@ function stepComplete(stepName, data, role) {
       case "💼 Business Name": return true;
       case "🖼️ Logo": return true; // optional, and changeable under Settings
       case "📩 Invite Athletes": return true; // optional by design
-      case "📩 Invite Your Athletes": return true; // nothing to fill in
+      case "📩 Invite Your Clients": return true; // nothing to fill in
       case "📸 Profile Photo": return true; // optional by design
       case "🔐 Create Account": return accountStepValid(data);
       default: return true;
@@ -7303,10 +7505,9 @@ function stepComplete(stepName, data, role) {
     // signup believing they'd joined a roster they were never linked to.
     case "🔑 Coach Invite Code": return (data.inviteCode || "").length === 6 && !!data.inviteCoachId;
     case "🧬 Sex": return !!data.sex;
-    case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+    case "🥊 Sport / Focus": return focusComplete(data);
     case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
     case "🎯 Goals": return (data.goals || []).length > 0;
-    case "🔍 Goal Depth": return !!data.timeframe && (data.timeframe !== "Competition date" || !!data.fightDate);
     // An area picked with no side is a half-answered question, so Continue
     // waits. Everything else on this step stays skippable.
     case "🩹 Injuries": return (data.injuries || []).length > 0 && injurySidesAnswered(data);
@@ -7330,13 +7531,20 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   const pickerWide = useWide();
   // A signup left halfway comes back where it was. Not used in resume mode:
   // there the profile is the record of what was answered, not this draft.
-  const draft = existingUser ? null : readSignupDraft();
+  // Back from Google: the answers given before they left (the role, a coach
+  // code) are kept, and only those, since this account is new.
+  const draft = existingUser
+    ? (() => { const d = readSignupDraft(); return d?.data?.viaGoogle ? { ...d, step: 0 } : null; })()
+    : readSignupDraft();
   const [role, setRole] = useState(draft?.role ?? null);
   const [step, setStep] = useState(draft?.step ?? 0);
   const [submitting, setSubmitting] = useState(false);
   const [data, setData] = useState({
     weightUnit: "lb", heightUnit: "imperial", heightCm: 178, weightLb: null,
     email: existingUser?.email || undefined,
+    ...(existingUser?.user_metadata?.full_name ? { name: existingUser.user_metadata.full_name } : {}),
+    // From the coach's join link, so "I have a coach" opens with it filled in.
+    ...(joinCodeFromLink() ? { inviteCode: joinCodeFromLink() } : {}),
     ...(draft?.data || {}),
   });
   const set = (k, v) => setData(d => ({ ...d, [k]: v }));
@@ -7418,7 +7626,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     // 3. health
     "🩹 Injuries",
     // 4. programming
-    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
     "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
     "📸 Profile Photo",
   ];
@@ -7452,7 +7660,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
   // skip "🥋 Sport Details" if not MMA (no fighter-specific follow-up needed)
   const shouldSkip = (name) => {
     if (role !== "athlete" && role !== "athlete_coached") return false;
-    if (name === "🥋 Sport Details" && (data["🥊 Sport / Focus"] !== "MMA" || data["🥊 Sport / Focus"] === "New to training (weightlifting focus)")) return true;
+    if (name === "🥋 Sport Details" && !isCombatFocus(data["🥊 Sport / Focus"])) return true;
     return false;
   };
 
@@ -7519,6 +7727,26 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Does this email already have an account? Asked while they are on the
+  // account screen, a moment after they stop typing, so the answer arrives
+  // beside the email box rather than as a failure after the last screen.
+  // If the check itself fails (offline, or migration 015 not applied) it
+  // says nothing, and the old catch at the end still applies.
+  const emailToCheck = stepName === "🔐 Create Account" && !existingUser && looksLikeEmail(data.email)
+    ? data.email.trim().toLowerCase() : null;
+  useEffect(() => {
+    if (!emailToCheck) return;
+    let live = true;
+    const t = setTimeout(async () => {
+      try {
+        const { data: taken, error } = await supabase.rpc("email_has_account", { p_email: emailToCheck });
+        if (!live || error) return;
+        setData(d => ({ ...d, emailTakenFor: taken === true ? emailToCheck : (d.emailTakenFor === emailToCheck ? null : d.emailTakenFor) }));
+      } catch { /* the final signUp still catches it */ }
+    }, 450);
+    return () => { live = false; clearTimeout(t); };
+  }, [emailToCheck]);
+
   // The navy panel: the photo carousel, with the logo over it. One definition,
   // used by the welcome page and by every sign-up step, so the logo does not
   // disappear the moment somebody picks a role.
@@ -7550,7 +7778,14 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           fontSize: wide ? "clamp(44px, 4.2vw, 58px)" : "clamp(26px, 7.5vw, 34px)",
           letterSpacing: "-.035em", color: HERO.text, lineHeight: 1, whiteSpace: "nowrap",
         }}>
-          TRAINED<span style={{ color: HERO.accent }}>.BEST</span>
+          {rememberedBrand() ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 14, fontStyle: "normal" }}>
+              {rememberedBrand().logoUrl && (
+                <img src={rememberedBrand().logoUrl} alt="" style={{ width: wide ? 72 : 48, height: wide ? 72 : 48, borderRadius: 14, objectFit: "cover" }} />
+              )}
+              <span style={{ fontSize: wide ? "clamp(32px, 3vw, 44px)" : "clamp(22px, 6.5vw, 28px)", whiteSpace: "normal" }}>{rememberedBrand().name}</span>
+            </div>
+          ) : (<>TRAINED<span style={{ color: HERO.accent }}>.BEST</span></>)}
         </div>
       </div>
     </HeroPanel>
@@ -7652,6 +7887,16 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           happened at all. Two people with existing accounts hit exactly this
           and had no way of knowing why the app was ignoring them. */}
       <div className="px-6 shrink-0">
+        {stepName === "🔐 Create Account" && emailTaken(data) && onSwitchToLogin && (
+          <div className="rounded-xl px-4 py-3 mb-1 flex items-center justify-between gap-3" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
+            <p className="text-[13px]" style={{ color: C.red }}>This email already has an account.</p>
+            <button type="button" onClick={onSwitchToLogin}
+              className="text-[13px] font-semibold underline shrink-0"
+              style={{ color: C.red }}>
+              Log in instead
+            </button>
+          </div>
+        )}
         {data.signupError && (
           <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
             <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
@@ -7868,7 +8113,7 @@ function InviteCodeStep({ code, setData, set }) {
           Couldn't check that code — you may be offline. Try again in a moment.
         </div>
       )}
-      <p className="text-[12.5px] text-center" style={{ color: C.faint }}>Don't have a code? Ask your coach — it's under Athletes → + in their app.</p>
+      <p className="text-[12.5px] text-center" style={{ color: C.faint }}>Don't have a code? Ask your coach — it's under Clients → + in their app.</p>
     </div>
   );
 }
@@ -7940,7 +8185,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             style={{ ...inputStyle, fontSize: 18, padding: "14px" }}
           />
           <p className="text-[12.5px] mt-2" style={{ color: C.faint }}>
-            Optional. This is the name your athletes see when they enter your invite code. Leave it
+            Optional. This is the name your clients see when they enter your invite code. Leave it
             blank to use your own name.
           </p>
         </div>
@@ -7982,12 +8227,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             )}
           </div>
           <p className="text-[12.5px] mt-3" style={{ color: C.faint }}>
-            Optional. A square image works best. Your athletes see it beside your business name.
+            Optional. A square image works best. Your clients see it beside your business name.
           </p>
         </div>
       );
     }
-    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Athletes") {
+    if (stepName === "📩 Invite Athletes" || stepName === "📩 Invite Your Clients") {
       // This step used to show an email input with no value/onChange and an
       // "Add another" button with no onClick — a coach could type their whole
       // roster, tap the button, watch nothing happen, and continue believing
@@ -7999,12 +8244,12 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <div className="rounded-xl p-4 mb-4" style={{ background: `${C.orange}10`, border: `1px solid ${C.orange}44` }}>
             <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>You'll get an invite code</div>
             <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-              As soon as your account is created we'll generate a 6-character code. Athletes choose
-              “I have a coach” when they sign up, enter your code, and land on your roster automatically.
+              As soon as your account is created we'll generate a 6-character code. Clients choose
+              “I have a coach” when they sign up, enter your code, and land on your client list automatically.
             </p>
           </div>
           <p className="text-[12.5px]" style={{ color: C.faint }}>
-            You'll find your code any time under Athletes → +.
+            You'll find your code any time under Clients → +.
           </p>
         </div>
       );
@@ -8033,7 +8278,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   if (stepName === "👤 Your Name") {
     return (
       <div>
-        <p className="text-[15px] mb-6" style={{ color: C.sub }}>What should we call you? This is how you'll appear to {role === "coach" ? "your athletes" : "your coach"}.</p>
+        <p className="text-[15px] mb-6" style={{ color: C.sub }}>What should we call you? This is how you'll appear to {role === "coach" ? "your clients" : "your coach"}.</p>
         <input
           type="text"
           autoFocus
@@ -8068,8 +8313,11 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   if (stepName === "🔐 Create Account") {
     return (
       <div>
+        <GoogleButton label="Sign up with Google"
+          before={() => saveSignupDraft(role, 0, { ...data, viaGoogle: true })} />
+        <OrLine />
         <p className="text-[15px] mb-6" style={{ color: C.sub }}>
-          This is how you get back in, and how you reset your password if you forget it.
+          Or use your email. This is how you get back in, and how you reset your password if you forget it.
         </p>
         <Field label="Your name">
           <input type="text" autoFocus autoComplete="name" placeholder="First and last"
@@ -8128,7 +8376,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
         {accountStepProblems(data) && Object.keys(touched).length > 0 && (
           <p className="text-[12.5px] mt-1" style={{ color: C.faint }}>
             Still needed: {Object.entries(accountStepProblems(data))
-              .map(([k]) => ({ name: "your name", email: "a valid email", password: "a password", confirmPassword: "the password typed twice" }[k]))
+              .map(([k]) => ({ name: "your name", email: emailTaken(data) ? "a different email" : "a valid email", password: "a password", confirmPassword: "the password typed twice" }[k]))
               .join(", ")}.
           </p>
         )}
@@ -8168,15 +8416,41 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       );
     }
     case "🥊 Sport / Focus": {
+      const type = focusTypeOf(data);
+      const value = data["🥊 Sport / Focus"];
+      const pickType = (t) => {
+        if (t === type) return;
+        setData(d => ({ ...d, focusType: t, "🥊 Sport / Focus": t === "general" ? "General Fitness" : null,
+          ...(t === "general" ? { isFighter: undefined, fightDate: null } : {}) }));
+      };
+      const choice = (t, label) => (
+        <button key={t} onClick={() => pickType(t)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
+          style={{ background: type === t ? `${C.orange}18` : C.panel, border: `1px solid ${type === t ? C.orange : C.border}` }}>
+          <span style={{ color: type === t ? C.orange : C.text, fontWeight: type === t ? 600 : 400 }}>{label}</span>
+          {type === t && <Check size={16} style={{ color: C.orange }} />}
+        </button>
+      );
       return (
         <div className="grid grid-cols-1 gap-2.5">
-          {SPORTS.map(opt => (
-            <button key={opt} onClick={() => set("🥊 Sport / Focus", opt)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
-              style={{ background: data["🥊 Sport / Focus"] === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data["🥊 Sport / Focus"] === opt ? C.orange : C.border}` }}>
-              <span style={{ color: data["🥊 Sport / Focus"] === opt ? C.orange : C.text, fontWeight: data["🥊 Sport / Focus"] === opt ? 600 : 400 }}>{opt}</span>
-              {data["🥊 Sport / Focus"] === opt && <Check size={16} style={{ color: C.orange }} />}
-            </button>
-          ))}
+          {choice("general", "General Fitness")}
+          {type === "general" && (
+            <select aria-label="Type of training" style={inputStyle}
+              value={FOCUS_GENERAL.includes(value) ? value : ""}
+              onChange={e => set("🥊 Sport / Focus", e.target.value || "General Fitness")}>
+              <option value="">General fitness (optional: pick a style)</option>
+              {FOCUS_GENERAL.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
+          {choice("sport", "Sport")}
+          {type === "sport" && (
+            <select aria-label="Your sport" style={inputStyle}
+              value={SPORTS.includes(value) ? value : value === "MMA" ? "Combat Sports" : ""}
+              onChange={e => setData(d => ({ ...d, "🥊 Sport / Focus": e.target.value || null,
+                ...(isCombatFocus(e.target.value) ? {} : { isFighter: undefined, fightDate: null }) }))}>
+              <option value="">Pick your sport</option>
+              {SPORTS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
         </div>
       );
     }
@@ -8186,7 +8460,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Are you a fighter (competing) or training for fitness/skill?">
             <div className="grid grid-cols-2 gap-3">
               {["Competing fighter", "Training only"].map(opt => (
-                <button key={opt} onClick={() => set("isFighter", opt === "Competing fighter")}
+                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") set("fightDate", null); }}
                   className="rounded-lg p-3.5 text-center text-[15px] font-medium"
                   style={{ background: data.isFighter === (opt === "Competing fighter") ? `${C.orange}18` : C.panel, border: `1px solid ${data.isFighter === (opt === "Competing fighter") ? C.orange : C.border}`, color: data.isFighter === (opt === "Competing fighter") ? C.orange : C.text }}>
                   {opt}
@@ -8197,6 +8471,15 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Discipline (optional)">
             <input style={inputStyle} placeholder="e.g. Muay Thai, BJJ, MMA, Boxing" value={data.discipline || ""} onChange={e => set("discipline", e.target.value)} />
           </Field>
+          {/* The one part of the old "what is in the way, and by when" screen
+              that anything used: the fight date drives the camp taper.
+              Isaiah, 30 Oct: the rest of that screen is gone. */}
+          {data.isFighter === true && (
+            <Field label="Next fight date (optional)">
+              <input type="date" style={inputStyle} min={todayISO()}
+                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+            </Field>
+          )}
         </div>
       );
     }
@@ -8223,60 +8506,6 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               <Sparkles size={15} style={{ color: C.blue }} className="mt-0.5 shrink-0" />
               <span className="text-[12.5px]" style={{ color: C.blue }}>Condensed model: we'll blend {current.join(" + ")} into one program instead of separate plans.</span>
             </div>
-          )}
-        </div>
-      );
-    }
-    case "🔍 Goal Depth": {
-      const weeksOut = data.fightDate ? Math.max(1, Math.round((new Date(data.fightDate) - new Date()) / (1000 * 60 * 60 * 24 * 7))) : null;
-      return (
-        <div>
-          <Field label="What's holding you back right now?">
-            <p className="text-[12.5px] mb-2.5" style={{ color: C.sub }}>Select all that apply.</p>
-            <div className="grid grid-cols-1 gap-2">
-              {["Lack of structured program", "Lack of support / accountability", "Injuries or physical limitations", "Lack of information / knowledge", "Time constraints", "Plateaued on current routine", "Recovery / fatigue issues", "Nutrition gaps", "Mental blocks / motivation"].map(opt => {
-                const isActive = (data.barriers || []).includes(opt);
-                return (
-                  <button key={opt} onClick={() => set("barriers", isActive ? (data.barriers || []).filter(x => x !== opt) : [...(data.barriers || []), opt])}
-                    className="text-left rounded-lg px-3.5 py-3 flex items-center justify-between"
-                    style={{ background: isActive ? `${C.orange}18` : C.panel, border: `1px solid ${isActive ? C.orange : C.border}` }}>
-                    <span className="text-[15px]" style={{ color: isActive ? C.orange : C.text, fontWeight: isActive ? 600 : 400 }}>{opt}</span>
-                    {isActive && <Check size={15} style={{ color: C.orange }} />}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
-          <Field label="Target timeframe">
-            <div className="grid grid-cols-2 gap-2.5">
-              {["N/A — no event", "4-6 weeks", "8-12 weeks", "Competition date"].map(opt => (
-                <button key={opt} onClick={() => { set("timeframe", opt); if (opt !== "Competition date") set("fightDate", null); }}
-                  className="rounded-lg p-3 text-center text-[15px]"
-                  style={{ background: data.timeframe === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data.timeframe === opt ? C.orange : C.border}`, color: data.timeframe === opt ? C.orange : C.text }}>
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </Field>
-          {data.timeframe === "Competition date" && (
-            <Field label="Pick your competition date">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value)} />
-              {weeksOut !== null && weeksOut > 0 && (
-                <div className="mt-3 rounded-lg p-3.5 flex items-start gap-2.5" style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}55` }}>
-                  <Target size={15} style={{ color: C.orange }} className="mt-0.5 shrink-0" />
-                  <div>
-                    <div className="text-[15px] font-semibold" style={{ color: C.orange }}>{weeksOut} weeks out</div>
-                    <div className="text-[12.5px] mt-0.5" style={{ color: C.text }}>
-                      {weeksOut >= 12 ? "Full periodized camp — enough time for accumulation, intensification and peak phases." :
-                        weeksOut >= 8 ? "Standard 8-week camp — we'll compress into intensification and a short peak." :
-                        weeksOut >= 6 ? "Short camp — direct prep focus, minimal volume, max specificity." :
-                        "Very short turnaround — we'll keep it sharp and specific, no new stimuli."}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </Field>
           )}
         </div>
       );
@@ -9246,8 +9475,7 @@ Athlete intake:
 - Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
 - Training experience: ${intake.experience || "Beginner"}
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
-- Goal notes: ${intake.goalNotes || "n/a"}
-- Timeframe: ${intake.timeframe || "n/a"}${intake.fightDate ? ` (competition date: ${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out)` : ""}
+- Competition date: ${intake.fightDate ? `${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out` : "none"}
 - Injuries: ${injuryLines(intake)}
   * Each one reads "area — what it is, whether it is a problem now". Treat "bothering them now" as a CURRENT injury and "had it before" as a PREVIOUS one, per the rules further down.
   * The KIND changes what to do, not just the area. Tendon pain wants controlled loading, not avoidance. A sprain or instability wants stability and controlled range. Joint pain or arthritis wants the range limited and the joint kept out of deep loaded flexion. Nerve pain wants nothing that reproduces the symptoms at all. Post-surgery wants the most conservative reading of everything above. "Not sure" wants the cautious option.
@@ -9953,6 +10181,45 @@ async function deleteProgramEverywhere(programId, athleteId, state, setState) {
   return { ok: true };
 }
 
+// Gives a copy of `source` (a template, or another client's program) to one
+// client as their new program, and puts it into the screen's state. The
+// client's previous program stays saved; it just stops being the active one.
+async function giveProgramToAthlete({ source, athlete, coachId, state, setState }) {
+  const res = await assignTemplateToAthlete({ template: source, athlete, coachId, state });
+  if (!res.ok) return res;
+  const created = res.created;
+  setState(s => {
+    const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+    const given = {
+      id: created.id, name: created.name, weeks: created.weeks, sport: created.sport,
+      rationale: created.rationale || null, startedOn: created.started_on || null,
+      athleteId: athlete.id, assignedCount: 1, phases: created.phases || null, days,
+    };
+    return {
+      ...s,
+      exercises: [...s.exercises, ...newExercises],
+      programs: [...s.programs, given],
+      athletes: s.athletes.map(a => (a.id === athlete.id ? { ...a, program: created.id, customProgram: null } : a)),
+    };
+  });
+  return res;
+}
+
+// Saves a copy of a client's program as one of the coach's templates.
+async function saveProgramAsTemplate({ program, coachId, state, setState }) {
+  if (!program || !coachId) return { ok: false, message: "Sign in again to save a template." };
+  const { data, error } = await supabase.from("programs").insert({
+    coach_id: coachId, athlete_id: null,
+    name: `${program.name || "Program"} (template)`,
+    weeks: program.weeks || 4, sport: program.sport || null,
+    days: denormalizeDays(program.days, state),
+  }).select().single();
+  if (error || !data) return { ok: false, message: error?.message || "Couldn't save the template." };
+  const copy = { id: data.id, name: data.name, weeks: data.weeks, sport: data.sport, assignedCount: 0, athleteId: null, days: program.days };
+  setState(s => ({ ...s, programs: [...s.programs, copy] }));
+  return { ok: true, created: data };
+}
+
 async function assignTemplateToAthlete({ template, athlete, coachId, state, allowEmpty = false }) {
   // Each athlete gets their own row rather than pointing at the coach's
   // template: the RLS policy on `programs` only lets an athlete read rows where
@@ -10275,6 +10542,58 @@ function LoadingPercent({ fraction, label, detail, big = false }) {
   );
 }
 
+// A percentage for waits nothing can measure (Isaiah, 30 Oct: loading screens
+// should show a number). An estimate, said plainly: it climbs quickly at
+// first and slows as it nears 90, and never passes 90 on its own. The screen
+// it sits on goes away the moment the real thing has loaded, so it never says
+// 100 early; on a slow connection it waits near 90.
+function estimatedFraction(elapsedMs, expectedMs) {
+  const t = Math.max(0, Number(elapsedMs) || 0) / Math.max(1, Number(expectedMs) || 1);
+  return 0.9 * (1 - Math.exp(-2.3 * t));
+}
+
+function LoadingEstimate({ expectedMs = 2500, label, detail, big = false, small = false }) {
+  const [started] = useState(() => Date.now());
+  const [now, setNow] = useState(started);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 120);
+    return () => clearInterval(t);
+  }, []);
+  const fraction = estimatedFraction(now - started, expectedMs);
+  if (small) {
+    const pct = Math.round(fraction * 100);
+    return (
+      <span className="inline-flex items-center gap-2 tabular-nums">
+        <span className="font-semibold" style={{ color: C.orange }}>{pct}%</span>
+        <span className="inline-block h-1.5 w-20 rounded-full overflow-hidden" style={{ background: C.border }}>
+          <span className="block h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 200ms linear" }} />
+        </span>
+        {label}
+      </span>
+    );
+  }
+  return <LoadingPercent fraction={fraction} label={label} detail={detail} big={big} />;
+}
+
+// How far into the workout: exercises finished out of the day's exercises.
+// Sits in the sticky header, so it stays on screen while scrolling.
+function WorkoutProgressBar({ finished, total }) {
+  const pct = total > 0 ? Math.round((Math.min(finished, total) / total) * 100) : 0;
+  const done = total > 0 && finished >= total;
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between text-[12.5px] mb-1.5 tabular-nums">
+        <span style={{ color: C.sub }}>{done ? "Every exercise done" : `${Math.min(finished, total)} of ${total} exercises done`}</span>
+        <span className="font-semibold" style={{ color: done ? C.olive : C.orange }}>{pct}%</span>
+      </div>
+      <div className="h-2 rounded-full overflow-hidden" style={{ background: C.border }}
+        role="progressbar" aria-label="Workout progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <div className="h-full rounded-full" style={{ background: done ? C.olive : C.orange, width: `${pct}%`, transition: "width 300ms ease-out" }} />
+      </div>
+    </div>
+  );
+}
+
 // Holds the highest percentage seen, so the bar never steps backwards.
 function useBuildProgress() {
   const [fraction, setFraction] = useState(0);
@@ -10439,14 +10758,14 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
           <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.orange}22` }}>
             <Bot size={26} style={{ color: C.orange }} />
           </div>
-          <p className="text-[15px] mb-1" style={{ color: C.text }}>Generate a program from this athlete's intake data.</p>
+          <p className="text-[15px] mb-1" style={{ color: C.text }}>Generate a program from this client's intake data.</p>
           <p className="text-[12.5px] mb-6" style={{ color: C.sub }}>Goals, injuries, sport, schedule, and equipment will all be factored in — with correct phase ordering.</p>
           <Btn className="w-full" icon={Sparkles} onClick={generate}>Generate Program</Btn>
         </div>
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the athlete's profile. Usually two to four minutes." />
+          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the client's profile. Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -10554,7 +10873,7 @@ function PhotosNeededPanel({ state }) {
         <CheckCircle2 size={16} style={{ color: C.olive }} className="shrink-0" />
         <div className="min-w-0">
           <div className="text-[15px] font-semibold" style={{ color: C.text }}>Every exercise has a photo</div>
-          <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Nothing on your roster is missing a demonstration.</p>
+          <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Nothing for your clients is missing a demonstration.</p>
         </div>
       </div>
     );
@@ -10603,7 +10922,7 @@ function PhotosNeededPanel({ state }) {
       )}
       <p className="text-[11px] mt-3 leading-relaxed" style={{ color: C.faint }}>
         Programs are generated from the exercises that already have photos wherever possible. These are
-        the ones that came up anyway — usually because an injury, a piece of equipment or the athlete's
+        the ones that came up anyway — usually because an injury, a piece of equipment or the client's
         sport called for something specific.
       </p>
     </div>
@@ -10734,7 +11053,7 @@ function AttentionPanel({ state, nav }) {
   if (rows.length === 0) {
     return (
       <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
-        <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody on your roster yet</div>
+        <div className="text-[15px] font-semibold" style={{ color: C.text }}>No clients yet</div>
         <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Share your invite code above and they will appear here.</p>
       </div>
     );
@@ -10790,7 +11109,7 @@ function CoachTodayPanel({ state, nav }) {
     return (
       <div className="rounded-xl p-4 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
         <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nobody training today</div>
-        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>No sessions are scheduled across your roster.</p>
+        <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>No sessions are scheduled for your clients.</p>
       </div>
     );
   }
@@ -10840,9 +11159,11 @@ function CoachTodayPanel({ state, nav }) {
 function CoachInviteCard({ code, coachName, compact = false }) {
   const [done, setDone] = useState(null); // "copied" | "shared" | null
 
-  const link = typeof window !== "undefined" ? window.location.origin : "";
+  // The join link (29 Oct): opening it shows the coach's logo on the first
+  // screen and fills the code in.
+  const link = typeof window !== "undefined" ? `${window.location.origin}/?join=${code || ""}` : "";
   const message = `Join me on Trained.best${coachName ? ` (coach: ${coachName})` : ""}. ` +
-    `Sign up at ${link}, choose "I have a coach", and enter my code: ${code}`;
+    `Open ${link} and choose "I have a coach". Your code is ${code}.`;
 
   const flash = (what) => { setDone(what); setTimeout(() => setDone(null), 2000); };
 
@@ -10896,8 +11217,9 @@ function CoachInviteCard({ code, coachName, compact = false }) {
       </div>
       {!compact && (
         <p className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: C.sub }}>
-          Athletes pick <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they
-          sign up and enter this code. Existing users can join from Profile {"\u2192"} Join your coach.
+          Share sends your join link. It opens with your logo and name and fills this code in. Athletes pick{" "}
+          <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they sign up.
+          Existing users can join from Profile {"\u2192"} Join your coach.
         </p>
       )}
     </div>
@@ -10925,7 +11247,7 @@ function ModeSwitch({ training, onChange, className = "mb-4" }) {
 // those three taken out - and it renders through the same step bodies, so the
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
-  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals", "🔍 Goal Depth",
+  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🎯 Goals",
   "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
 ];
 
@@ -10940,7 +11262,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const [error, setError] = useState(null);
 
   // Same rule as signup: the fighter follow-up only makes sense for fighters.
-  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || data["🥊 Sport / Focus"] === "MMA");
+  const steps = TRAINING_INTAKE_STEPS.filter(n => n !== "🥋 Sport Details" || isCombatFocus(data["🥊 Sport / Focus"]));
   const stepName = steps[step];
   const isLast = step === steps.length - 1;
 
@@ -10948,7 +11270,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
     switch (stepName) {
       case "💪 Training Experience": return !!data.experience;
       case "🧬 Sex": return !!data.sex;
-      case "🥊 Sport / Focus": return !!data["🥊 Sport / Focus"];
+      case "🥊 Sport / Focus": return focusComplete(data);
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
       case "🎯 Goals": return (data.goals || []).length > 0;
       case "🎂 Birthday": return isUsableBirthday(data.birthday);
@@ -10991,7 +11313,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
       <div className="px-5 pt-6 pb-2">
         <div className="text-2xl" style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.text }}>Your training</div>
         <div className="text-[15px] mt-0.5" style={{ color: C.sub }}>
-          The same screening your athletes answer. Once, then your program builds from it.
+          The same screening your clients answer. Once, then your program builds from it.
         </div>
       </div>
 
@@ -11194,10 +11516,10 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
         <ChalkDivider label="Who needs you" />
         <AttentionPanel state={state} nav={nav} />
 
-        <ChalkDivider label="Your roster" />
+        <ChalkDivider label="Your clients" />
         <CoachInviteCard code={state.coachProfile?.inviteCode} coachName={state.coachProfile?.name} />
         <div className="grid grid-cols-2 gap-2.5 mb-3">
-          <StatCard icon={Users} label="Athletes" value={totalAthletes} />
+          <StatCard icon={Users} label="Clients" value={totalAthletes} />
           <StatCard icon={ClipboardList} label="Programs" value={activePrograms} accent={C.blue} />
         </div>
         {FEATURES.payments && (
@@ -11250,7 +11572,7 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
           )}
           <button onClick={() => nav.go("coach-athletes")} className="w-full rounded-xl p-4 text-left" style={card({ borderRadius: 16 })}>
             <Users size={20} style={{ color: C.blue }} className="mb-2" />
-            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Manage Roster</div>
+            <div className="text-[15px] font-semibold" style={{ color: C.text }}>Manage Clients</div>
           </button>
         </div>
       </div>
@@ -11385,7 +11707,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
   // a profile's owner update it. Same shape as assign_program_to_athlete.
   const moveToGroup = async (athleteId, groupId) => {
     const { error } = await supabase.rpc("set_athlete_group", { p_athlete: athleteId, p_group: groupId });
-    if (error) { setGroupError(error.message || "Couldn't move that athlete."); return; }
+    if (error) { setGroupError(error.message || "Couldn't move that client."); return; }
     setGroupError(null);
     setState(s => ({ ...s, athletes: s.athletes.map(a => (a.id === athleteId ? { ...a, groupId } : a)) }));
     // If that was the last ungrouped athlete, the Ungrouped pill disappears —
@@ -11489,7 +11811,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       // `bulkProgress` set — a permanent spinner in a modal whose close button
       // is gated on `assigning`, recoverable only by reloading the page.
       console.error("Bulk assign failed:", err);
-      setAssignError("Something went wrong partway through. Check the roster before retrying.");
+      setAssignError("Something went wrong partway through. Check your clients before retrying.");
     } finally {
       setBulkProgress(null);
       setAssigning(false);
@@ -11517,12 +11839,12 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
 
   return (
     <div className="pb-28">
-      <TopBar title="Athletes" onLogout={nav.logout}
-        right={<Btn size="sm" icon={Plus} onClick={() => setInviteOpen(true)}>Add athlete</Btn>} />
+      <TopBar title="Clients" onLogout={nav.logout}
+        right={<Btn size="sm" icon={Plus} onClick={() => setInviteOpen(true)}>Add client</Btn>} />
       <div className="px-5 pt-4">
         <div className="relative mb-3">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.faint }} />
-          <input style={{ ...inputStyle, paddingLeft: 36 }} placeholder="Search athletes..." value={search} onChange={e => setSearch(e.target.value)} />
+          <input style={{ ...inputStyle, paddingLeft: 36 }} placeholder="Search clients..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
         {assignError && (
@@ -11567,7 +11889,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               the coach logged out and back in — which reads as "the invite
               code didn't work". A reload re-runs the same load path rather
               than duplicating it here, where a second copy could drift. */}
-          <button onClick={() => window.location.reload()} title="Check for new athletes"
+          <button onClick={() => window.location.reload()} title="Check for new clients"
             className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1.5"
             style={{ background: C.panel, border: `1px dashed ${C.border}`, color: C.sub }}>
             <RefreshCw size={12} /> Refresh
@@ -11580,22 +11902,22 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
             className="w-full mb-4 rounded-xl py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
             style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
             <ClipboardList size={15} />
-            Assign a program to all {filtered.length} {filtered.length === 1 ? "athlete" : "athletes"}
+            Assign a program to all {filtered.length} {filtered.length === 1 ? "client" : "clients"}
           </button>
         )}
 
         {state.athletes.length === 0 && (
           <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
             <Users size={28} style={{ color: C.faint }} className="mx-auto mb-3" />
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No athletes yet</div>
+            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No clients yet</div>
             <p className="text-[12.5px] mb-4" style={{ color: C.sub }}>
-              Athletes appear here once they enter your invite code — either when they sign up,
+              Clients appear here once they enter your invite code — either when they sign up,
               or from Profile → Join your coach if they already have an account.
             </p>
             {inviteCode && (
               <div className="font-mono font-bold mb-4" style={{ fontSize: 26, letterSpacing: 5, color: C.orange }}>{inviteCode}</div>
             )}
-            <Btn icon={Plus} onClick={() => setInviteOpen(true)}>Add an athlete</Btn>
+            <Btn icon={Plus} onClick={() => setInviteOpen(true)}>Add a client</Btn>
             <button onClick={() => window.location.reload()} className="text-[12.5px] mt-3" style={{ color: C.blue }}>
               Someone just joined? Refresh
             </button>
@@ -11612,7 +11934,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               gap: 16, padding: "12px 18px", borderBottom: `1px solid ${C.border}`,
               fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", fontWeight: 700, color: C.faint,
             }}>
-              <span>Athlete</span><span>Program</span><span>This week</span>
+              <span>Client</span><span>Program</span><span>This week</span>
               <span>Compliance</span><span>Streak</span><span>Last active</span><span />
             </div>
             {filtered.map(a => {
@@ -11721,9 +12043,9 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
           nowhere — it just fabricated a local roster entry that disappeared on
           refresh. Athletes actually join by entering the coach's code during
           their own signup, so the modal now hands over that code. */}
-      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Add an Athlete">
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Add a Client">
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          New athletes choose “I have a coach” when they sign up and enter your code.
+          New clients choose “I have a coach” when they sign up and enter your code.
           Anyone who already has an account can join from Profile → Join your coach.
         </p>
         {inviteCode ? (
@@ -11752,12 +12074,12 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       </Modal>
 
       {/* Manage groups */}
-      <Modal open={groupsOpen} onClose={() => { setGroupsOpen(false); setGroupError(null); }} title="Roster Groups">
+      <Modal open={groupsOpen} onClose={() => { setGroupsOpen(false); setGroupError(null); }} title="Client Groups">
         {groupError && (
           <div className="rounded-lg p-3 mb-3 text-[12.5px]" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>{groupError}</div>
         )}
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          Organise your roster — a pro team, amateurs, youth classes, general members. Deleting a group doesn't remove anyone; they just become ungrouped.
+          Organise your clients — a pro team, amateurs, youth classes, general members. Deleting a group doesn't remove anyone; they just become ungrouped.
         </p>
 
         <div className="flex gap-2 mb-4">
@@ -11778,7 +12100,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
                 <div className="flex-1 min-w-0">
                   <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{g.name}</div>
                   <div className="text-[12.5px]" style={{ color: C.sub }}>
-                    {state.athletes.filter(a => a.groupId === g.id).length} athletes
+                    {state.athletes.filter(a => a.groupId === g.id).length} clients
                   </div>
                 </div>
                 <button onClick={() => deleteGroup(g.id)} aria-label={`Delete ${g.name}`}>
@@ -11828,7 +12150,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
               that opened it counted only the search-narrowed rows — so a coach
               filtering "Pro Team" then typing a name saw "1 athlete" and could
               silently replace all twelve programs. */}
-          These <strong style={{ color: C.text }}>{filtered.length}</strong> {filtered.length === 1 ? "athlete" : "athletes"}
+          These <strong style={{ color: C.text }}>{filtered.length}</strong> {filtered.length === 1 ? "client" : "clients"}
           {search.trim() ? " (matching your search)" : ` in ${groupFilter === "ungrouped" ? "Ungrouped" : groupName(groupFilter)}`} each get their own copy,
           scheduled around their own training days. Anyone with a program already will have it replaced.
         </p>
@@ -11930,7 +12252,7 @@ function CompliancePanel({ logs }) {
       <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
         <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No timed sessions yet</div>
         <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-          This athlete hasn't timed a workout. Either they haven't been asked yet, or they've
+          This client hasn't timed a workout. Either they haven't been asked yet, or they've
           switched the timer off in their own settings — worth asking which.
         </p>
       </div>
@@ -11943,8 +12265,8 @@ function CompliancePanel({ logs }) {
         <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>Building a baseline</div>
         <p className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
           {timedCount} timed {timedCount === 1 ? "session" : "sessions"} so far. It takes {COMPLIANCE_MIN_SAMPLES} before
-          "normal" means anything for this athlete — comparing against a population average would flag
-          half your roster for no reason.
+          "normal" means anything for this client — comparing against a population average would flag
+          half your clients for no reason.
         </p>
       </div>
     );
@@ -11994,7 +12316,7 @@ function CompliancePanel({ logs }) {
 
       {review.untimedCount > 0 && (
         <p className="text-[11px] mt-3 pt-2.5 leading-relaxed" style={{ borderTop: `1px solid ${C.border}`, color: C.faint }}>
-          {review.untimedCount} of these weren't timed. The athlete can switch their timer off,
+          {review.untimedCount} of these weren't timed. The client can switch their timer off,
           which is theirs to do — but it also means there's nothing to compare, so ask.
         </p>
       )}
@@ -12035,7 +12357,7 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
   const canConfirm = !removing && (!needsTyping || typed.trim().toLowerCase() === firstName.toLowerCase());
 
   return (
-    <Modal open={open} onClose={onClose} title={`Take ${firstName} off your roster?`}>
+    <Modal open={open} onClose={onClose} title={`Take ${firstName} off your client list?`}>
       <p className="text-[15px] mb-3" style={{ color: C.text }}>
         This ends the coaching. You'll stop seeing their sessions and they won't be able to book with you.
       </p>
@@ -12088,7 +12410,7 @@ function RemoveAthleteModal({ open, onClose, athlete, booking, myUserId, removin
       )}
 
       <Btn variant="danger" className="w-full" disabled={!canConfirm || !known} onClick={onConfirm}>
-        {removing ? "Removing…" : `Take ${firstName} off my roster`}
+        {removing ? "Removing…" : `Take ${firstName} off my client list`}
       </Btn>
       <Btn variant="ghost" className="w-full mt-2" onClick={onClose}>Keep coaching {firstName}</Btn>
     </Modal>
@@ -12145,12 +12467,108 @@ function AthleteDetailTabs({ tab, onChange }) {
   );
 }
 
+// A coach updating a client's goals, injuries, training days and body
+// metrics (Isaiah, 28 Oct). The same questions the athlete answered at signup,
+// so the answers stay in the shape the program builder reads. Saved through
+// coach_update_athlete (migration 014), which allows exactly these fields.
+const CLIENT_DETAIL_TABS = [
+  { key: "goals", label: "Goals", steps: ["🎯 Goals"] },
+  { key: "injuries", label: "Injuries", steps: ["🩹 Injuries"] },
+  { key: "days", label: "Days", steps: ["📅 Training Schedule"] },
+  { key: "body", label: "Body", steps: ["📏 Height", "⚖️ Weight"] },
+];
+
+function clientDetailsDraft(a) {
+  const i = a?.intake || {};
+  return {
+    goals: a?.goals?.length ? a.goals : (i.goals || []),
+    injuries: i.injuries || a?.injuries || [],
+    injuryDetail: i.injuryDetail || {},
+    injuryNotes: i.injuryNotes || "",
+    trainingDays: i.trainingDays || [],
+    sessionMinutes: i.sessionMinutes ?? null,
+    heightCm: a?.heightCm ? Number(a.heightCm) : (i.heightCm || 178),
+    weightLb: a?.weightKg ? kgToLb(Number(a.weightKg)) : (i.weightLb || 175),
+    heightUnit: i.heightUnit || "imperial",
+    weightUnit: i.weightUnit || "lb",
+  };
+}
+
+function CoachClientDetailsModal({ athlete, open, onClose, onSaved }) {
+  const [data, setData] = useState(() => clientDetailsDraft(athlete));
+  const [tab, setTab] = useState("goals");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (open) { setData(clientDetailsDraft(athlete)); setTab("goals"); setError(null); setSaving(false); }
+  }, [open, athlete?.id]);
+  if (!open || !athlete) return null;
+
+  const first = (athlete.name || "Client").split(" ")[0];
+  const steps = CLIENT_DETAIL_TABS.find(t => t.key === tab)?.steps || [];
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    const injuries = (data.injuries || []).filter(x => x && x !== "None currently");
+    const weightKg = data.weightLb ? lbToKg(Number(data.weightLb)) : null;
+    const heightCm = data.heightCm ? Math.round(Number(data.heightCm)) : null;
+    const intake = {
+      goals: data.goals || [], injuries: data.injuries || [], injuryDetail: data.injuryDetail || {},
+      injuryNotes: data.injuryNotes || "", trainingDays: data.trainingDays || [], sessionMinutes: data.sessionMinutes ?? null,
+      heightCm, weightLb: data.weightLb ? Number(data.weightLb) : null,
+      heightUnit: data.heightUnit, weightUnit: data.weightUnit,
+    };
+    const { error: e } = await supabase.rpc("coach_update_athlete", {
+      p_athlete_id: athlete.id,
+      p_goals: data.goals || [],
+      p_injuries: injuries,
+      p_weight_kg: weightKg,
+      p_height_cm: heightCm,
+      p_intake: intake,
+    });
+    if (e) {
+      setSaving(false);
+      setError(e.message || "That didn't save. Check your connection and try again.");
+      return;
+    }
+    onSaved({
+      ...athlete,
+      goals: data.goals || [], injuries,
+      weightKg: weightKg ?? athlete.weightKg, heightCm: heightCm ?? athlete.heightCm,
+      intake: { ...(athlete.intake || {}), ...intake },
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} onClose={() => !saving && onClose()} title={`${first}'s details`}>
+      <div className="mb-4">
+        <SegmentedTabs value={tab} onChange={setTab} options={CLIENT_DETAIL_TABS.map(t => ({ key: t.key, label: t.label }))} />
+      </div>
+      {steps.map(step => (
+        <div key={step} className="mb-5">
+          {steps.length > 1 && (
+            <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>{step.replace(/^\S+\s/, "")}</div>
+          )}
+          <OnboardingStepBody role="athlete" stepName={step} data={data} setData={setData} />
+        </div>
+      ))}
+      {error && <div className="text-[12.5px] mb-2" style={{ color: C.red }}>{error}</div>}
+      <p className="text-[11px] mb-3" style={{ color: C.faint }}>
+        Saves all four tabs. The next program you build for {first} uses these answers. Their current program doesn't change.
+      </p>
+      <Btn className="w-full" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save details"}</Btn>
+    </Modal>
+  );
+}
+
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [pickerBlock, setPickerBlock] = useState(null);   // section the picker was opened from
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [building, setBuilding] = useState(false);
   // Building from the athlete's signup answers, from this page rather than
   // from the roster's Assign sheet.
@@ -12160,7 +12578,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Isaiah, 26 Oct: when a client's program is up, the coach needs a way to
   // give them a new one from here. The old one stays saved as history.
   const [newProgramOpen, setNewProgramOpen] = useState(false);
-  const [activeDayId, setActiveDayId] = useState(null);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [templateMsg, setTemplateMsg] = useState(null);
   const [segmentTarget, setSegmentTarget] = useState(null);
   const { undo, offerUndo, runUndo, clearUndo } = useUndo();
   const [swapTarget, setSwapTarget] = useState(null);
@@ -12183,6 +12602,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
   // Which tab. Overview first: the coach opening an athlete most often wants
   // to know how they are doing, not to edit their programme.
   const [tab, setTab] = useState("overview");
+  // The logged session the coach is replying to or correcting.
+  const [replyLog, setReplyLog] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   // Sessions and credits are loaded by the booking screens, which this page is
   // not. Without this the removal dialog would report zero unused sessions for
@@ -12547,14 +12969,36 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
         <AthleteDetailTabs tab={tab} onChange={setTab} />
 
         {tab === "overview" && (<>
-          {(athlete.goals || []).length > 0 && (
-            <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
-              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Client Goals</div>
+          {/* Goals, training days and body metrics, with Edit (Isaiah, 28 Oct).
+              Always shown now, so a client who skipped their goals can have
+              them filled in by the coach. */}
+          <div className="rounded-xl p-3.5 mb-5" style={card({ borderRadius: 16 })}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Client Details</div>
+              <button onClick={() => setDetailsOpen(true)} className="text-[12.5px] font-semibold rounded-full px-3 py-1"
+                style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>Edit</button>
+            </div>
+            {(athlete.goals || []).length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {athlete.goals.map(g => <span key={g} className="text-[12.5px] px-2.5 py-1 rounded-full font-semibold" style={{ background: `${C.orange}22`, color: C.orange }}>{g}</span>)}
               </div>
+            ) : (
+              <div className="text-[12.5px]" style={{ color: C.faint }}>No goals set.</div>
+            )}
+            <div className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: C.sub }}>
+              {(() => {
+                const days = WEEKDAY_ORDER.filter(d => (athlete.intake?.trainingDays || []).includes(d));
+                const bits = [
+                  days.length ? `Trains ${days.map(d => d.slice(0, 3)).join(", ")}` : "No training days set",
+                  athlete.weightKg ? `${Math.round(kgToLb(Number(athlete.weightKg)))} lb` : null,
+                  athlete.heightCm ? (() => { const { ft, inch } = cmToFtIn(Number(athlete.heightCm)); return `${ft}'${inch}"`; })() : null,
+                ].filter(Boolean);
+                return bits.join(" · ");
+              })()}
             </div>
-          )}
+          </div>
+          <CoachClientDetailsModal athlete={athlete} open={detailsOpen} onClose={() => setDetailsOpen(false)}
+            onSaved={(updated) => setState(s => ({ ...s, athletes: s.athletes.map(a => (a.id === updated.id ? { ...a, ...updated } : a)) }))} />
 
           {/* Weekly accountability tracker */}
           {(() => {
@@ -12643,7 +13087,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           <button onClick={() => setOffRosterOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-3 rounded-xl"
             style={{ color: C.red, border: `1px solid ${C.red}44` }}>
-            Take {athlete.name.split(" ")[0]} off my roster
+            Take {athlete.name.split(" ")[0]} off my client list
           </button>
           <p className="text-[11px] mt-2 text-center leading-relaxed" style={{ color: C.faint }}>
             Ends the coaching. Their account and training history stay with them.
@@ -12656,16 +13100,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               <ChalkDivider label="Whole Program" />
               <div className="mb-5">
                 <ProgramBoardWithAI state={state} setState={setState} program={program}
-                  authorId={state.coachProfile?.id} onExerciseClick={setDetailExercise} />
+                  authorId={state.coachProfile?.id} onExerciseClick={setDetailExercise} editable />
               </div>
             </>
-          )}
-          <ChalkDivider label="Assigned Program — Edit" />
-          {program && (
-            <Btn className="w-full mb-3" icon={Plus} disabled={generating || building || importing}
-              onClick={() => setNewProgramOpen(true)}>
-              {generating || building ? "Creating…" : "Make new program"}
-            </Btn>
           )}
           {!program && (
             <div className="rounded-2xl p-6 text-center" style={{ ...card(), border: `1px dashed ${C.border}` }}>
@@ -12696,154 +13133,37 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               <Btn variant="secondary" className="w-full mb-2" icon={Plus} disabled={building} onClick={buildProgram}>
                 {building ? "Creating…" : "Start blank"}
               </Btn>
+              <Btn variant="secondary" className="w-full mb-2" icon={ClipboardList} onClick={() => setCopyOpen(true)}>
+                From a template or another client
+              </Btn>
               <Btn variant="secondary" className="w-full" icon={ClipboardList} onClick={() => setImportOpen(true)}>
                 Import a program
               </Btn>
             </div>
           )}
-          {program && program.days.length > 0 && (
-            <div className="rounded-xl p-4 mb-4" style={card({ borderRadius: 16 })}>
-              <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                How they train with you
-              </div>
-              <SessionModePicker value={programSessionMode(program.days)} onChange={setEveryDayMode} />
-              <p className="text-[11px] mt-2 leading-snug" style={{ color: C.faint }}>
-                {programSessionMode(program.days) === null
-                  ? "Mixed — set per session below."
-                  : "Applies to every session. Change any single one below."}
-              </p>
-            </div>
-          )}
+          {/* One place to change a program (Isaiah, 29 Oct): the board above,
+              by tapping an exercise or with Adjust with AI. The long per-day
+              editor that used to sit here is gone. Starting over and deleting
+              stay, small, at the bottom. */}
           {program && (
-            <div className="space-y-4">
-              {program.days.map(day => (
-                <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                    <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
-                  </div>
-                  <DayWeekdayPicker value={day.weekday} onChange={(w) => setDayWeekday(day.id, w)} otherDays={program.days.filter(d => d.id !== day.id)} />
-
-                  {/* How this session normally runs. Set once here; any single
-                      date can still be changed below without disturbing it. */}
-                  <div className="mt-3">
-                    <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>
-                      How this session runs
-                    </div>
-                    <SessionModePicker value={sessionModeFor(day)} onChange={(m) => setDayMode(day.id, m)} />
-                    <SessionDateOverrides day={day} program={program} onSet={setDayDateMode} />
-                  </div>
-
-                  {/* Grouped into the same sections the athlete sees, so a
-                      coach deleting "Conditioning" is looking at the same thing
-                      the athlete is, and so a whole section can go in one action
-                      instead of one exercise at a time. */}
-                  {/* Which block is being edited. Without this the screen only
-                      ever showed the base template, so every change was global
-                      whether the coach meant it or not. */}
-                  {coachPlan.blocks.length > 1 && (
-                    <div className="mt-3">
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Editing block</span>
-                        <span className="text-[11px]" style={{ color: C.faint }}>changes land here unless you say otherwise</span>
-                      </div>
-                      <div className="flex gap-1.5 overflow-x-auto pb-1">
-                        {coachPlan.blocks.map(b => {
-                          const on = b.startWeek === editBlock?.startWeek;
-                          return (
-                            <button key={b.startWeek} onClick={() => setEditBlockStart(b.startWeek)}
-                              className="shrink-0 rounded-lg px-3 py-2 text-left"
-                              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}` }}>
-                              <div className="text-[12.5px] font-semibold" style={{ color: on ? C.orange : C.text }}>{b.name || `Block ${b.index}`}</div>
-                              <div className="text-[11px]" style={{ color: C.faint }}>wk {b.startWeek}–{b.endWeek}</div>
-                            </button>
-                          );
-                        })}
-                        <button onClick={() => setWeeksOpen(true)}
-                          className="shrink-0 rounded-lg px-3 py-2 text-left"
-                          style={{ background: C.panel, border: `1px dashed ${C.border}` }}>
-                          <div className="text-[12.5px] font-semibold" style={{ color: C.sub }}>Edit weeks</div>
-                          <div className="text-[11px]" style={{ color: C.faint }}>add · remove</div>
-                        </button>
-                        <button onClick={() => setDeleteProgOpen(true)}
-                          className="shrink-0 rounded-lg px-3 py-2 text-left"
-                          style={{ background: C.panel, border: `1px dashed ${C.red}55` }}>
-                          <div className="text-[12.5px] font-semibold" style={{ color: C.red }}>Delete program</div>
-                          <div className="text-[11px]" style={{ color: C.faint }}>start again</div>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <div className="space-y-3 mt-3">
-                    {buildSessionBlocks(sortedExercises(dayForEdit(day))).map(b => (
-                    <div key={b.key} className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: b.accent }} />
-                        <span className="text-[11px] uppercase tracking-[.16em] font-semibold flex-1 min-w-0 truncate" style={{ color: b.accent }}>{b.label}</span>
-                        <button onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                          aria-label={`Add to the ${b.label} section`} className="shrink-0 p-1">
-                          <Plus size={14} style={{ color: b.accent }} />
-                        </button>
-                        <button onClick={() => setSegmentTarget({ dayId: day.id, dayName: day.name, block: b })}
-                          aria-label={`Delete the ${b.label} section`} className="shrink-0 p-1 -m-1">
-                          <Trash2 size={13} style={{ color: C.faint }} />
-                        </button>
-                      </div>
-                    {b.items.map(x => {
-                      const ex = exById(x.exerciseId);
-                      const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
-                      return (
-                        <div key={x.id} className="rounded-lg p-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                            <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="text-[15px] font-medium truncate flex-1 text-left" style={{ color: C.text }}>{ex?.name}</button>
-                            <NoPhotoFlag name={ex?.name} size="xs" />
-                            <button onClick={() => setSwapTarget({ dayId: day.id, x })}><RotateCcw size={14} style={{ color: C.blue }} /></button>
-                            <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })}><Trash2 size={14} style={{ color: C.sub }} /></button>
-                          </div>
-                          <div className="grid grid-cols-4 gap-1.5">
-                            {["sets", "reps", "rpe", "rest"].map(field => (
-                              <input key={field} value={x[field]} onChange={e => updateExerciseField(day.id, x.id, field, field === "sets" || field === "rpe" ? Number(e.target.value) || 0 : e.target.value)}
-                                className="text-center tabular-nums text-[12.5px] rounded py-1.5" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
-                            ))}
-                          </div>
-                          <div className="grid grid-cols-4 gap-1.5 mt-1">
-                            {["Sets", "Reps", DIFFICULTY_SHORT, "Rest"].map(l => <div key={l} className="text-center text-[8px]" style={{ color: C.faint }}>{l}</div>)}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    </div>
-                    ))}
-                  </div>
-                  {(() => {
-                    const present = new Set(buildSessionBlocks(sortedExercises(day)).map(b => b.key));
-                    const missing = SESSION_BLOCKS.filter(b => !present.has(b.key));
-                    if (!missing.length) return null;
-                    return (
-                      <div className="mt-3">
-                        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.faint }}>Add a section</div>
-                        <div className="flex gap-2 flex-wrap">
-                          {missing.map(b => (
-                            <button key={b.key} onClick={() => { setActiveDayId(day.id); setPickerBlock(b); setPickerOpen(true); }}
-                              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold flex items-center gap-1"
-                              style={{ background: `${b.accent}14`, color: b.accent, border: `1px dashed ${b.accent}66` }}>
-                              <Plus size={13} /> {b.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                  <button onClick={() => { setActiveDayId(day.id); setPickerBlock(null); setPickerOpen(true); }}
-                    className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                    style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                    <BookOpen size={15} /> Add From Library
-                  </button>
-                </div>
-              ))}
-              <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
-              <div className="text-[12.5px] text-center" style={{ color: C.faint }}>Edits here apply only to {athlete.name.split(" ")[0]} — the shared program template is unaffected.</div>
+            <div className="mt-2 flex flex-col items-center gap-1">
+              <button onClick={() => setNewProgramOpen(true)} disabled={generating || building || importing}
+                className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+                {generating || building ? "Creating\u2026" : "Make new program"}
+              </button>
+              {/* Save it to reuse for someone else (Isaiah, 30 Oct). */}
+              <button onClick={async () => {
+                  setTemplateMsg("Saving\u2026");
+                  const res = await saveProgramAsTemplate({ program, coachId: myUserId, state, setState });
+                  setTemplateMsg(res.ok ? "Saved to your templates." : res.message);
+                }}
+                className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+                Save as template
+              </button>
+              {templateMsg && <div className="text-[11px]" style={{ color: C.sub }}>{templateMsg}</div>}
+              <button onClick={() => setDeleteProgOpen(true)} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+                Delete this program
+              </button>
             </div>
           )}
         </>)}
@@ -12894,17 +13214,19 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             </div>
           ) : (
             <div className="space-y-2.5">
-              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} />)}
+              {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} onCoachEdit={setReplyLog} />)}
             </div>
           )}
+          <CoachSessionModal log={replyLog} onClose={() => setReplyLog(null)}
+            onSaved={(updated) => setState(s => ({
+              ...s,
+              athletes: s.athletes.map(a => a.id !== athlete.id ? a : {
+                ...a, workoutLogs: (a.workoutLogs || []).map(l => (l.id === updated.id ? updated : l)),
+              }),
+            }))} />
         </>)}
       </div>
 
-      <ExercisePickerModal open={pickerOpen} onClose={() => { setPickerOpen(false); setPickerBlock(null); }}
-        exercises={state.exercises} defaultPhase={pickerBlock?.phases?.[0]}
-        ownerId={myUserId}
-        onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
-        onPick={(ex) => addExerciseToDay(activeDayId, ex, pickerBlock)} />
       <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
         onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
       <ExerciseSwapModal open={!!swapTarget && !scopeTarget} onClose={() => setSwapTarget(null)} currentExercise={swapTarget?.x} exercises={state.exercises}
@@ -12975,11 +13297,17 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           onClick={async () => { setNewProgramOpen(false); await buildProgram(); }}>
           Start blank
         </Btn>
+        <Btn variant="secondary" className="w-full mb-2" icon={ClipboardList}
+          onClick={() => { setNewProgramOpen(false); setCopyOpen(true); }}>
+          From a template or another client
+        </Btn>
         <Btn variant="secondary" className="w-full" icon={ClipboardList}
           onClick={() => { setNewProgramOpen(false); setImportOpen(true); }}>
           Import a program
         </Btn>
       </Modal>
+      <CopyProgramModal open={copyOpen} onClose={() => setCopyOpen(false)} athlete={athlete}
+        state={state} setState={setState} coachId={myUserId} />
       {/* Fed this athlete's REAL answers, the same as the roster's Assign
           sheet. An earlier version of that screen passed a hardcoded example
           intake and so built a program for an imaginary MMA fighter whoever
@@ -13017,49 +13345,57 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
 // session's colour — which is what makes "Day 2 is the amber one, on Friday"
 // readable without comparing two sets of labels. Call sites that don't pass it
 // keep the plain blue treatment.
-function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf }) {
+function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf, allDays = null, thisDayId = null }) {
+  // A list of the week, one row per weekday, each saying what is on it
+  // (Isaiah, 31 Oct: the letters with dots under them were hard to read).
+  // Tap a free day to move this session there; tap a day with a session on
+  // it to swap the two.
   const occupantFor = (day) => otherDays.find(d => d.weekday === day);
   const tint = (id) => (colorOf ? colorOf(id) : C.blue);
+  const numberOf = (id) => {
+    const i = (allDays || []).findIndex(d => d.id === id);
+    return i >= 0 ? i + 1 : null;
+  };
+  const labelOf = (d) => {
+    const n = numberOf(d?.id);
+    const rest = calendarSessionLabel(d?.name || "");
+    if (!n) return rest;
+    return /^day\s*\d+$/i.test(rest) ? `Day ${n}` : `Day ${n} · ${rest}`;
+  };
+  const thisNo = numberOf(thisDayId);
   return (
-    <div>
-      <div className="flex gap-1 mt-2.5">
-        {WEEKDAY_ORDER.map(day => {
-          const isActive = value === day;
-          const occupant = !isActive && occupantFor(day);
-          const activeColor = tint(null);
-          const occupantColor = occupant ? tint(occupant.id) : null;
-          return (
-            <button key={day} type="button"
-              // Tapping the day it's already on is a no-op. It used to clear the
-              // weekday, and an unscheduled session can't be logged — one stray
-              // tap silently took a session off the calendar.
-              onClick={() => !isActive && onChange(day)}
-              title={occupant ? `Swap with ${occupant.name}` : day}
-              className="flex-1 aspect-square rounded-md text-[11px] font-bold flex flex-col items-center justify-center gap-0.5"
-              // Selected reads as a ring and coloured text, not a solid
-              // block. The filled square was the loudest thing on the screen
-              // and sat right beside the day tabs, which are also filled -
-              // two different "this one is selected" blocks competing a
-              // centimetre apart. The ring is drawn with an inset shadow
-              // rather than a thicker border so nothing shifts by a pixel
-              // when the selection moves.
-              style={{
-                background: isActive ? `${activeColor}1F` : occupant ? `${occupantColor}18` : C.bg,
-                color: isActive ? activeColor : occupant ? occupantColor : C.sub,
-                border: `1px solid ${isActive ? activeColor : occupant ? `${occupantColor}55` : C.border}`,
-                boxShadow: isActive ? `inset 0 0 0 1px ${activeColor}` : "none",
-              }}>
-              <span>{WEEKDAY_SHORT[day]}</span>
-              {occupant && <span style={{ width: 3, height: 3, borderRadius: 999, background: occupantColor }} />}
-            </button>
-          );
-        })}
-      </div>
-      {otherDays.some(d => d.weekday) && (
-        <p className="text-[11px] mt-1.5" style={{ color: C.faint }}>
-          Dotted days already have a session — tapping one swaps the two.
-        </p>
-      )}
+    <div className="mt-2.5 rounded-xl overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+      {WEEKDAY_ORDER.map((day, i) => {
+        const isActive = value === day;
+        const occupant = !isActive && occupantFor(day);
+        const color = isActive ? tint(thisDayId) : occupant ? tint(occupant.id) : null;
+        return (
+          <button key={day} type="button"
+            // Tapping the day it is already on does nothing: clearing it
+            // would take the session off the calendar.
+            onClick={() => !isActive && onChange(day)}
+            aria-label={isActive ? `${day}, this session` : occupant ? `${day}, swap with ${occupant.name}` : `${day}, free, move here`}
+            className="w-full flex items-center gap-3 px-3.5 py-3 text-left"
+            style={{
+              background: isActive ? `${color}1A` : C.panel,
+              borderTop: i === 0 ? "none" : `1px solid ${C.border}`,
+              borderLeft: `3px solid ${color || "transparent"}`,
+            }}>
+            <span className="w-[92px] shrink-0 text-[15px] font-semibold" style={{ color: isActive ? color : C.text }}>{day}</span>
+            <span className="flex-1 min-w-0 truncate text-[13px]" style={{ color: isActive ? color : occupant ? C.text : C.faint }}>
+              {isActive ? `${thisNo ? `Day ${thisNo}` : "This session"} (this one)` : occupant ? labelOf(occupant) : "Free"}
+            </span>
+            {isActive && <Check size={16} className="shrink-0" style={{ color }} />}
+            {occupant && (
+              <span className="shrink-0 text-[11px] font-semibold rounded-full px-2 py-0.5"
+                style={{ color: C.sub, border: `1px solid ${C.border}` }}>Swap</span>
+            )}
+          </button>
+        );
+      })}
+      <p className="text-[11px] px-3.5 py-2" style={{ color: C.faint, borderTop: `1px solid ${C.border}`, background: C.bg }}>
+        Tap a free day to move it there. Tap a day with a session to swap the two.
+      </p>
     </div>
   );
 }
@@ -13484,10 +13820,124 @@ function ExercisePickerModal({ open, onClose, onPick, exercises, defaultPhase, o
   );
 }
 
+// Pick clients and give each of them a copy of a program (Isaiah, 30 Oct).
+function GiveProgramModal({ open, onClose, source, state, setState, coachId }) {
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  useEffect(() => { if (open) { setPicked([]); setBusy(false); setResult(null); } }, [open, source?.id]);
+  if (!open || !source) return null;
+  const athletes = (state.athletes || []).filter(a => a.program !== source.id);
+  const toggle = (id) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
+  const give = async () => {
+    if (busy || !picked.length) return;
+    setBusy(true);
+    let done = 0;
+    const failed = [];
+    for (const id of picked) {
+      const athlete = state.athletes.find(a => a.id === id);
+      const res = await giveProgramToAthlete({ source, athlete, coachId, state, setState });
+      if (res.ok) done++; else failed.push(`${athlete?.name || "A client"}: ${res.message}`);
+    }
+    setBusy(false);
+    setResult({ done, failed });
+    if (!failed.length) setTimeout(onClose, 900);
+  };
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title={`Give "${source.name}"`}>
+      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+        Each client gets their own copy, set to their training days, and it becomes what they train from. Their old
+        program stays saved. Change anyone's copy afterwards without touching the others.
+      </p>
+      <div className="space-y-2 mb-4">
+        {athletes.length === 0 && <p className="text-[15px]" style={{ color: C.sub }}>No clients to give it to.</p>}
+        {athletes.map(a => {
+          const on = picked.includes(a.id);
+          const current = state.programs.find(p => p.id === a.program);
+          return (
+            <button key={a.id} onClick={() => toggle(a.id)} aria-pressed={on}
+              className="w-full flex items-center gap-3 rounded-lg p-3 text-left"
+              style={{ background: on ? `${C.orange}12` : C.bg, border: `1px solid ${on ? C.orange : C.border}` }}>
+              {on ? <CheckCircle2 size={18} style={{ color: C.orange }} className="shrink-0" /> : <Circle size={18} style={{ color: C.faint }} className="shrink-0" />}
+              <Avatar initials={a.avatar} size={30} photoUrl={a.photoUrl} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{a.name}</div>
+                <div className="text-[11px] truncate" style={{ color: C.sub }}>{current ? `Now on ${current.name}` : "No program yet"}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {result && (
+        <div className="text-[12.5px] mb-3" style={{ color: result.failed.length ? C.red : C.olive }}>
+          {result.done ? `Given to ${result.done} client${result.done === 1 ? "" : "s"}.` : ""}
+          {result.failed.map(f => <div key={f}>{f}</div>)}
+        </div>
+      )}
+      <Btn className="w-full" disabled={busy || !picked.length} onClick={give}>
+        {busy ? "Giving…" : picked.length ? `Give to ${picked.length} client${picked.length === 1 ? "" : "s"}` : "Pick clients"}
+      </Btn>
+    </Modal>
+  );
+}
+
+// For one client: start from a template, or copy another client's program.
+function CopyProgramModal({ open, onClose, athlete, state, setState, coachId }) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => { if (open) { setBusy(null); setError(null); } }, [open]);
+  if (!open || !athlete) return null;
+  const templates = state.programs.filter(p => isTemplate(p) && isSavedTemplate(p));
+  const others = (state.athletes || [])
+    .filter(a => a.id !== athlete.id && a.program)
+    .map(a => ({ a, prog: state.programs.find(p => p.id === a.program) }))
+    .filter(x => x.prog && (x.prog.days || []).length);
+  const pick = async (source) => {
+    if (busy) return;
+    setBusy(source.id);
+    setError(null);
+    const res = await giveProgramToAthlete({ source, athlete, coachId, state, setState });
+    setBusy(null);
+    if (!res.ok) { setError(res.message); return; }
+    onClose();
+  };
+  const row = (key, title, sub, source) => (
+    <button key={key} onClick={() => pick(source)} disabled={!!busy}
+      className="w-full flex items-center gap-3 rounded-lg p-3 text-left"
+      style={{ background: C.bg, border: `1px solid ${C.border}`, opacity: busy && busy !== source.id ? 0.5 : 1 }}>
+      <ClipboardList size={18} style={{ color: C.blue }} className="shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{title}</div>
+        <div className="text-[11px] truncate" style={{ color: C.sub }}>{busy === source.id ? "Copying…" : sub}</div>
+      </div>
+    </button>
+  );
+  const first = (athlete.name || "").split(" ")[0] || "them";
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title={`A program for ${first}`}>
+      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+        {first} gets their own copy, set to their training days. Change it afterwards from their Program tab.
+      </p>
+      {templates.length > 0 && (<>
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Your templates</div>
+        <div className="space-y-2 mb-4">
+          {templates.map(t => row(t.id, t.name, `${t.weeks} weeks · ${t.days.length} days`, t))}
+        </div>
+      </>)}
+      {others.length > 0 && (<>
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Copy another client's program</div>
+        <div className="space-y-2 mb-2">
+          {others.map(({ a, prog }) => row(`c-${a.id}`, prog.name, `${a.name} · ${prog.weeks} weeks`, prog))}
+        </div>
+      </>)}
+      {!templates.length && !others.length && <p className="text-[15px]" style={{ color: C.sub }}>No templates or other programs yet.</p>}
+      {error && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</div>}
+    </Modal>
+  );
+}
+
 function CoachPrograms({ state, setState, nav, myUserId }) {
   const [editing, setEditing] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [activeDayId, setActiveDayId] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiFor, setAiFor] = useState(null);
   const [detailExercise, setDetailExercise] = useState(null);
@@ -13496,9 +13946,12 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
   const [templateError, setTemplateError] = useState(null);
   const [creating, setCreating] = useState(false);
   const [programDeleteTarget, setProgramDeleteTarget] = useState(null);
+  const [giveOpen, setGiveOpen] = useState(false);
   const exById = id => state.exercises.find(e => e.id === id);
 
-  const prog = state.programs.find(p => p.id === editing && isTemplate(p));
+  // Saved templates only: the built-in examples have no row behind them, so
+  // nothing done to them could be kept.
+  const prog = state.programs.find(p => p.id === editing && isTemplate(p) && isSavedTemplate(p));
 
   // A template is a programs row with coach_id set and athlete_id NULL — the
   // same shape `isTemplate` already keys off. Nothing on this screen used to
@@ -13646,83 +14099,41 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
   const sortedExercises = (day) => [...day.exercises].sort((a, b) => phaseIndex(a.phase) - phaseIndex(b.phase));
 
   if (prog) {
+    // The same one place to change a program as a client's page (Isaiah,
+    // 29-30 Oct): the board, tap-to-edit, and Adjust with AI.
     return (
       <div className="pb-28">
-        <TopBar title={prog.name} right={<button onClick={() => setEditing(null)} style={{ color: C.sub }}><X size={20} /></button>} />
-        <div className="px-5 pt-4 space-y-5">
+        <TopBar title={prog.name} right={<button onClick={() => setEditing(null)} aria-label="Close" style={{ color: C.sub }}><X size={20} /></button>} />
+        <div className="px-5 pt-4">
           {templateError && (
-            <div className="rounded-lg p-3 text-[12.5px] flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
+            <div className="rounded-lg p-3 mb-3 text-[12.5px] flex items-start gap-2" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
               <AlertCircle size={14} className="shrink-0 mt-0.5" />
               <span className="flex-1">{templateError}</span>
               <button onClick={() => setTemplateError(null)}><X size={13} /></button>
             </div>
           )}
-
-          {!isSavedTemplate(prog) && (
-            <div className="rounded-xl p-4" style={{ background: `${C.amber}12`, border: `1px solid ${C.amber}55` }}>
-              <div className="flex items-start gap-2 mb-3">
-                <AlertCircle size={15} className="shrink-0 mt-0.5" style={{ color: C.amber }} />
-                <div>
-                  <div className="text-[15px] font-semibold" style={{ color: C.text }}>This is a built-in example</div>
-                  <p className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>
-                    Changes to it won't be kept. Save your own copy first and everything after that sticks.
-                  </p>
-                </div>
-              </div>
-              <Btn className="w-full" icon={Plus} disabled={creating} onClick={saveDemoAsMine}>
-                {creating ? "Saving…" : "Save a copy I can edit"}
-              </Btn>
-            </div>
-          )}
-
-          <Field label="Program name">
-            <input style={inputStyle} value={prog.name} onChange={e => renameProgram(e.target.value)}
-              disabled={!isSavedTemplate(prog)} placeholder="e.g. Fight Camp — Weeks 1-6" />
-          </Field>
-
-          {prog.days.map(day => (
-            <div key={day.id} className="rounded-xl p-4" style={card({ borderRadius: 16 })}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold" style={{ fontFamily: DISPLAY, color: C.text }}>{day.name}</div>
-                <button onClick={() => setDeleteTarget(day)} aria-label="Delete day"><Trash2 size={15} style={{ color: C.sub }} /></button>
-              </div>
-              <div className="space-y-2">
-                {sortedExercises(day).map(x => {
-                  const ex = exById(x.exerciseId);
-                  const phaseLabel = PHASES.find(p => p.key === x.phase)?.short;
-                  return (
-                    <div key={x.id} className="rounded-lg p-3 flex items-center gap-3" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                      <span className="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0" style={{ background: `${C.orange}22`, color: C.orange }}>{phaseLabel}</span>
-                      <button onClick={() => setDetailExercise({ ...ex, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })} className="flex-1 min-w-0 text-left">
-                        <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{ex?.name || "Exercise"}</div>
-                        <div className="text-[12.5px] tabular-nums mt-0.5" style={{ color: C.sub }}>{x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe} · rest {x.rest}</div>
-                      </button>
-                      <button onClick={() => setRemoveTarget({ dayId: day.id, xId: x.id, exerciseId: x.exerciseId, name: ex?.name || "Exercise" })} className="shrink-0"><Trash2 size={15} style={{ color: C.sub }} /></button>
-                    </div>
-                  );
-                })}
-              </div>
-              <button onClick={() => { setActiveDayId(day.id); setPickerOpen(true); }}
-                className="w-full mt-3 rounded-lg py-2.5 text-[15px] font-semibold flex items-center justify-center gap-2"
-                style={{ background: `${C.orange}18`, color: C.orange, border: `1px dashed ${C.orange}66` }}>
-                <BookOpen size={15} /> From Library
-              </button>
-            </div>
-          ))}
-          <Btn variant="secondary" className="w-full" icon={Plus} onClick={addDay}>Add Training Day</Btn>
+          <Btn className="w-full mb-4" icon={Users} onClick={() => setGiveOpen(true)} disabled={!state.athletes.length}>Give to clients</Btn>
+          <ProgramBoardWithAI state={state} setState={setState} program={prog} authorId={myUserId}
+            onExerciseClick={setDetailExercise} editable />
+          <div className="mt-3 flex justify-center">
+            <button onClick={() => setProgramDeleteTarget(prog)} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>Delete this template</button>
+          </div>
         </div>
-        <ExercisePickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} exercises={state.exercises}
-          ownerId={myUserId}
-          onCreated={(ex) => setState(s => ({ ...s, exercises: [...s.exercises, ex] }))}
-          onPick={(ex) => addExerciseToDay(activeDayId, ex)} />
-        <RemoveExerciseModal open={!!removeTarget} onClose={() => setRemoveTarget(null)} exerciseName={removeTarget?.name}
-          onRemoveFromDay={() => { removeExercise(removeTarget.dayId, removeTarget.xId); setRemoveTarget(null); }}
-          onDeleteFromLibrary={() => { deleteExerciseGlobally(removeTarget.exerciseId); setRemoveTarget(null); }} />
-        <DeleteDayModal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} dayName={deleteTarget?.name}
-          onConfirm={() => { deleteDay(deleteTarget.id); setDeleteTarget(null); }} />
+        <GiveProgramModal open={giveOpen} onClose={() => setGiveOpen(false)} source={prog}
+          state={state} setState={setState} coachId={myUserId} />
+        <Modal open={!!programDeleteTarget} onClose={() => setProgramDeleteTarget(null)} title="Delete template">
+          <p className="text-[15px] mb-4" style={{ color: C.sub }}>
+            Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Clients already given a copy keep theirs.
+          </p>
+          <div className="flex gap-2.5">
+            <Btn variant="secondary" className="flex-1" onClick={() => setProgramDeleteTarget(null)}>Cancel</Btn>
+            <Btn variant="danger" className="flex-1" icon={Trash2}
+              onClick={() => { deleteProgram(programDeleteTarget.id); setProgramDeleteTarget(null); }}>Delete</Btn>
+          </div>
+        </Modal>
         <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
-        canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
-        onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
+          canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
+          onPhotoAdded={() => setState(s => ({ ...s, photoVersion: (s.photoVersion || 0) + 1 }))} />
       </div>
     );
   }
@@ -13735,7 +14146,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           <div className="rounded-lg p-2.5 shrink-0" style={{ background: `${C.orange}33` }}><Sparkles size={20} style={{ color: C.orange }} /></div>
           <div className="min-w-0">
             <div className="font-semibold text-[15px]" style={{ color: C.text }}>Generate with AI</div>
-            <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Build a program from an athlete's intake automatically</div>
+            <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>Build a program from a client's intake automatically</div>
           </div>
         </button>
         {templateError && (
@@ -13745,8 +14156,17 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
             <button onClick={() => setTemplateError(null)}><X size={13} /></button>
           </div>
         )}
+        <p className="text-[12.5px] mb-3 leading-relaxed" style={{ color: C.sub }}>
+          Your templates. Open one to change it or give it to clients. To make one from a client's program,
+          use "Save as template" at the bottom of their Program tab.
+        </p>
+        {state.programs.filter(p => isTemplate(p) && isSavedTemplate(p)).length === 0 && (
+          <div className="rounded-xl p-4 mb-3 text-[12.5px]" style={{ ...card({ borderRadius: 16 }), color: C.faint }}>
+            No templates yet. Tap + to start one, or save a client's program as a template.
+          </div>
+        )}
         <div className="space-y-3">
-          {state.programs.filter(isTemplate).map(p => {
+          {state.programs.filter(p => isTemplate(p) && isSavedTemplate(p)).map(p => {
             // Seeded demo templates have no database row, so they can't be
             // deleted — only the coach's own saved templates can.
             const saved = isSavedTemplate(p);
@@ -13774,7 +14194,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
       </div>
       <Modal open={!!programDeleteTarget} onClose={() => setProgramDeleteTarget(null)} title="Delete Program">
         <p className="text-[15px] mb-4" style={{ color: C.sub }}>
-          Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Athletes already assigned a copy of it keep theirs — only this template goes.
+          Delete <strong style={{ color: C.text }}>{programDeleteTarget?.name}</strong>? Clients already assigned a copy of it keep theirs — only this template goes.
         </p>
         <div className="flex gap-2.5">
           <Btn variant="secondary" className="flex-1" onClick={() => setProgramDeleteTarget(null)}>Cancel</Btn>
@@ -13794,7 +14214,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
           </p>
           <div className="space-y-2">
             {state.athletes.length === 0 && (
-              <p className="text-[15px]" style={{ color: C.sub }}>No athletes on your roster yet.</p>
+              <p className="text-[15px]" style={{ color: C.sub }}>No clients yet.</p>
             )}
             {state.athletes.map(a => {
               const usable = intakeIsUsable(intakeForAthlete(a));
@@ -14464,6 +14884,68 @@ function MessageRow({ m, mine, onHold }) {
   );
 }
 
+// One message to several clients at once (Isaiah, 30 Oct). It lands in each
+// client's own thread, as if sent to them one by one, so a reply comes back to
+// that thread rather than to a group.
+function BroadcastModal({ open, onClose, athletes, myUserId, onSent }) {
+  const [text, setText] = useState("");
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (open) { setText(""); setPicked((athletes || []).map(a => a.id)); setBusy(false); setDone(null); setError(null); }
+  }, [open]);
+  if (!open) return null;
+  const all = picked.length === (athletes || []).length;
+  const toggle = (id) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
+  const send = async () => {
+    const body = text.trim();
+    if (!body || !picked.length || busy || !myUserId) return;
+    setBusy(true);
+    setError(null);
+    const rows = picked.map(id => ({ athlete_id: id, sender_id: myUserId, body }));
+    const { error: e } = await supabase.from("messages").insert(rows);
+    setBusy(false);
+    if (e) { setError("That didn't send. Check your connection and try again."); return; }
+    setDone(picked.length);
+    onSent?.();
+    setTimeout(onClose, 900);
+  };
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title="Message everyone">
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+        placeholder="e.g. Gym is closed Monday. Do Monday's session on Tuesday."
+        className="w-full rounded-xl px-3 py-2.5 text-[15px] resize-none"
+        style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+      <div className="flex items-center justify-between mt-3 mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Send to</div>
+        <button onClick={() => setPicked(all ? [] : athletes.map(a => a.id))} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {all ? "Clear" : "Everyone"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {athletes.map(a => {
+          const on = picked.includes(a.id);
+          return (
+            <button key={a.id} onClick={() => toggle(a.id)} aria-pressed={on}
+              className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+              style={{ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {a.name.split(" ")[0]}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] mb-3" style={{ color: C.faint }}>Each person gets it in their own chat with you, so replies come back one to one.</p>
+      {error && <div className="text-[12.5px] mb-2" style={{ color: C.red }}>{error}</div>}
+      {done != null && <div className="text-[12.5px] mb-2" style={{ color: C.olive }}>Sent to {done}.</div>}
+      <Btn className="w-full" icon={Send} disabled={busy || !text.trim() || !picked.length} onClick={send}>
+        {busy ? "Sending…" : `Send to ${picked.length === athletes.length ? "everyone" : `${picked.length} client${picked.length === 1 ? "" : "s"}`}`}
+      </Btn>
+    </Modal>
+  );
+}
+
 function CoachMessages({ state, setState, nav, myUserId }) {
   const [activeId, setActiveId] = useState(state.athletes[0]?.id);
   // The draft lives in MessageComposer now, with the attachment beside it,
@@ -14473,6 +14955,7 @@ function CoachMessages({ state, setState, nav, myUserId }) {
   const { messages, loading, error, sending, send, deleteForEveryone, hideForMe } = useMessageThread(activeId, myId);
   // Which message the long-press sheet is open on, or null.
   const [actionOn, setActionOn] = useState(null);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
   const endRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, activeId]);
@@ -14486,6 +14969,15 @@ function CoachMessages({ state, setState, nav, myUserId }) {
     <div className="flex flex-col app-screen">
       <TopBar title="Messages" onLogout={nav.logout} />
       <div className="flex gap-2 px-3 py-3 overflow-x-auto shrink-0" style={{ borderBottom: `1px solid ${C.border}` }}>
+        {/* One message to everyone (Isaiah, 30 Oct): "gym closed Monday". */}
+        {state.athletes.length > 1 && (
+          <button onClick={() => setBroadcastOpen(true)} className="flex flex-col items-center gap-1 shrink-0 px-1" aria-label="Message everyone">
+            <div className="rounded-full flex items-center justify-center" style={{ width: 44, height: 44, background: `${C.orange}1f`, border: `1px dashed ${C.orange}` }}>
+              <Users size={18} style={{ color: C.orange }} />
+            </div>
+            <span className="text-[11px]" style={{ color: C.orange }}>Everyone</span>
+          </button>
+        )}
         {state.athletes.map(a => (
           <button key={a.id} onClick={() => setActiveId(a.id)} className="flex flex-col items-center gap-1 shrink-0 px-1">
             <Avatar initials={a.avatar} size={44} photoUrl={a.photoUrl} accent={activeId === a.id ? C.orange : "#5C6066"} />
@@ -14496,14 +14988,14 @@ function CoachMessages({ state, setState, nav, myUserId }) {
       {state.athletes.length === 0 ? (
         <div className="flex-1 flex items-center justify-center px-6 text-center">
           <div>
-            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No athletes yet</div>
-            <p className="text-[12.5px]" style={{ color: C.sub }}>Once someone joins your roster with your invite code, you'll be able to message them here.</p>
+            <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No clients yet</div>
+            <p className="text-[12.5px]" style={{ color: C.sub }}>Once someone joins you with your invite code, you'll be able to message them here.</p>
           </div>
         </div>
       ) : (
         <>
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-            {loading && <div className="text-center py-8"><Loader2 size={20} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>}
+            {loading && <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>}
             {!loading && messages.length === 0 && (
               <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>
             )}
@@ -14529,6 +15021,8 @@ function CoachMessages({ state, setState, nav, myUserId }) {
           />
         </>
       )}
+      <BroadcastModal open={broadcastOpen} onClose={() => setBroadcastOpen(false)} athletes={state.athletes} myUserId={myId}
+        onSent={() => setActiveId(id => id)} />
     </div>
   );
 }
@@ -14703,7 +15197,7 @@ function PrivacyPolicyPage({ nav, onBack }) {
 // index N-1 for each movement.
 function GroupedBlock({
   block, resolveName, weightUnit, setChecks, setWeights, setReps,
-  onToggle, onWeight, onReps, lastFor, onSwap,
+  onToggle, onWeight, onReps, lastFor, onSwap, setMetrics = {}, onMetric = null,
 }) {
   const meta = groupKindMeta(block.kind, block.items.length);
   return (
@@ -14723,7 +15217,7 @@ function GroupedBlock({
             <div key={item.id} className="flex items-baseline gap-2 text-[12.5px]">
               <span className="tabular-nums font-bold shrink-0" style={{ color: C.orange }}>{blockItemLabel(block, i)}</span>
               <span className="min-w-0 flex-1 truncate font-semibold" style={{ color: C.text }}>{resolveName(item)}</span>
-              <span className="tabular-nums shrink-0" style={{ color: C.faint }}>{item.reps} reps</span>
+              <span className="tabular-nums shrink-0" style={{ color: C.faint }}>{item.reps}{metricModeFor(item) === "load" ? " reps" : ""}</span>
               {onSwap && (
                 <button onClick={() => onSwap(item)} className="shrink-0 p-1 -m-1"
                   aria-label={`Swap ${resolveName(item)}`}>
@@ -14775,24 +15269,46 @@ function GroupedBlock({
                       style={{ color: checked ? C.olive : C.text }}>
                       {resolveName(item)}
                     </span>
-                    <input
-                      type="number" inputMode="decimal" min="0" step="any"
-                      placeholder={previous?.weight != null ? String(previous.weight) : "—"}
-                      value={setWeights[item.id]?.[r] ?? ""}
-                      onChange={e => onWeight(item, r, e.target.value)}
-                      aria-label={`Weight for ${resolveName(item)} round ${round}`}
-                      className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
-                      style={{ width: 58, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>{weightUnit}</span>
-                    <input
-                      type="number" inputMode="numeric" min="1" step="1"
-                      placeholder={previous?.reps != null ? String(previous.reps) : String(item.reps ?? "")}
-                      value={setReps[item.id]?.[r] ?? ""}
-                      onChange={e => onReps(item, r, e.target.value)}
-                      aria-label={`Reps for ${resolveName(item)} round ${round}`}
-                      className="tabular-nums text-[12.5px] text-center rounded py-1 px-1 shrink-0"
-                      style={{ width: 38, background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
-                    <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>reps</span>
+                    {(() => {
+                      const mode = metricModeFor(item);
+                      const small = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" };
+                      if (mode !== "load" && onMetric) {
+                        // One number, in the unit this movement is measured in.
+                        const field = mode === "time" ? "minutes" : mode === "hold" ? "seconds" : mode === "distance" ? "meters" : "work";
+                        const unit = mode === "time" ? "min" : mode === "distance" ? "m" : "sec";
+                        const plan = mode === "time" ? prescribedMinutes(item.reps) : mode === "distance" ? prescribedMeters(item.reps) : prescribedSeconds(item.reps);
+                        return (<>
+                          <input type="number" inputMode="decimal" min="0" step="any"
+                            placeholder={plan != null ? String(plan) : "—"}
+                            value={setMetrics[item.id]?.[r]?.[field] ?? ""}
+                            onChange={e => onMetric(item, r, field, e.target.value)}
+                            aria-label={`${unit} for ${resolveName(item)} round ${round}`}
+                            className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
+                            style={{ width: 58, ...small }} />
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint, width: 66 }}>{unit}</span>
+                        </>);
+                      }
+                      return (<>
+                        <input
+                          type="number" inputMode="decimal" min="0" step="any"
+                          placeholder={previous?.weight != null ? String(previous.weight) : "—"}
+                          value={setWeights[item.id]?.[r] ?? ""}
+                          onChange={e => onWeight(item, r, e.target.value)}
+                          aria-label={`Weight for ${resolveName(item)} round ${round}`}
+                          className="tabular-nums text-[12.5px] text-right rounded py-1 px-1.5 shrink-0"
+                          style={{ width: 58, ...small }} />
+                        <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>{weightUnit}</span>
+                        <input
+                          type="number" inputMode="numeric" min="1" step="1"
+                          placeholder={previous?.reps != null ? String(previous.reps) : String(item.reps ?? "")}
+                          value={setReps[item.id]?.[r] ?? ""}
+                          onChange={e => onReps(item, r, e.target.value)}
+                          aria-label={`Reps for ${resolveName(item)} round ${round}`}
+                          className="tabular-nums text-[12.5px] text-center rounded py-1 px-1 shrink-0"
+                          style={{ width: 38, ...small }} />
+                        <span className="text-[11px] tabular-nums shrink-0" style={{ color: C.faint }}>reps</span>
+                      </>);
+                    })()}
                   </div>
                 );
               })}
@@ -15029,7 +15545,7 @@ function FormChecksPage({ state, nav, isCoach }) {
           </>
         )}
 
-        {loading && <p className="text-[12.5px] py-6 text-center" style={{ color: C.faint }}>Loading…</p>}
+        {loading && <div className="py-6 text-center"><LoadingEstimate expectedMs={1500} /></div>}
 
         {error && (
           <div className="rounded-lg p-3 mb-3 text-[12.5px]" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
@@ -15168,6 +15684,8 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
     // someone who asked to be forgotten.
     storageSet(SESSION_DRAFT_KEY, null);
     writeSessionTimer(null);
+    rememberBrand(null);
+    setBrandAccent(null);
     // Only this account's queued sessions. The queue is one list shared by
     // everyone who has signed in on the device, and clearing it wholesale
     // destroyed a different athlete's unsent training.
@@ -15424,7 +15942,7 @@ function CoachProfile({ state, setState, nav }) {
         <div className="flex flex-col items-center mb-6">
           <EditableAvatar initials={coach.avatar} size={84} photoUrl={coach.photoUrl} onChange={setPhoto} />
           <div className="text-xl font-bold mt-3 text-center" style={{ fontFamily: DISPLAY, color: C.text }}>{coach.name}</div>
-          <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} athletes · {activePrograms} programs</div>
+          <div className="text-[15px]" style={{ color: C.sub }}>{totalAthletes} clients · {activePrograms} programs</div>
         </div>
 
         {/* Your branding */}
@@ -15481,6 +15999,24 @@ function CoachProfile({ state, setState, nav }) {
                     boxShadow: coach.brandColor === hex ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${hex}` : `0 0 0 1px ${C.border}`,
                   }} />
               ))}
+              {/* Any colour (28 Oct): the exact one from their logo. */}
+              {(() => {
+                const custom = coach.brandColor && !BRAND_COLORS.includes(coach.brandColor) ? coach.brandColor : null;
+                return (
+                  <label aria-label="Pick your own brand colour" className="relative cursor-pointer flex items-center justify-center"
+                    style={{
+                      width: 32, height: 32, borderRadius: "50%",
+                      background: custom || "conic-gradient(#FF5D6E, #F0A93C, #2BC47A, #2E86FF, #7C5CFC, #FF5D6E)",
+                      boxShadow: custom ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${custom}` : `0 0 0 1px ${C.border}`,
+                    }}>
+                    <input type="color" value={custom || "#2E86FF"} onChange={e => saveBrandColor(e.target.value.toUpperCase())}
+                      className="absolute inset-0 opacity-0 cursor-pointer" style={{ width: 32, height: 32 }} />
+                  </label>
+                );
+              })()}
+            </div>
+            <div className="text-[11.5px] mt-1.5" style={{ color: C.faint }}>
+              Becomes the colour of buttons and highlights in your app and your clients' apps. The last one picks any colour.
             </div>
           </div>
 
@@ -15497,7 +16033,7 @@ function CoachProfile({ state, setState, nav }) {
                 />
               </div>
               <div className="text-[11.5px] mt-2" style={{ color: C.faint }}>
-                Their app header, sign-up screen and printed workouts show your name and logo. "by Trained.Best" stays small underneath.
+                Their app header, sign-in screen, home-screen icon and printed workouts show your name and logo, in your colour. "by Trained.Best" stays small underneath.
               </div>
             </div>
           )}
@@ -15538,7 +16074,7 @@ function CoachProfile({ state, setState, nav }) {
           <div className="rounded-xl p-4 mb-5" style={card({ borderRadius: 16 })}>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-3" style={{ color: C.sub }}>Today's Workouts</div>
             {state.athletes.length === 0 ? (
-              <div className="text-[15px] text-center py-3" style={{ color: C.faint }}>No athletes yet.</div>
+              <div className="text-[15px] text-center py-3" style={{ color: C.faint }}>No clients yet.</div>
             ) : (
               <div className="space-y-2">
                 {state.athletes.map(a => {
@@ -15581,17 +16117,8 @@ function CoachProfile({ state, setState, nav }) {
           </div>
         )}
 
-        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Roster Overview</div>
-        <div className="grid grid-cols-3 gap-2.5 mb-5">
-          <StatCard icon={Users} label="Athletes" value={totalAthletes} accent={C.orange} />
-          <StatCard icon={ClipboardList} label="Programs" value={activePrograms} accent={C.blue} />
-          <StatCard icon={Dumbbell} label="Sessions Logged" value={totalSessions} accent={C.olive} />
-        </div>
-        <div className="grid grid-cols-2 gap-2.5 mb-5">
-          <StatCard icon={AlertCircle} label="Flagged Injuries" value={injuredCount} accent={C.red} />
-          <StatCard icon={Target} label="Unassigned" value={unassigned} accent={C.amber} />
-        </div>
-
+        {/* No Roster Overview (Isaiah, 30 Oct): the counts weren't useful.
+            Injuries show on each client's own page. */}
         {mostActive && mostActive.streak > 0 && (
           <>
             <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>Top Streak</div>
@@ -15615,7 +16142,7 @@ function CoachProfile({ state, setState, nav }) {
         <div className="grid grid-cols-2 gap-3 mb-5">
           <button onClick={() => nav.go("coach-athletes")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
             <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><Users size={18} style={{ color: C.orange }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>All Athletes</span>
+            <span className="text-[15px] font-medium" style={{ color: C.text }}>All Clients</span>
           </button>
           <button onClick={() => nav.go("form-checks")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
             <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.red}22` }}><Video size={18} style={{ color: C.red }} /></div>
@@ -15639,7 +16166,7 @@ function CoachProfile({ state, setState, nav }) {
               schedule is on their detail page, where it belongs. */}
         </div>
 
-        <ChalkDivider label="Roster" />
+        <ChalkDivider label="Clients" />
         <div className="space-y-2">
           {state.athletes.map(a => (
             <button key={a.id} onClick={() => nav.go("coach-athlete-detail", a.id)} className="w-full rounded-lg p-3 flex items-center gap-3 text-left" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
@@ -16143,6 +16670,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         )}
 
+        {!isCoach && <CoachReplyCard logs={state.workoutLogs} />}
         {/* Booked sessions with the coach, under today's workout. Clients only:
             a coach in their own training mode is the one running them. */}
         {FEATURES.booking && !isCoach && state.coachProfile && (
@@ -16249,8 +16777,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         {/* Calories and Protein were hardcoded to 0 with nothing anywhere in
             the app able to change them — a permanent "you've eaten nothing"
             on every athlete's home screen. They return with nutrition. */}
-        <div className={`grid gap-2.5 mb-6 ${FEATURES.nutrition ? "grid-cols-3" : "grid-cols-2"}`}>
-          <StatCard icon={Dumbbell} label="Workouts" value={state.workoutLogs.length} accent={C.orange} />
+        {/* No "Workouts" count (Isaiah, 30 Oct). */}
+        <div className={`grid gap-2.5 mb-6 ${FEATURES.nutrition ? "grid-cols-2" : "grid-cols-1"}`}>
           <StatCard icon={Flame} label="Streak" value={state.me.streak || 0} sub="days" accent={C.amber} />
           {FEATURES.nutrition && <StatCard icon={Salad} label="Calories" value="0" sub="kcal" accent={C.olive} />}
         </div>
@@ -16302,7 +16830,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         </div>
 
         <div style={wideHome ? { minWidth: 0, display: "flex", flexDirection: "column", gap: 20 } : undefined}>
-        <CheckinRings progress={state.progress} onOpen={() => nav.go("athlete-progress")} />
+        {/* No "Today's check-in" rings on home (Isaiah, 30 Oct). */}
         {printOpen && todayDay && (
           <PrintSheet
             day={todayDay}
@@ -16346,7 +16874,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
 // One session row, used by the athlete's own history and by the coach's view of
 // an athlete. Shows effort and the athlete's note — the note is the whole point
 // of collecting it, and a coach who never sees it may as well not have asked.
-function SessionLogRow({ log, showNote = true }) {
+function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
   const [showLifts, setShowLifts] = useState(false);
   const adherence = log.setsPrescribed ? `${log.setsCompleted}/${log.setsPrescribed} sets` : null;
   // The lifts that had a weight recorded. This is what a coach opens a session
@@ -16354,8 +16882,22 @@ function SessionLogRow({ log, showNote = true }) {
   const loaded = (log.exercises || [])
     // Recomputed from `sets` rather than trusting a stored topWeight, so the
     // number here always agrees with the sets listed beneath it.
-    .map(e => ({ name: e.name, sets: (e.sets || []).filter(wasLifted), top: topSetWeight(e.sets) }))
+    // A loaded carry is listed with the distances below, not as a lift too.
+    .map(e => ({ name: e.name, sets: (e.sets || []).filter(st => wasLifted(st) && st.meters == null), top: topSetWeight((e.sets || []).filter(st => st?.meters == null)) }))
     .filter(e => e.top?.weight != null);
+  // Cardio, holds, intervals and distance, in their own units (29 Oct). The
+  // coach saw only lifts with a weight, so a 40-minute ride logged as nothing.
+  const measured = (log.exercises || []).map(e => {
+    const done = (e.sets || []).filter(st => st?.done);
+    const sum = (k) => done.reduce((n, st) => n + (typeof st[k] === "number" ? st[k] : 0), 0);
+    const any = (k) => done.some(st => typeof st[k] === "number");
+    let text = null;
+    if (any("minutes")) text = `${Math.round(sum("minutes") * 10) / 10} min`;
+    else if (any("seconds")) text = done.filter(st => typeof st.seconds === "number").map(st => `${st.seconds}s`).join(" · ");
+    else if (any("workSec")) text = `${done.length} round${done.length === 1 ? "" : "s"} · ${done.filter(st => typeof st.workSec === "number").map(st => `${st.workSec}s`).join(" · ")}`;
+    else if (any("meters")) text = done.filter(st => typeof st.meters === "number").map(st => `${st.meters} m${typeof st.weight === "number" ? ` @ ${st.weight} ${st.unit || "lb"}` : ""}`).join(" · ");
+    return text ? { name: e.name, text } : null;
+  }).filter(Boolean);
   return (
     <div className="rounded-xl p-3.5" style={card({ borderRadius: 16 })}>
       <div className="flex items-center gap-3">
@@ -16411,12 +16953,183 @@ function SessionLogRow({ log, showNote = true }) {
           )}
         </div>
       )}
+      {measured.length > 0 && (
+        <div className="mt-2.5 pt-2.5 space-y-1" style={{ borderTop: `1px solid ${C.border}` }}>
+          {measured.map((m, i) => (
+            <div key={i} className="flex items-baseline justify-between gap-2 text-[12.5px]">
+              <span className="truncate" style={{ color: C.text }}>{m.name}</span>
+              <span className="tabular-nums shrink-0" style={{ color: C.olive }}>{m.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {showNote && log.notes && (
         <div className="mt-2.5 pt-2.5 text-[12.5px] leading-relaxed" style={{ borderTop: `1px solid ${C.border}`, color: C.text }}>
           <span style={{ color: C.faint }}>Note: </span>{log.notes}
         </div>
       )}
+      {/* The coach's side of it (Isaiah, 28 Oct): a reply, and a mark when
+          the coach corrected a number, so neither side wonders why a weight
+          changed. */}
+      {(log.coachNote || log.coachEditedAt) && (
+        <div className="mt-2.5 rounded-lg px-3 py-2 text-[12.5px] leading-relaxed" style={{ background: `${C.blue}12`, border: `1px solid ${C.blue}33`, color: C.text }}>
+          {log.coachNote && <div><span className="font-semibold" style={{ color: C.blue }}>Coach: </span>{log.coachNote}</div>}
+          {log.coachEditedAt && <div className="text-[11px] mt-0.5" style={{ color: C.sub }}>A number in this session was corrected by the coach.</div>}
+        </div>
+      )}
+      {onCoachEdit && (
+        <button onClick={() => onCoachEdit(log)} className="mt-2.5 text-[12.5px] font-semibold rounded-full px-3 py-1.5"
+          style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>
+          {log.coachNote ? "Edit reply or fix a number" : "Reply or fix a number"}
+        </button>
+      )}
     </div>
+  );
+}
+
+// The newest reply from the coach in the last week, on Home, until the athlete
+// closes it. The full history keeps every reply; this is just the one they
+// have not seen yet.
+const COACH_REPLY_DAYS = 7;
+const COACH_REPLY_SEEN_KEY = "tb_coach_reply_seen";
+function CoachReplyCard({ logs }) {
+  const [seen, setSeen] = useState(() => storageGet(COACH_REPLY_SEEN_KEY) || null);
+  const cutoff = Date.now() - COACH_REPLY_DAYS * 86400000;
+  const latest = (logs || [])
+    .filter(l => l?.coachNote && l.coachNoteAt && Date.parse(l.coachNoteAt) >= cutoff)
+    .sort((a, b) => Date.parse(b.coachNoteAt) - Date.parse(a.coachNoteAt))[0];
+  if (!latest) return null;
+  const stamp = `${latest.id}:${latest.coachNoteAt}`;
+  if (seen === stamp) return null;
+  return (
+    <div className="rounded-2xl p-4 mb-4" style={{ ...card(), border: `1px solid ${C.blue}55` }}>
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg p-2 shrink-0" style={{ background: `${C.blue}1f` }}><MessageCircle size={16} style={{ color: C.blue }} /></div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12.5px] font-semibold" style={{ color: C.blue }}>Your coach on {latest.programDay || "your session"}</div>
+          <div className="text-[15px] mt-1 leading-relaxed" style={{ color: C.text }}>{latest.coachNote}</div>
+          <div className="text-[11px] mt-1" style={{ color: C.faint }}>{formatLogDate(latest.date)}</div>
+        </div>
+        <button onClick={() => { storageSet(COACH_REPLY_SEEN_KEY, stamp); setSeen(stamp); }} aria-label="Close" className="shrink-0">
+          <X size={16} style={{ color: C.faint }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// What a coach can change in a logged session: their note on it, and the
+// weight or reps of a set that was logged. Everything goes through one
+// database function that allows exactly that and tells the athlete.
+function CoachSessionModal({ log, onClose, onSaved }) {
+  const [note, setNote] = useState(log?.coachNote || "");
+  const [values, setValues] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => { setNote(log?.coachNote || ""); setValues({}); setError(null); setSaving(false); }, [log?.id]);
+  if (!log) return null;
+
+  // Every set that was ticked off, with its place in the stored session.
+  const lifts = (log.exercises || []).map((e, ei) => ({
+    name: e.name, ei,
+    // Lifts only: a timed, held or distance set has no weight to fix.
+    sets: (e.sets || []).map((st, si) => ({ ...st, si })).filter(st => st.done === true && (typeof st.reps === "number" || (typeof st.weight === "number" && st.meters == null))),
+  })).filter(x => x.sets.length);
+
+  const keyOf = (ei, si) => `${ei}:${si}`;
+  const valueOf = (ei, si, field, fallback) => {
+    const v = values[keyOf(ei, si)];
+    return v && v[field] !== undefined ? v[field] : (fallback ?? "");
+  };
+  const setValue = (ei, si, field, v) => setValues(prev => ({ ...prev, [keyOf(ei, si)]: { ...(prev[keyOf(ei, si)] || {}), [field]: v } }));
+
+  const edits = [];
+  lifts.forEach(x => x.sets.forEach(st => {
+    const v = values[keyOf(x.ei, st.si)];
+    if (!v) return;
+    const weight = v.weight !== undefined ? (String(v.weight).trim() === "" ? null : Number(v.weight)) : (st.weight ?? null);
+    const reps = v.reps !== undefined ? (String(v.reps).trim() === "" ? null : Math.round(Number(v.reps))) : (st.reps ?? null);
+    if (weight === (st.weight ?? null) && reps === (st.reps ?? null)) return;
+    edits.push({ e: x.ei, s: st.si, weight, reps });
+  }));
+  const badNumber = edits.some(ed => (ed.weight !== null && !Number.isFinite(ed.weight)) || (ed.reps !== null && !Number.isFinite(ed.reps)));
+  const noteChanged = note.trim() !== (log.coachNote || "");
+  const canSave = !saving && !badNumber && (noteChanged || edits.length > 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    const { error: e } = await supabase.rpc("coach_update_session", {
+      p_log_id: log.id,
+      p_note: noteChanged ? note.trim() : null,
+      p_edits: edits.length ? edits : null,
+    });
+    if (e) {
+      setSaving(false);
+      setError(e.message || "That didn't save. Check your connection and try again.");
+      return;
+    }
+    const exercises = (log.exercises || []).map((ex, ei) => ({
+      ...ex,
+      sets: (ex.sets || []).map((st, si) => {
+        const ed = edits.find(x => x.e === ei && x.s === si);
+        return ed ? { ...st, weight: ed.weight, reps: ed.reps } : st;
+      }),
+    }));
+    const now = new Date().toISOString();
+    onSaved({
+      ...log, exercises,
+      coachNote: noteChanged ? (note.trim() || null) : log.coachNote,
+      coachNoteAt: noteChanged ? now : log.coachNoteAt,
+      coachEditedAt: edits.length ? now : log.coachEditedAt,
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  const input = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "8px 10px", fontSize: 15, width: "100%" };
+  return (
+    <Modal open={!!log} onClose={() => !saving && onClose()} title={log.programDay || "Session"}>
+      <div className="text-[12.5px] mb-3" style={{ color: C.sub }}>{formatLogDate(log.date)}</div>
+      {log.notes && (
+        <div className="rounded-lg px-3 py-2 mb-4 text-[12.5px]" style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}>
+          <span style={{ color: C.faint }}>Their note: </span>{log.notes}
+        </div>
+      )}
+      <Field label="Your reply">
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Great work on the squats. Keep the bar path tight next week."
+          style={{ ...input, resize: "none" }} />
+      </Field>
+
+      {lifts.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Fix a number</div>
+          <div className="space-y-3">
+            {lifts.map(x => (
+              <div key={x.ei}>
+                <div className="text-[13px] font-semibold mb-1.5" style={{ color: C.text }}>{x.name}</div>
+                {x.sets.map(st => (
+                  <div key={st.si} className="flex items-center gap-2 mb-1.5">
+                    <div className="text-[12.5px] w-12 shrink-0" style={{ color: C.faint }}>Set {st.set || st.si + 1}</div>
+                    <input inputMode="decimal" aria-label={`${x.name} set ${st.si + 1} weight`} value={valueOf(x.ei, st.si, "weight", st.weight)}
+                      onChange={e => setValue(x.ei, st.si, "weight", e.target.value)} style={input} />
+                    <div className="text-[12.5px] shrink-0" style={{ color: C.sub }}>{st.unit || "lb"} ×</div>
+                    <input inputMode="numeric" aria-label={`${x.name} set ${st.si + 1} reps`} value={valueOf(x.ei, st.si, "reps", st.reps)}
+                      onChange={e => setValue(x.ei, st.si, "reps", e.target.value)} style={{ ...input, width: 64, flex: "0 0 64px" }} />
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {badNumber && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>Use numbers only for weight and reps.</div>}
+      {error && <div className="text-[12.5px] mt-2" style={{ color: C.red }}>{error}</div>}
+      <p className="text-[11px] mt-3" style={{ color: C.faint }}>They get a notification with your reply. A fixed number is marked as corrected by you.</p>
+      <Btn className="w-full mt-3" disabled={!canSave} onClick={save}>{saving ? "Saving\u2026" : "Send"}</Btn>
+    </Modal>
   );
 }
 
@@ -19197,6 +19910,32 @@ function nextScheduledSession(program, fromIso = todayISO(), lookAhead = 21) {
   return null;
 }
 
+// Sessions still coming up, nearest first, leaving out any that have already
+// been moved, skipped or pulled to another day.
+function upcomingSessions(program, moves, fromIso = todayISO(), lookAhead = 21) {
+  const out = [];
+  for (let i = 1; i <= lookAhead; i++) {
+    const iso = shiftDays(fromIso, i);
+    for (const day of program?.days || []) {
+      if (isDayScheduledOn(day, iso) && !moveFor(moves, day.name, iso)) out.push({ day, iso, inDays: i });
+    }
+  }
+  return out;
+}
+
+// The session today, by the program or because one was pulled to today.
+// A pulled one wins: the athlete chose it on purpose.
+function sessionForToday(program, moves, logs, todayIso = todayISO()) {
+  const days = program?.days || [];
+  const pull = (moves || []).find(m => m?.kind === "pull" && m?.toDate === todayIso
+    && !(logs || []).some(l => l?.date === todayIso && l?.programDay === m.programDay));
+  const pulled = pull ? days.find(d => d.name === pull.programDay) : null;
+  if (pulled) return pulled;
+  return days.find(d => isDayScheduledOn(d, todayIso) && !moveFor(moves, d.name, todayIso)) || null;
+}
+
+const longDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
 function MyWorkoutTab({ state, setState, nav }) {
   const myProgram = state.me.customProgram || state.programs.find(p => p.id === state.me.program);
   const todayIso = todayISO();
@@ -19206,19 +19945,34 @@ function MyWorkoutTab({ state, setState, nav }) {
   // on this screen keeps its summary until Done, and only then turns into
   // the done state, instead of vanishing the moment the log saves.
   const [done, setDone] = useState(loggedToday);
+  // A future session the athlete chose to do today (Isaiah, 28 Oct): a
+  // wedding on the Saturday, so Saturday's workout gets done on Thursday.
+  const [earlyDayId, setEarlyDayId] = useState(null);
+  const [showMore, setShowMore] = useState(false);
 
   if (!myProgram || !(myProgram.days || []).length) {
     return <AthleteProgram state={state} setState={setState} nav={nav} />;
   }
-  const today = (myProgram.days || []).find(d => isDayScheduledOn(d, todayIso));
+  const moves = state.sessionMoves || [];
+  const exit = () => { setEarlyDayId(null); setDone(true); };
+  if (earlyDayId) {
+    return <Workout state={state} setState={setState} nav={nav} dayId={earlyDayId} onExit={exit} />;
+  }
+  const today = sessionForToday(myProgram, moves, state.workoutLogs, todayIso);
   if (today && !done) {
-    return <Workout state={state} setState={setState} nav={nav} dayId={today.id} onExit={() => setDone(true)} />;
+    return <Workout state={state} setState={setState} nav={nav} dayId={today.id} onExit={exit} />;
   }
 
-  const next = nextScheduledSession(myProgram, todayIso);
-  // The date itself, always (Isaiah, 27 Oct): "Wednesday, October 28",
-  // not "tomorrow".
-  const when = next ? next.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : null;
+  // A pull, the same kind "Do it today" on a missed session uses: the session
+  // leaves its own day and shows on today, and if they stop part way it goes
+  // back to its day.
+  const doToday = (item) => {
+    saveSessionMove(setState, state.me.id, { programDay: item.day.name, fromDate: item.iso, toDate: todayIso, kind: "pull" });
+    setEarlyDayId(item.day.id);
+  };
+
+  const upcoming = upcomingSessions(myProgram, moves, todayIso);
+  const next = upcoming[0] || null;
   const finished = !!today && done;
   const accent = finished ? C.olive : C.blue;
   return (
@@ -19238,8 +19992,35 @@ function MyWorkoutTab({ state, setState, nav }) {
           <div className="mt-6 w-full max-w-xs rounded-2xl px-4 py-3.5" style={card({ borderRadius: 16 })}>
             <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Next session</div>
             <div className="text-[17px] font-bold mt-1" style={{ color: C.text }}>{calendarSessionLabel(next.day.name)}</div>
-            <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{when}</div>
+            <div className="text-[15px] mt-0.5" style={{ color: C.blue }}>{longDate(next.iso)}</div>
+            <Btn size="sm" variant="secondary" className="w-full mt-3" onClick={() => doToday(next)}>Do it today instead</Btn>
           </div>
+        )}
+        {upcoming.length > 1 && (
+          <div className="mt-3 w-full max-w-xs text-left">
+            <button onClick={() => setShowMore(v => !v)} className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>
+              {showMore ? "Hide other workouts" : "Do a different upcoming workout today"}
+            </button>
+            {showMore && (
+              <div className="space-y-2 mt-1">
+                {upcoming.slice(1, 8).map(item => (
+                  <div key={`${item.iso}-${item.day.id}`} className="rounded-xl px-3.5 py-2.5 flex items-center gap-3" style={card({ borderRadius: 14 })}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{calendarSessionLabel(item.day.name)}</div>
+                      <div className="text-[12.5px]" style={{ color: C.sub }}>{longDate(item.iso)}</div>
+                    </div>
+                    <button onClick={() => doToday(item)} className="text-[12.5px] font-semibold rounded-full px-3 py-1.5 shrink-0"
+                      style={{ color: C.blue, border: `1px solid ${C.blue}55` }}>Do today</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {upcoming.length > 0 && (
+          <p className="text-[11px] mt-4 max-w-xs" style={{ color: C.faint }}>
+            Doing one early takes it off its own day, so you won't be asked about it twice.
+          </p>
         )}
       </div>
     </div>
@@ -19903,6 +20684,17 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
             workSec: metricNumber(metrics[i]?.work), restSec: metricNumber(metrics[i]?.rest), manual: false };
         }
+        if (mode === "hold") {
+          return { set: i + 1, done: checked.includes(i), weight: null, unit: null, reps: null,
+            seconds: metricNumber(metrics[i]?.seconds), manual: false };
+        }
+        if (mode === "distance") {
+          // A carry or a sled is loaded, so the weight is kept when typed. It
+          // is not a "last time" lift: that reads load-mode sets only.
+          const w = normalizeWeight(typed[i]);
+          return { set: i + 1, done: checked.includes(i), weight: w, unit: w == null ? null : weightUnit, reps: null,
+            meters: metricNumber(metrics[i]?.meters), manual: false };
+        }
         const weight = normalizeWeight(typed[i]);
         // What was done, not what was asked for. Without it a set of five at
         // 135 and a set of ten at 135 logged identically, and "last time"
@@ -20200,6 +20992,19 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     );
   }
 
+  // How far through the workout, by exercises finished (Isaiah, 30 Oct). An
+  // exercise is finished when every set of it is ticked; a warm-up or
+  // cool-down, which has no sets that count, when it is ticked at all. Read
+  // from this week's prescription, the same one the log is saved against.
+  const progressItems = sortedExercises
+    .map(raw => prescribeForWeek(raw, buildProgramPlan(myProgram?.weeks), programWeek, programHasWeeklyPlan(myProgram)))
+    .filter(Boolean);
+  const exercisesFinished = progressItems.filter(item => {
+    const checked = setChecks[item.id] || [];
+    const sets = isTrackedExercise(item) ? (item.sets || 0) : 0;
+    return sets > 0 ? checked.filter(i => i < sets).length >= sets : checked.length > 0;
+  }).length;
+
   return (
     <div className="pb-36">
       {timerMode === "counting" && countdownN > 0 && <SessionTimerCountdown n={countdownN} />}
@@ -20215,13 +21020,17 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           is scheduled for today, and jumps straight to any of them instead of
           stepping. */}
       <TopBar title={day.name}
-        below={timerIsLive
-          ? <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />
-          : null}
+        below={<>
+          {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
+          {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
+        </>}
         right={
         /* Red, because stopping is the one thing an athlete does mid-session
            that the app had no answer for. The old way out was the back
-           gesture, which said nothing about what happened to the sets. */
+           gesture, which said nothing about what happened to the sets.
+           Only once the workout is being timed (Isaiah, 30 Oct): before
+           that there is nothing running to stop, and Finish Workout ends it. */
+        (timerIsLive || timerMode === "counting") &&
         <button onClick={openStop} aria-label="Stop this workout"
           className="shrink-0 rounded-full px-3 py-1.5 text-[12.5px] font-bold"
           style={{ background: `${C.red}1f`, border: `1px solid ${C.red}`, color: C.red }}>
@@ -20321,7 +21130,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               </p>
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 tabular-nums text-[15px]" style={{ color: C.orange }}>
-              <span>{x.sets} {tracked && metricMode === "load" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
+              <span>{x.sets} {tracked && metricMode !== "intervals" && metricMode !== "time" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
             {x.note && (
@@ -20385,12 +21194,16 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         </div>
 
         <div className="mb-2">
-          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : "Sets"}</div>
+          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : metricMode === "hold" ? "Holds" : metricMode === "distance" ? "Distance" : "Sets"}</div>
           <div className="text-[12.5px] mt-0.5" style={{ color: C.faint }}>
             {metricMode === "time"
               ? "Type how many minutes you went for, then tick it."
               : metricMode === "intervals"
               ? "Type your work and rest time for each round, then tick the round."
+              : metricMode === "hold"
+              ? "Type how many seconds you held it, then tick the set."
+              : metricMode === "distance"
+              ? "Type the distance, and the weight if it was loaded, then tick the set."
               : "Type the weight you used, then tap the set as you finish it."}
           </div>
         </div>
@@ -20471,6 +21284,13 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
                 <span className="shrink-0" style={{ width: 44 }}>{metricMode === "intervals" ? "Round" : "Set"}</span>
                 {metricMode === "time"
                   ? <span className="flex-1 text-center">Minutes</span>
+                  : metricMode === "hold"
+                  ? <span className="flex-1 text-center">Seconds</span>
+                  : metricMode === "distance"
+                  ? <>
+                      <span className="flex-1 text-center">Metres</span>
+                      <span className="flex-1 text-center">Weight ({weightUnit})</span>
+                    </>
                   : <>
                       <span className="flex-1 text-center">Work (sec)</span>
                       <span className="flex-1 text-center">Rest (sec)</span>
@@ -20491,6 +21311,25 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
                         value={v.minutes ?? ""} onChange={e => write(i, "minutes", e.target.value)}
                         aria-label={`Minutes for set ${i + 1}`}
                         className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                    ) : metricMode === "hold" ? (
+                      <input type="number" inputMode="numeric" min="0" step="1"
+                        placeholder={planWork != null ? String(planWork) : ""}
+                        value={v.seconds ?? ""} onChange={e => write(i, "seconds", e.target.value)}
+                        aria-label={`Seconds for set ${i + 1}`}
+                        className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                    ) : metricMode === "distance" ? (
+                      <>
+                        <input type="number" inputMode="decimal" min="0" step="any"
+                          placeholder={prescribedMeters(x.reps) != null ? String(prescribedMeters(x.reps)) : ""}
+                          value={v.meters ?? ""} onChange={e => write(i, "meters", e.target.value)}
+                          aria-label={`Metres for set ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                        <input type="number" inputMode="decimal" min="0" step="any" placeholder="none"
+                          value={setWeights[x.id]?.[i] ?? ""}
+                          onChange={e => setSetWeights(w => { const f = [...(w[x.id] || [])]; f[i] = e.target.value; return { ...w, [x.id]: f }; })}
+                          aria-label={`Weight for set ${i + 1}`}
+                          className="tabular-nums text-[15px] text-center rounded py-1.5 min-w-0 flex-1" style={box} />
+                      </>
                     ) : (
                       <>
                         <input type="number" inputMode="numeric" min="0" step="1"
@@ -20519,6 +21358,10 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               <div className="px-3 py-2 text-[11px] tabular-nums" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
                 {metricMode === "time"
                   ? (planMin != null ? `Planned: ${planMin} min. Leave a box empty to log the plan as written.` : "Leave a box empty if you didn't time it.")
+                  : metricMode === "hold"
+                  ? `${(setChecks[x.id] || []).length} of ${totalSets} done${planWork != null ? ` · planned ${planWork}s` : ""}`
+                  : metricMode === "distance"
+                  ? `${(setChecks[x.id] || []).length} of ${totalSets} done${prescribedMeters(x.reps) != null ? ` · planned ${prescribedMeters(x.reps)} m` : ""}. Leave weight empty if it wasn't loaded.`
                   : `${(setChecks[x.id] || []).length} of ${totalSets} rounds done${planWork != null ? ` · planned ${planWork}s work` : ""}${planRest != null ? ` / ${planRest}s rest` : ""}`}
               </div>
             </div>
@@ -20715,6 +21558,12 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               const forExercise = [...(w[item.id] || [])];
               forExercise[i] = value;
               return { ...w, [item.id]: forExercise };
+            })}
+            setMetrics={setMetrics}
+            onMetric={(item, i, field, value) => setSetMetrics(m => {
+              const forExercise = [...(m[item.id] || [])];
+              forExercise[i] = { ...(forExercise[i] || {}), [field]: value };
+              return { ...m, [item.id]: forExercise };
             })}
             onReps={(item, i, value) => setSetReps(r => {
               const forExercise = [...(r[item.id] || [])];
@@ -21598,7 +22447,7 @@ function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
           </div>
         )}
         {tab === "coach" && hasCoach && coachLoading && (
-          <div className="text-center py-8"><Loader2 size={20} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>
+          <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>
         )}
         {rendered.length === 0 && !(tab === "coach" && (!hasCoach || coachLoading)) && (
           <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>
@@ -22892,43 +23741,11 @@ function AthleteProfile({ state, setState, nav }) {
 
         <AthletePreferences state={state} setState={setState} />
 
-        <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>More</div>
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <button onClick={() => nav.go("athlete-progress")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.blue}22` }}><TrendingUp size={18} style={{ color: C.blue }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Full Progress</span>
-          </button>
-          <button onClick={() => nav.go("form-checks")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.red}22` }}><Video size={18} style={{ color: C.red }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Form Checks</span>
-          </button>
-          {FEATURES.nutrition && (
-            <button onClick={() => nav.go("nutrition")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-              <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Salad size={18} style={{ color: C.olive }} /></div>
-              <span className="text-[15px] font-medium" style={{ color: C.text }}>Nutrition</span>
-            </button>
-          )}
-          {FEATURES.exerciseLibrary && (
-            <button onClick={() => nav.go("exercise-library")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-              <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.orange}22` }}><BookOpen size={18} style={{ color: C.orange }} /></div>
-              <span className="text-[15px] font-medium" style={{ color: C.text }}>Exercise Library</span>
-            </button>
-          )}
-          <button onClick={() => nav.go("calendar")} className="rounded-2xl p-4 flex items-center gap-3 text-left" style={card()}>
-            <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.amber}22` }}><Calendar size={18} style={{ color: C.amber }} /></div>
-            <span className="text-[15px] font-medium" style={{ color: C.text }}>Calendar</span>
-          </button>
-        </div>
-
-        <ChalkDivider label="Recent Sessions" />
-        <div className="space-y-2">
-          {state.workoutLogs.map(l => (
-            <div key={l.id} className="rounded-lg p-3 flex justify-between gap-2" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-              <span className="text-[15px] truncate" style={{ color: C.text }}>{l.programDay}</span>
-              <span className="text-[12.5px] tabular-nums shrink-0" style={{ color: C.sub }}>{formatLogDate(l.date)}</span>
-            </div>
-          ))}
-        </div>
+        {/* No "More" section (Isaiah, 30 Oct): Full Progress, Form Checks and
+            Calendar links are gone from the athlete's Profile. The calendar is
+            on the Week tab. */}
+        {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space,
+            and every session is on the Week tab's calendar. */}
         <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
         {/* Required to be reachable from inside the app, not only by writing
@@ -23370,11 +24187,18 @@ function skipExerciseInRange(exercise, from, to, totalWeeks) {
 
 // A new exercise that only exists in weeks `from` to `to`.
 function limitNewExerciseToRange(exercise, from, to, totalWeeks) {
+  return limitNewExerciseToSpans(exercise, [[from, to]], totalWeeks);
+}
+// The same, for several stretches: weeks 2 to 3 and week 5, say.
+function limitNewExerciseToSpans(exercise, spans, totalWeeks) {
   const total = Math.max(1, Math.round(Number(totalWeeks) || 0) || 1);
   const map = {};
-  if (from > 1) map["1"] = { skip: true };
-  if (from > 1) map[String(from)] = { skip: false };
-  if (to < total) map[String(to + 1)] = { skip: true };
+  const list = [...(spans || [])].sort((x, y) => x[0] - y[0]);
+  if (list.length && list[0][0] > 1) map["1"] = { skip: true };
+  list.forEach(([from, to]) => {
+    if (from > 1) map[String(from)] = { skip: false };
+    if (to < total) map[String(to + 1)] = { skip: true };
+  });
   return Object.keys(map).length ? { ...exercise, byWeek: map } : exercise;
 }
 
@@ -23392,7 +24216,7 @@ function programForAI(program, exercises, { withWeeks = true } = {}) {
     phasesNamedByCoach: storedPhasesValid(program?.phases, total),
     weeksWrittenOut: programHasWeeklyPlan(program),
     days: (program?.days || []).map(d => ({
-      id: d.id, name: d.name || "Session", weekday: d.weekday || null,
+      id: d.id, name: d.name || "Session", weekday: d.weekday || null, mode: d.mode || null,
       exercises: (d.exercises || []).map(x => {
         const o = { id: x.id, name: nameOf(x.exerciseId) || x.name || "Exercise", section: x.phase || null, sets: x.sets, reps: x.reps };
         if (x.rpe !== undefined && x.rpe !== null && x.rpe !== "") o.rpe = x.rpe;
@@ -23435,13 +24259,31 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
     return hit;
   };
   const total = () => Math.max(1, Math.round(Number(p.weeks) || 0) || 1);
+  // Which weeks a change is for (Isaiah, 29 Oct: "weeks 2 and 3, or just
+  // week 5, or Tuesday of week 6"). Accepts [from, to], a list of those
+  // ([[2, 3], [5, 5]]), a list of single weeks ([2, 4, 6]) or one number.
+  // Returns sorted, merged spans, or null for every week.
   const span = (weeks) => {
     if (weeks === undefined || weeks === null) return null;
-    const pair = Array.isArray(weeks) ? weeks : [weeks.from ?? weeks.start, weeks.to ?? weeks.end];
-    const a = Math.round(Number(pair[0]));
-    const b = Math.round(Number(pair[1] ?? pair[0]));
-    if (!(a >= 1) || !(b >= a) || b > total()) throw new Error(`Weeks ${a} to ${b} are outside this ${total()}-week program.`);
-    return (a === 1 && b === total()) ? null : [a, b];
+    let list;
+    if (Array.isArray(weeks) && weeks.length && weeks.every(w => Array.isArray(w))) list = weeks;
+    else if (Array.isArray(weeks) && weeks.length === 2) list = [weeks];
+    else if (Array.isArray(weeks)) list = weeks.map(w => [w, w]);
+    else if (typeof weeks === "object") list = [[weeks.from ?? weeks.start, weeks.to ?? weeks.end]];
+    else list = [[weeks, weeks]];
+    const pairs = list.map(pair => {
+      const a = Math.round(Number(pair[0]));
+      const b = Math.round(Number(pair[1] ?? pair[0]));
+      if (!(a >= 1) || !(b >= a) || b > total()) throw new Error(`Weeks ${a} to ${b} are outside this ${total()}-week program.`);
+      return [a, b];
+    }).sort((x, y) => x[0] - y[0]);
+    if (!pairs.length) return null;
+    const merged = [pairs[0].slice()];
+    for (const [a, b] of pairs.slice(1)) {
+      const last = merged[merged.length - 1];
+      if (a <= last[1] + 1) last[1] = Math.max(last[1], b); else merged.push([a, b]);
+    }
+    return (merged.length === 1 && merged[0][0] === 1 && merged[0][1] === total()) ? null : merged;
   };
   const findEx = (id) => {
     for (const d of p.days || []) {
@@ -23495,7 +24337,8 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
             const full = swappedName ? { ...patch, name: swappedName } : patch;
             x = sp
               ? applyExerciseEdit(x, full, {
-                  scope: "blocks", blocks: [{ startWeek: sp[0], endWeek: sp[1] }], selected: [sp[0]], totalWeeks: total(), nameFor,
+                  scope: "blocks", blocks: sp.map(([a, b]) => ({ startWeek: a, endWeek: b })), selected: sp.map(([a]) => a),
+                  totalWeeks: total(), nameFor,
                 })
               : applyExerciseEdit(x, full, { scope: "all", totalWeeks: total(), nameFor });
           }
@@ -23509,8 +24352,11 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
         const sp = span(op.weeks);
         for (const id of ids) {
           const { d, i } = findEx(id);
-          if (sp) d.exercises[i] = skipExerciseInRange(d.exercises[i], sp[0], sp[1], total());
-          else d.exercises.splice(i, 1);
+          if (sp) {
+            let x = d.exercises[i];
+            for (const [a, b] of sp) x = skipExerciseInRange(x, a, b, total());
+            d.exercises[i] = x;
+          } else d.exercises.splice(i, 1);
         }
         break;
       }
@@ -23529,7 +24375,7 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
             groupId: null, groupKind: null, groupRounds: null, byWeek: null,
             note: String(spec.note || "").trim() || null,
           };
-          if (sp) x = limitNewExerciseToRange(x, sp[0], sp[1], total());
+          if (sp) x = limitNewExerciseToSpans(x, sp, total());
           const at = op.after ? d.exercises.findIndex(y => y.id === op.after) : -1;
           if (at >= 0) d.exercises.splice(at + 1, 0, x); else d.exercises.push(x);
         }
@@ -23564,6 +24410,10 @@ function applyAdjustOps(program, ops, { exercises = [] } = {}) {
         if (op.weekday !== undefined) {
           if (op.weekday !== null && !WEEKDAY_ORDER.includes(op.weekday)) throw new Error(`"${op.weekday}" isn't a day of the week.`);
           p.days = reassignWeekday(p.days, d.id, op.weekday);
+        }
+        if (op.mode !== undefined) {
+          if (op.mode !== null && !["in_person", "online"].includes(op.mode)) throw new Error(`"${op.mode}" isn't in person or online.`);
+          p.days = p.days.map(x => (x.id === d.id ? { ...x, mode: op.mode } : x));
         }
         break;
       }
@@ -23705,7 +24555,7 @@ You will get the current program as JSON and their request. Reply with ONLY a JS
 {"reply": "...", "ops": [ ... ]}
 
 "reply": one to three short sentences in plain words saying what you changed (or what you need to know). No em dashes. No markdown.
-"ops": the changes, applied in order. Use ids exactly as given. Leave "weeks" out to mean every week of the program. "weeks": [from, to] is inclusive and 1-based; [4, 4] is week 4 only. Week numbers in later ops refer to the program after earlier ops have run.
+"ops": the changes, applied in order. Use ids exactly as given. Leave "weeks" out to mean every week of the program. "weeks": [from, to] is inclusive and 1-based; [4, 4] is week 4 only. For weeks that are not next to each other, give a list of ranges: [[2, 3], [5, 5]] is weeks 2, 3 and 5. A single day in a single week ("Tuesday of week 6") is that day's exercise ids with "weeks": [6, 6]. Week numbers in later ops refer to the program after earlier ops have run.
 
 Operations:
 {"op":"update_exercises","exercises":[exercise ids],"set":{"sets":3,"reps":"5","rpe":7,"rest":"90s","name":"new exercise name to swap to","section":"compound","note":"cue text"},"weeks":[5,8]}
@@ -23715,7 +24565,7 @@ Operations:
 {"op":"set_phases","phases":[{"name":"Foundation","startWeek":1,"endWeek":6},{"name":"Speed-Strength","startWeek":7,"endWeek":12}]}
   Phases must run from week 1 to the last week with no gaps or overlaps.
 {"op":"rename_program","name":"..."}
-{"op":"update_day","day":"day id","name":"...","weekday":"Monday"}   (weekday is Monday to Sunday, or null to unschedule)
+{"op":"update_day","day":"day id","name":"...","weekday":"Monday","mode":"in_person"}   (weekday is Monday to Sunday, or null to unschedule; mode is "in_person" or "online" for how the session runs)
 {"op":"add_day","id":"new-day-1","name":"...","weekday":"Friday","copyFrom":"optional day id"}   then add_exercise to "new-day-1" if it is not a copy
 {"op":"remove_day","day":"day id"}
 {"op":"add_weeks","at":13,"count":4}   (at = the week number the new weeks start at; new weeks carry on the week before them)
@@ -23776,7 +24626,7 @@ function boardDayOrder(days) {
     .map(x => x.d);
 }
 
-function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay }) {
+function ProgramBoardDay({ day, week, program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise, onAddExercise }) {
   const blocks = programBoardWeek(program, day, week, plan, authored);
   return (
     <div className="rounded-xl p-3" style={card({ borderRadius: 14 })}>
@@ -23795,13 +24645,21 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
       {blocks.length === 0 && <div className="text-[12.5px]" style={{ color: C.faint }}>Nothing this week.</div>}
       {blocks.map(b => (
         <div key={b.key} className="mt-2.5 first:mt-0">
-          <div className="text-[11px] uppercase tracking-[.14em] font-semibold mb-1" style={{ color: b.accent || C.sub }}>{b.label}</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[11px] uppercase tracking-[.14em] font-semibold" style={{ color: b.accent || C.sub }}>{b.label}</div>
+            {onAddExercise && (
+              <button onClick={() => onAddExercise({ day, week, section: (SESSION_BLOCKS.find(sb => sb.key === b.key)?.phases || [])[0] })}
+                aria-label={`Add to ${b.label}`} className="p-1 -m-1"><Plus size={14} style={{ color: b.accent || C.sub }} /></button>
+            )}
+          </div>
           {b.items.map((x, i) => {
             const ex = exById(x.exerciseId);
             const name = ex?.name || x.name || "Exercise";
             const img = exerciseImage(name);
             return (
-              <button key={x.id || i} onClick={() => onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase })}
+              <button key={x.id || i} onClick={() => (onEditExercise
+                  ? onEditExercise({ item: x, day, week, name })
+                  : onExerciseClick?.({ ...ex, name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }))}
                 className="w-full flex items-center gap-2.5 py-1.5 text-left" style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
                 <div className="rounded-md w-8 h-8 shrink-0 overflow-hidden flex items-center justify-center" style={{ background: img ? PHOTO_TILE : C.panelAlt }}>
                   {img ? <img src={img} alt="" loading="lazy" className="w-full h-full object-contain" /> : <Dumbbell size={13} style={{ color: C.faint }} />}
@@ -23816,11 +24674,18 @@ function ProgramBoardDay({ day, week, program, plan, authored, exById, onExercis
           })}
         </div>
       ))}
+      {onAddExercise && (
+        <button onClick={() => onAddExercise({ day, week, section: "compound" })}
+          className="w-full mt-2.5 rounded-lg py-2 text-[12.5px] font-semibold flex items-center justify-center gap-1.5"
+          style={{ color: C.blue, border: `1px dashed ${C.blue}55` }}>
+          <Plus size={13} /> Add exercise
+        </button>
+      )}
     </div>
   );
 }
 
-function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
+function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditExercise = null, onAddExercise = null }) {
   const wide = useIsWide();
   const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
   const [week, setWeek] = useState(() => Math.min(total, Math.max(1, currentProgramWeek(program) || 1)));
@@ -23841,7 +24706,7 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay }) {
   const named = storedPhasesValid(program.phases, total) ? program.phases : null;
   const phaseName = (w) => named?.find(ph => w >= ph.startWeek && w <= ph.endWeek)?.name || null;
   const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
-  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay };
+  const shared = { program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise, onAddExercise };
 
   if (!wide) {
     const shown = Math.min(total, Math.max(1, week));
@@ -24153,7 +25018,7 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
         ))}
         {busy && (
           <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <Loader2 size={14} className="animate-spin" style={{ color: C.blue }} /> Making the changes
+            <LoadingEstimate small expectedMs={25000} label="Making the changes" />
           </div>
         )}
         {error && <div className="text-[12.5px]" style={{ color: C.red }}>{error}</div>}
@@ -24178,13 +25043,287 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
   );
 }
 
+// ---------- changing the program by hand, on the board ----------
+//
+// Isaiah, 29-30 Oct: full flexibility by hand as well as with the AI. Tap an
+// exercise to change it, swap it, or remove it; tap + on a section to add one.
+// Either way, pick exactly which days and which weeks it applies to. Every
+// change goes through the same engine as Adjust with AI, so the days and
+// weeks not picked stay exactly as they were.
+
+function WeekPicker({ total, picked, setPicked, anchor }) {
+  if (total <= 1) return null;
+  const all = Array.from({ length: total }, (_, i) => i + 1);
+  const every = picked.length === total;
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>Weeks</div>
+        <button onClick={() => setPicked(every ? [anchor] : all)} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {every ? `Just week ${anchor}` : "Every week"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {all.map(w => {
+          const on = picked.includes(w);
+          return (
+            <button key={w} onClick={() => setPicked(p => (p.includes(w) ? p.filter(x => x !== w) : [...p, w]))} aria-pressed={on} aria-label={`Week ${w}`}
+              className="rounded-lg text-[13px] font-semibold tabular-nums"
+              style={{ width: 40, height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {w}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DayPicker({ days, picked, setPicked, label = "Days" }) {
+  if (!days || days.length <= 1) return null;
+  const every = picked.length === days.length;
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{label}</div>
+        <button onClick={() => setPicked(every ? [days[0].id] : days.map(d => d.id))} className="text-[12.5px] font-semibold" style={{ color: C.blue }}>
+          {every ? "Just one" : "All of them"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {days.map(d => {
+          const on = picked.includes(d.id);
+          return (
+            <button key={d.id} onClick={() => setPicked(p => (p.includes(d.id) ? p.filter(x => x !== d.id) : [...p, d.id]))} aria-pressed={on}
+              className="rounded-lg px-3 text-[12.5px] font-semibold max-w-full truncate"
+              style={{ height: 36, background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.sub }}>
+              {d.name}{d.weekday && !String(d.name || "").toLowerCase().includes(d.weekday.toLowerCase()) ? ` · ${d.weekday.slice(0, 3)}` : ""}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Pick a movement from the library by typing, or name a new one.
+function ExerciseSearch({ exercises, value, onChange, placeholder = "Search exercises" }) {
+  const [q, setQ] = useState("");
+  const term = q.trim().toLowerCase();
+  const matches = term
+    ? (exercises || []).filter(e => (e.name || "").toLowerCase().includes(term)).slice(0, 6)
+    : [];
+  const exact = (exercises || []).some(e => (e.name || "").toLowerCase() === term);
+  if (value) {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ background: `${C.orange}12`, border: `1px solid ${C.orange}55` }}>
+        <span className="text-[15px] font-semibold truncate" style={{ color: C.text }}>{value}</span>
+        <button onClick={() => { onChange(null); setQ(""); }} className="text-[12.5px] font-semibold shrink-0" style={{ color: C.blue }}>Change</button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder={placeholder}
+        className="w-full rounded-xl px-3 py-2.5 text-[15px]"
+        style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+      {term && (
+        <div className="mt-1.5 rounded-xl overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+          {matches.map(e => (
+            <button key={e.id} onClick={() => { onChange(e.name); setQ(""); }} className="w-full text-left px-3 py-2 text-[15px]"
+              style={{ background: C.panel, borderTop: `1px solid ${C.border}`, color: C.text }}>{e.name}</button>
+          ))}
+          {!exact && (
+            <button onClick={() => { onChange(q.trim()); setQ(""); }} className="w-full text-left px-3 py-2 text-[15px] font-semibold"
+              style={{ background: C.panel, borderTop: `1px solid ${C.border}`, color: C.blue }}>Use "{q.trim()}" as a new exercise</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const sectionChoices = () => SESSION_BLOCKS.map(b => ({ key: b.phases[0], label: b.label, accent: b.accent }));
+
+function NumberFields({ vals, setVals }) {
+  const field = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 10, padding: "10px 8px", fontSize: 15, width: "100%", textAlign: "center" };
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      {[["sets", "Sets"], ["reps", "Reps"], ["rpe", DIFFICULTY_SHORT], ["rest", "Rest"]].map(([k, label]) => (
+        <div key={k}>
+          <input value={vals[k] ?? ""} onChange={e => setVals(v => ({ ...v, [k]: e.target.value }))} aria-label={label} style={field} />
+          <div className="text-center text-[11px] mt-1" style={{ color: C.faint }}>{label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Runs a list of engine operations against the program and saves it.
+function useBoardRunner(program, state, setState, onDone) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const run = async (ops, summary) => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = applyAdjustOps(program, ops, { exercises: state.exercises });
+      const problem = validateAdjustedProgram(result.program, [...state.exercises, ...result.newExercises]);
+      if (problem) throw new Error(problem);
+      const ok = await saveWholeProgram(state, setState, result.program, result.newExercises, summary);
+      if (!ok) throw new Error("That didn't save. Check your connection and try again.");
+      onDone();
+    } catch (e) {
+      setError(e.message || "That didn't save.");
+    }
+    setSaving(false);
+  };
+  return { run, saving, error, setError };
+}
+
+const weeksFor = (picked, total) => (total <= 1 || picked.length === total ? undefined : [...picked].sort((a, b) => a - b).map(w => [w, w]));
+const weeksText = (picked, total) => (total <= 1 || picked.length === total ? "every week" : formatWeekList([...picked].sort((a, b) => a - b)).toLowerCase());
+
+function BoardExerciseEditor({ target, program, state, setState, onClose, onShow }) {
+  const x = target?.item;
+  const [vals, setVals] = useState({});
+  const [swapTo, setSwapTo] = useState(null);
+  const [weeksPicked, setWeeksPicked] = useState([]);
+  const [daysPicked, setDaysPicked] = useState([]);
+  const { run, saving, error, setError } = useBoardRunner(program, state, setState, onClose);
+  useEffect(() => {
+    if (!x) return;
+    setVals({ sets: x.sets ?? "", reps: x.reps ?? "", rpe: x.rpe ?? "", rest: x.rest ?? "" });
+    setSwapTo(null);
+    setWeeksPicked(target?.week ? [target.week] : []);
+    setDaysPicked(target?.day?.id ? [target.day.id] : []);
+    setError(null);
+  }, [x?.id, target?.week]);
+  if (!x) return null;
+
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  // The same movement on other days, so one change can cover all of them.
+  const stored = (program.days || []).flatMap(d => d.exercises || []).find(e => e.id === x.id);
+  const baseId = stored?.exerciseId || x.exerciseId;
+  const sameOn = (program.days || [])
+    .map(d => ({ day: d, ex: (d.exercises || []).find(e => e.exerciseId === baseId) }))
+    .filter(r => r.ex);
+  const ids = sameOn.filter(r => daysPicked.includes(r.day.id)).map(r => r.ex.id);
+  const weeks = weeksFor(weeksPicked, total);
+  const when = weeksText(weeksPicked, total);
+
+  const changed = {};
+  ["sets", "reps", "rpe", "rest"].forEach(f => {
+    const v = String(vals[f] ?? "").trim();
+    if (v === String(x[f] ?? "")) return;
+    changed[f] = (f === "sets" || f === "rpe") && /^\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+  });
+  if (swapTo) changed.name = swapTo;
+  const ready = !saving && ids.length && weeksPicked.length;
+  const save = () => run([{ op: "update_exercises", exercises: ids, set: changed, weeks }], `${target.name}${swapTo ? ` to ${swapTo}` : ""}, ${when}`);
+  const remove = () => run([{ op: "remove_exercises", exercises: ids, weeks }], `Removed ${target.name}, ${when}`);
+
+  return (
+    <Modal open={!!x} onClose={() => !saving && onClose()} title={target.name}>
+      <div className="text-[12.5px] mb-3" style={{ color: C.sub }}>{target.day?.name} · week {target.week}</div>
+      <NumberFields vals={vals} setVals={setVals} />
+      <div className="mt-4">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Swap for (optional)</div>
+        <ExerciseSearch exercises={state.exercises} value={swapTo} onChange={setSwapTo} placeholder="Type to find another exercise" />
+      </div>
+      <DayPicker days={sameOn.map(r => r.day)} picked={daysPicked} setPicked={setDaysPicked} label={`Days with ${target.name}`} />
+      <WeekPicker total={total} picked={weeksPicked} setPicked={setWeeksPicked} anchor={target.week} />
+      {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
+      <Btn className="w-full mt-4" disabled={!ready || !Object.keys(changed).length} onClick={save}>{saving ? "Saving…" : "Save"}</Btn>
+      <div className="flex items-center justify-between mt-3">
+        <button onClick={() => { const ex = state.exercises.find(e => e.id === x.exerciseId); onClose(); onShow?.({ ...ex, name: target.name, sets: x.sets, reps: x.reps, rpe: x.rpe, rest: x.rest, phase: x.phase }); }}
+          className="text-[12.5px] font-semibold py-2" style={{ color: C.blue }}>See the exercise</button>
+        <button onClick={remove} disabled={!ready} className="text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
+          Remove{ids.length > 1 ? ` from ${ids.length} days` : ""}, {when}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Adding a movement: any section, any days, any weeks.
+function BoardAddExercise({ target, program, state, setState, onClose }) {
+  const [name, setName] = useState(null);
+  const [section, setSection] = useState("compound");
+  const [vals, setVals] = useState({ sets: "3", reps: "8", rpe: "7", rest: "90s" });
+  const [weeksPicked, setWeeksPicked] = useState([]);
+  const [daysPicked, setDaysPicked] = useState([]);
+  const { run, saving, error, setError } = useBoardRunner(program, state, setState, onClose);
+  const total = Math.max(1, Math.round(Number(program?.weeks) || 0) || 1);
+  useEffect(() => {
+    if (!target) return;
+    setName(null);
+    setSection(target.section || "compound");
+    setVals({ sets: "3", reps: "8", rpe: "7", rest: "90s" });
+    setWeeksPicked(Array.from({ length: total }, (_, i) => i + 1));
+    setDaysPicked(target.day?.id ? [target.day.id] : []);
+    setError(null);
+  }, [target?.day?.id, target?.section, target?.week]);
+  if (!target) return null;
+
+  const when = weeksText(weeksPicked, total);
+  const num = (v) => (/^\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : String(v).trim());
+  const add = () => run([{
+    op: "add_exercise", days: daysPicked,
+    exercise: { name, section, sets: num(vals.sets), reps: String(vals.reps).trim(), rpe: num(vals.rpe), rest: String(vals.rest).trim() },
+    weeks: weeksFor(weeksPicked, total),
+  }], `Added ${name}, ${when}`);
+
+  return (
+    <Modal open={!!target} onClose={() => !saving && onClose()} title="Add an exercise">
+      <ExerciseSearch exercises={state.exercises} value={name} onChange={setName} placeholder="Type an exercise name" />
+      <div className="mt-4">
+        <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Section</div>
+        <div className="flex flex-wrap gap-1.5">
+          {sectionChoices().map(b => {
+            const on = section === b.key;
+            return (
+              <button key={b.key} onClick={() => setSection(b.key)} aria-pressed={on}
+                className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+                style={{ background: on ? `${b.accent}1f` : C.panel, border: `1px solid ${on ? b.accent : C.border}`, color: on ? b.accent : C.sub }}>
+                {b.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-4"><NumberFields vals={vals} setVals={setVals} /></div>
+      <DayPicker days={program.days || []} picked={daysPicked} setPicked={setDaysPicked} />
+      <WeekPicker total={total} picked={weeksPicked} setPicked={setWeeksPicked} anchor={target.week} />
+      {error && <div className="text-[12.5px] mt-3" style={{ color: C.red }}>{error}</div>}
+      <Btn className="w-full mt-4" icon={Plus} disabled={saving || !name || !daysPicked.length || !weeksPicked.length} onClick={add}>
+        {saving ? "Adding…" : `Add${daysPicked.length > 1 ? ` to ${daysPicked.length} days` : ""}, ${when}`}
+      </Btn>
+    </Modal>
+  );
+}
+
 // The board with the chat beside it. On a computer or tablet the chat is a
 // panel on the right that stays open; on a phone it's a full-screen sheet
 // opened from the button above the board.
-function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClick, onEditDay }) {
+function ProgramBoardWithAI({ state, setState, program, authorId, onExerciseClick, onEditDay, editable = false }) {
   const wide = useIsWide();
   const [open, setOpen] = useState(false);
-  const board = <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay} />;
+  const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(null);
+  const board = (
+    <>
+      <ProgramBoard program={program} exercises={state.exercises} onExerciseClick={onExerciseClick} onEditDay={onEditDay}
+        onEditExercise={editable ? setEditing : null} onAddExercise={editable ? setAdding : null} />
+      {editable && (<>
+        <BoardExerciseEditor target={editing} program={program} state={state} setState={setState}
+          onClose={() => setEditing(null)} onShow={onExerciseClick} />
+        <BoardAddExercise target={adding} program={program} state={state} setState={setState}
+          onClose={() => setAdding(null)} />
+      </>)}
+    </>
+  );
   if (!program || !(program.days || []).length) return board;
 
   if (wide) {
@@ -24231,6 +25370,14 @@ function calendarSessionShort(name) {
   return words[0] || "Session";
 }
 
+// Which day of the program a session is: 1 for the first day, and so on,
+// in the program's own order. Isaiah, 30 Oct: the calendar said "Day" and a
+// colour, because a session named "Day 1" was cut to its first word.
+function programDayNumber(program, dayId) {
+  const i = (program?.days || []).findIndex(d => d.id === dayId);
+  return i >= 0 ? i + 1 : null;
+}
+
 function CalendarViewPage({ state, setState, nav }) {
   // Program board first, the month calendar one tap away (Isaiah, 26 Oct).
   const [weekView, setWeekView] = useState("program");
@@ -24261,7 +25408,21 @@ function CalendarViewPage({ state, setState, nav }) {
   const dateStrFor = (day) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   // Program days recur weekly by their assigned weekday (optionally bounded to
   // a start date + N weeks) — not tied to a single calendar week.
-  const scheduledDayFor = (ds) => (myProgram?.days || []).find(d => isDayScheduledOn(d, ds));
+  // Moves count here too (28 Oct): a session pulled to today, or moved, shows
+  // on the day it will actually happen, and not on the day it left.
+  const calMoves = state.sessionMoves || [];
+  const scheduledDayFor = (ds) => {
+    const days = myProgram?.days || [];
+    const arriving = calMoves.find(m => m?.toDate === ds && m?.kind !== "skip");
+    const moved = arriving ? days.find(d => d.name === arriving.programDay) : null;
+    if (moved) return moved;
+    return days.find(d => isDayScheduledOn(d, ds) && !moveFor(calMoves, d.name, ds));
+  };
+  const doToday = (day, ds) => {
+    saveSessionMove(setState, state.me.id, { programDay: day.name, fromDate: ds, toDate: todayISO(), kind: "pull" });
+    setOpenDate(null);
+    nav.go("athlete-program");
+  };
 
   const cells = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
@@ -24335,6 +25496,10 @@ function CalendarViewPage({ state, setState, nav }) {
               // a green tick, today is a ring, the tapped day is filled.
               const sched = scheduledDayFor(ds);
               const tint = sched ? programDayColor(myProgram, sched.id) : C.blue;
+              const dayNo = sched ? programDayNumber(myProgram, sched.id) : null;
+              const dayTag = dayNo ? `Day ${dayNo}` : sched ? calendarSessionShort(sched.name) : "";
+              const restLabel = sched ? calendarSessionLabel(sched.name) : "";
+              const showRest = wideCal && restLabel && !/^day\s*\d+$/i.test(restLabel);
               return (
                 <button key={ds} onClick={() => setOpenDate(ds)}
                   aria-label={`${ds}${sched ? `, ${sched.name}` : ""}${hasLog ? ", done" : ""}`}
@@ -24352,13 +25517,13 @@ function CalendarViewPage({ state, setState, nav }) {
                   {sched && (
                     <span className="mt-1 rounded font-semibold leading-tight"
                       style={{
-                        fontSize: wideCal ? 11 : (calendarSessionShort(sched.name).length > 6 ? 7.5 : calendarSessionShort(sched.name).length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
+                        fontSize: wideCal ? 11 : (dayTag.length > 6 ? 7.5 : dayTag.length > 5 ? 8 : 9), color: tint, background: `${tint}1f`, borderLeft: `2px solid ${tint}`,
                         padding: wideCal ? "2px 4px" : "2px 1px 2px 2px", letterSpacing: wideCal ? 0 : "-0.02em",
                         ...(wideCal
                           ? { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }
                           : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
                       }}>
-                      {wideCal ? calendarSessionLabel(sched.name) : calendarSessionShort(sched.name)}
+                      {showRest ? <><b>{dayTag}</b> {restLabel}</> : dayTag}
                     </span>
                   )}
                 </button>
@@ -24383,6 +25548,7 @@ function CalendarViewPage({ state, setState, nav }) {
         onAddSkip={addSkip}
         onRemoveSkip={removeSkip}
         colorOf={(id) => programDayColor(myProgram, id)}
+        onDoToday={openDate && openDate > todayISO() && scheduledDayFor(openDate) ? () => doToday(scheduledDayFor(openDate), openDate) : null}
       />
       <ExerciseDetailModal open={!!detailExercise} onClose={() => setDetailExercise(null)} exercise={detailExercise}
         canAddPhoto={canCurateExercisePhotos(state)} userId={state.coachProfile?.id}
@@ -24392,7 +25558,7 @@ function CalendarViewPage({ state, setState, nav }) {
 }
 
 
-function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip, colorOf }) {
+function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExerciseClick, onSetWeekday, onAddSkip, onRemoveSkip, colorOf, onDoToday = null }) {
   const [clearStart, setClearStart] = useState("");
   const [clearEnd, setClearEnd] = useState("");
 
@@ -24429,6 +25595,10 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
             <div className="mt-1.5">
               <SessionModeTag mode={sessionModeFor(day, date)} overridden={sessionModeIsOverridden(day, date)} />
             </div>
+            {/* Busy that day? Do it today instead (Isaiah, 28 Oct). */}
+            {onDoToday && (
+              <Btn size="sm" className="mt-3" icon={Play} onClick={onDoToday}>Do it today instead</Btn>
+            )}
           </div>
 
           {/* What actually happened, when this day has already been trained.
@@ -24484,6 +25654,7 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
               same title, different workout. It reads as "my tap renamed my
               session", and tapping again just swaps them back. */}
           <DayWeekdayPicker value={day.weekday} otherDays={allDays.filter(d => d.id !== day.id)}
+            allDays={allDays} thisDayId={day.id} colorOf={colorOf}
             onChange={(w) => { if (w) { onSetWeekday(day.id, w); onClose(); } }} />
 
           <ChalkDivider label="Delete From Calendar" />
@@ -24617,107 +25788,7 @@ function SessionModeTag({ mode, overridden = false, size = "sm" }) {
   );
 }
 
-// One-off changes: "this Tuesday is online, I'm away". Collapsed by default,
-// because the common case is that a day runs the same way every week and the
-// coach should not have to scroll past a date picker to reach the exercises.
-//
-// Existing overrides are always listed, open or closed. An override the coach
-// set weeks ago and forgot is the one that causes the problem this feature is
-// meant to solve, so it is never hidden behind a tap.
-function SessionDateOverrides({ day, program, onSet }) {
-  const [open, setOpen] = useState(false);
-  const [date, setDate] = useState("");
 
-  // No filter. setDateSessionMode refuses to store a value equal to the day's
-  // normal mode, so everything held here is a genuine difference — and what
-  // the coach sees listed is exactly what exists, with nothing hidden that
-  // could surprise them later.
-  const overrides = Object.entries(day.modeByDate || {})
-    .filter(([, mode]) => !!mode)
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
-  // Only dates this session actually falls on can be overridden. Offering the
-  // coach a free date field lets them set Wednesday online for a session that
-  // only ever runs on Tuesdays, and then wonder why nothing changed.
-  const dateIsValid = !!date && isDayScheduledOn(day, date);
-  const currentAtDate = dateIsValid ? sessionModeFor(day, date) : null;
-
-  return (
-    <div className="mt-2">
-      {overrides.length > 0 && (
-        <div className="space-y-1.5 mb-2">
-          {overrides.map(([iso, mode]) => (
-            <div key={iso} className="rounded-lg px-2.5 py-2 flex items-center gap-2"
-              style={{ background: C.bg, border: `1px solid ${C[sessionModeMeta(mode).accentKey]}55` }}>
-              <span className="text-[11px] tabular-nums flex-1 min-w-0 truncate" style={{ color: C.text }}>
-                {formatSessionDate(iso) || iso}
-              </span>
-              <SessionModeTag mode={mode} size="xs" />
-              <button onClick={() => onSet(day.id, iso, null)} aria-label="Remove this one-off change">
-                <X size={12} style={{ color: C.faint }} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <button type="button" onClick={() => setOpen(o => !o)} className="text-[11px] font-semibold" style={{ color: C.blue }}>
-        {open ? "Close" : "Change one specific date"}
-      </button>
-
-      {open && (
-        <div className="mt-2 rounded-lg p-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-          <input type="date" value={date} min={program?.startedOn || undefined}
-            onChange={e => setDate(e.target.value)}
-            className="text-[12.5px] rounded py-2 px-2 w-full mb-2"
-            style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
-          {date && !dateIsValid ? (
-            <p className="text-[11px] leading-relaxed" style={{ color: C.amber }}>
-              {day.name} doesn't fall on that date. Pick a {day.weekday || "scheduled"} the program is running.
-            </p>
-          ) : dateIsValid ? (
-            <SessionModePicker
-              value={currentAtDate}
-              onChange={(m) => { onSet(day.id, date, m); setDate(""); setOpen(false); }}
-              onClear={day.modeByDate?.[date] ? () => { onSet(day.id, date, null); setDate(""); setOpen(false); } : null} />
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Two buttons, no dropdown. There are exactly two answers and the coach is
-// setting this while looking at a calendar, often on a phone.
-function SessionModePicker({ value, onChange, onClear, clearLabel }) {
-  return (
-    <div>
-      <div className="grid grid-cols-2 gap-2">
-        {SESSION_MODES.map(m => {
-          const active = value === m.key;
-          const accent = C[m.accentKey];
-          const Icon = m.key === "online" ? Video : MapPin;
-          return (
-            <button key={m.key} onClick={() => onChange(m.key)}
-              className="rounded-xl p-3 text-left"
-              style={{ background: active ? `${accent}18` : C.panel, border: `1px solid ${active ? accent : C.border}` }}>
-              <div className="flex items-center gap-1.5">
-                <Icon size={13} style={{ color: active ? accent : C.sub }} />
-                <span className="text-[15px] font-semibold" style={{ color: active ? accent : C.text }}>{m.label}</span>
-              </div>
-              <div className="text-[11px] mt-1 leading-snug" style={{ color: C.sub }}>{m.hint}</div>
-            </button>
-          );
-        })}
-      </div>
-      {onClear && (
-        <button onClick={onClear} className="w-full text-center text-[11px] font-semibold py-2 mt-1" style={{ color: C.blue }}>
-          {clearLabel || "Use the usual setting for this day"}
-        </button>
-      )}
-    </div>
-  );
-}
 
 // ============================================================
 // BOOKING
@@ -25439,7 +26510,7 @@ function CoachBooking({ state, setState, nav, myUserId }) {
             <div className="space-y-2">
               {state.athletes.length === 0 && (
                 <div className="rounded-xl p-4 text-[15px]" style={{ ...card(), border: `1px dashed ${C.border}`, color: C.faint }}>
-                  No clients on your roster yet.
+                  No clients yet.
                 </div>
               )}
               {state.athletes.map(a => {
@@ -26182,7 +27253,7 @@ function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
       <div className="px-5 pt-5">
         {booking.loaded
           ? <SessionAndBillingHistory booking={booking} athleteId={state.me.id} />
-          : <div className="pt-12 text-center"><Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>}
+          : <div className="pt-12 text-center"><LoadingEstimate expectedMs={1500} /></div>}
       </div>
     </div>
   );
@@ -26195,6 +27266,19 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
   const booking = state.booking || EMPTY_BOOKING;
   const myId = state.me.id;
   const coachId = state.me.coachId;
+  const [askingForPack, setAskingForPack] = useState(false);
+  const [askedForPack, setAskedForPack] = useState(false);
+  const askForPack = async () => {
+    if (!myId || askingForPack) return;
+    setAskingForPack(true);
+    const { error } = await supabase.from("messages").insert({
+      athlete_id: myId, sender_id: myId,
+      body: "Hi, I'm out of sessions. Can I get another pack?",
+    });
+    setAskingForPack(false);
+    if (error) setErr("That didn't send. Check your connection and try again.");
+    else setAskedForPack(true);
+  };
   // The coach's notice period, as loaded with their profile.
   const cancelHours = Number(state.coachProfile?.cancellationHours) || DEFAULT_CANCELLATION_HOURS;
   // A booking the athlete is about to cancel inside the window. Held here so
@@ -26274,7 +27358,7 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
       <div className="pb-28">
         {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-16 text-center">
-          <Loader2 size={22} className="animate-spin mx-auto" style={{ color: C.orange }} />
+          <LoadingEstimate expectedMs={1500} />
         </div>
       </div>
     );
@@ -26305,7 +27389,20 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
           <div className="flex-1 min-w-0 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
             {credits > 0
               ? <>Sessions on your account. Booking uses one; cancelling more than {cancelHours} hours ahead gives it back.</>
-              : <>You're out of sessions. Ask {state.coachProfile?.name || "your coach"} about another pack and they'll show up here.</>}
+              : <>
+                  You're out of sessions. Once {state.coachProfile?.name || "your coach"} adds another pack, they show up here.
+                  {/* One tap to ask (Isaiah, 30 Oct), instead of leaving the
+                      app to find the coach's number. Lands in their thread. */}
+                  <div className="mt-2">
+                    {askedForPack
+                      ? <span className="font-semibold" style={{ color: C.olive }}>Sent. They'll see it in Messages.</span>
+                      : <button onClick={askForPack} disabled={askingForPack}
+                          className="rounded-full px-3 py-1.5 text-[12.5px] font-semibold"
+                          style={{ color: C.blue, border: `1px solid ${C.blue}55`, opacity: askingForPack ? 0.5 : 1 }}>
+                          {askingForPack ? "Sending\u2026" : "Ask for more sessions"}
+                        </button>}
+                  </div>
+                </>}
             {/* Credits that are about to lapse. Said once they are close
                 enough to matter, not from the day they are bought. */}
             {(() => {
@@ -26623,7 +27720,7 @@ function NotificationsPage({ state, setState, nav, notifications, onMarkAllRead,
             <div className="text-[15px] font-semibold" style={{ color: C.text }}>Nothing new</div>
             <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>
               {isCoach
-                ? "You'll be told here as soon as one of your athletes finishes a session."
+                ? "You'll be told here as soon as one of your clients finishes a session."
                 : "Reminders for your sessions show up here on the day."}
             </p>
           </div>
@@ -26668,6 +27765,8 @@ function NotificationsPage({ state, setState, nav, notifications, onMarkAllRead,
                     // you can only read is a notification you have to act on
                     // somewhere else, from memory.
                     if (isCoach && n.data?.athleteId) nav.go("coach-athlete-detail", n.data.athleteId);
+                    // A coach's reply shows at the top of Home.
+                    else if (!isCoach && n.kind === "session_note") nav.go("athlete-dashboard");
                   }}
                   className="flex-1 min-w-0 text-left">
                   <div className="text-[15px] font-semibold" style={{ color: C.text }}>{d.title}</div>
@@ -26891,7 +27990,7 @@ function CommunityPage({ state, setState, nav, isCoach = false }) {
       {/* Feed */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {!loaded && (
-          <div className="text-center py-16"><Loader2 size={24} className="animate-spin mx-auto" style={{ color: C.orange }} /></div>
+          <div className="text-center py-16"><LoadingEstimate expectedMs={1500} /></div>
         )}
         {loaded && filteredPosts.length === 0 && (
           <div className="text-center py-16">
@@ -27571,7 +28670,7 @@ function AppInner() {
             groupId: a.group_id || null,
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
-            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })),
+            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })),
             checkins: checkinsByAthlete[a.id] || {},
             // Same shape as state.sessionMoves, so planForWeek and
             // missedSessions read an athlete exactly as they read the
@@ -27703,7 +28802,7 @@ function AppInner() {
           })),
         };
         if (logRows?.length) {
-          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [] })) };
+          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -27864,6 +28963,7 @@ function AppInner() {
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
             setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
+            coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null,
           })),
         };
       }),
@@ -27963,7 +29063,7 @@ function AppInner() {
       // photoUrl is stripped too: it's a multi-megabyte base64 data URL that
       // already has its own column, and storing it twice in one row risked
       // blowing the request size and failing the write outright.
-      const { password, confirmPassword, signupError, showPassword, photoUrl, inviteCoachId, logoFile, logoPreview, ...rest } = data;
+      const { password, confirmPassword, signupError, emailTakenFor, viaGoogle, showPassword, photoUrl, inviteCoachId, logoFile, logoPreview, ...rest } = data;
       // Second line of defence behind chooseRole(): whatever route the answers
       // took to get here, an account that isn't on the coached path must not
       // ship an invite code in its intake. hydrateFromProfile's repair step
@@ -28005,6 +29105,7 @@ function AppInner() {
           .from("profiles").upsert(profileRow).select().single();
         if (profileError) return errText(profileError);
         savedProfile = inserted;
+        try { localStorage.removeItem(JOIN_CODE_KEY); } catch { /* storage blocked */ }
 
         // Link a coached athlete to their coach. The invite code was collected
         // during onboarding, validated for length only, and dropped into the
@@ -28189,6 +29290,30 @@ function AppInner() {
     [unreadNotifications]
   );
 
+  // The brand everywhere it can go (Isaiah, 28 Oct): the app's colour, the
+  // name in the browser tab and under the home-screen icon, the icon itself,
+  // and the sign-in screen next time. Only once the coach's row has loaded,
+  // so a client is never flashed back to the default and forth again.
+  // Up here, above the early returns, like every other hook in this shell.
+  const cp = state.coachProfile || {};
+  const liveBrand = (cp.id && (cp.businessName || cp.logoPath))
+    ? { name: cp.businessName || cp.name || "Coach", color: cp.brandColor, logoUrl: coachLogoUrl(cp.logoPath), initials: cp.avatar }
+    : null;
+  const brandKey = liveBrand ? `${liveBrand.name}|${liveBrand.color}|${liveBrand.logoUrl}` : "";
+  const brandReady = !!authed && (authed === "coach" || !state.me?.coachId || !!cp.id);
+  useEffect(() => {
+    if (!brandReady) return;
+    setBrandAccent(liveBrand?.color || null);
+    rememberBrand(liveBrand);
+    try {
+      const name = liveBrand?.name || "Trained.best";
+      document.title = name;
+      document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute("content", name);
+      const icon = document.querySelector('link[rel="apple-touch-icon"]');
+      if (icon) icon.setAttribute("href", liveBrand?.logoUrl || "/apple-touch-icon.png");
+    } catch { /* no document */ }
+  }, [brandKey, brandReady]);
+
   // Sessions that were finished with no connection send themselves from here:
   // on launch, whenever the connection returns, and on a slow poll for the
   // phones that never fire an online event at all.
@@ -28229,7 +29354,7 @@ function AppInner() {
   if (sessionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <Loader2 size={32} className="animate-spin" style={{ color: C.orange }} />
+        <LoadingEstimate expectedMs={2000} label="Loading" />
       </div>
     );
   }
@@ -28293,7 +29418,7 @@ function AppInner() {
   // so a coach could not open their own messages at all.
   const coachNavItems = [
     { key: "coach-dashboard", label: "Home", icon: Home },
-    { key: "coach-athletes", label: "Athletes", icon: Users },
+    { key: "coach-athletes", label: "Clients", icon: Users },
     ...(FEATURES.booking ? [{ key: "coach-booking", label: "Sessions", icon: Calendar }] : []),
     { key: "coach-messages", label: "Messages", icon: MessageSquare, badge: unreadCount },
     ...(FEATURES.community ? [{ key: "community", label: "Community", icon: Trophy }] : []),
@@ -28397,9 +29522,11 @@ function AppInner() {
   // print sheet. `coachProfile` already holds the right row either way - a
   // coach's own data when signed in as a coach, their linked coach's data
   // when signed in as an athlete - so one check covers both.
-  const coachBrand = (state.coachProfile?.id && state.coachProfile?.businessName)
+  // A logo on its own is branding too (28 Oct): it used to need a business
+  // name before anything showed. Without a name, the coach's own name is used.
+  const coachBrand = (state.coachProfile?.id && (state.coachProfile?.businessName || state.coachProfile?.logoPath))
     ? {
-        name: state.coachProfile.businessName,
+        name: state.coachProfile.businessName || state.coachProfile.name || "Coach",
         color: state.coachProfile.brandColor,
         logoUrl: coachLogoUrl(state.coachProfile.logoPath),
         initials: state.coachProfile.avatar,
@@ -28437,7 +29564,7 @@ function AppInner() {
                   background: `${C.bg}ee`, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
                   borderBottom: `1px solid ${C.border}`,
                 }}>
-                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={26} />
+                <CoachBrandMark name={coachBrand.name} logoUrl={coachBrand.logoUrl} color={coachBrand.color} initials={coachBrand.initials} size={32} />
               </div>
             )}
             {screen}
