@@ -31,6 +31,7 @@ const src = readSource(APP);
 const {
   SIGNUP_KEYS, SIGNUP_V2_STEPS, SIGNUP_V2_SECTIONS, SIGNUP_V2,
   deriveSplit, withDerivedSplit, stepComplete, DEFAULT_SPLIT, SPLIT_STYLES, accountStepProblems,
+  sportProfileApplies, sportProgramOn, SPORT_SEASONS,
 } = await load(APP, [
   { name: "toLocalISO", kind: "const" },
   { name: "todayISO", kind: "const" },
@@ -40,9 +41,10 @@ const {
   { name: "EMAIL_RE", kind: "const" },
   { name: "looksLikeEmail", kind: "const" },
   "accountStepProblems", "accountStepValid", "emailTaken",
-  { name: "FOCUS_GENERAL", kind: "const" },
+  { name: "NO_SPORT_PROFILE", kind: "const" },
+  { name: "SPORT_SEASONS", kind: "const" },
   { name: "SPORTS", kind: "const" },
-  "isCombatFocus", "focusTypeOf", "focusComplete",
+  "isCombatFocus", "focusTypeOf", "focusComplete", "sportProfileApplies", "sportProgramOn",
   { name: "INJURY_MIDLINE", kind: "const" },
   { name: "injuryNeedsSide", kind: "const" },
   "injuryDetailFor", "injurySidesMissing", "injurySidesAnswered",
@@ -131,7 +133,7 @@ test("every screen in the flow has a body behind it", () => {
   for (const [role, screens] of Object.entries(SIGNUP_V2_STEPS)) {
     for (const screen of screens) {
       if (screen === "📩 Invite Your Clients") continue; // explainer, no inputs
-      const leaves = leavesOf(screen, { "🥊 Sport / Focus": "MMA" });
+      const leaves = [...leavesOf(screen, { "🥊 Sport / Focus": "MMA" }), ...leavesOf(screen, { focusType: "sport", "🥊 Sport / Focus": "Soccer" })];
       assert.ok(leaves.length > 0, `${role}'s "${screen}" expands to nothing`);
       for (const leaf of leaves) keysWrittenBy(leaf); // throws if missing
     }
@@ -158,7 +160,7 @@ const keysAskedOn = (role) => {
   const asked = new Set();
   for (const screen of SIGNUP_V2_STEPS[role]) {
     // Both branches, so a key only a fighter is asked for still counts.
-    for (const data of [{}, { "🥊 Sport / Focus": "MMA" }]) {
+    for (const data of [{}, { "🥊 Sport / Focus": "MMA" }, { focusType: "sport", "🥊 Sport / Focus": "Soccer" }]) {
       for (const leaf of leavesOf(screen, data)) {
         if (leaf === "📩 Invite Your Clients") continue;
         for (const k of keysWrittenBy(leaf)) asked.add(k);
@@ -352,7 +354,7 @@ test("a coach who changes their mind does not carry coaching answers across", ()
 const athlete = {
   name: "Alex Reid", email: "a@b.com", password: "abcdefgh", confirmPassword: "abcdefgh",
   sex: "Male", birthday: "1990-01-01", heightCm: 178, weightLb: 175,
-  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", experience: "Advanced (3+ years)",
+  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)",
   trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"],
   injuries: ["None currently"],
 };
@@ -414,16 +416,33 @@ test("'What is in the way, and by when' is gone, and the fight date is not lost 
 test("main focus: General Fitness or a Sport, and a sport has to be picked", () => {
   const base = { ...athlete };
   delete base["🥊 Sport / Focus"];
+  delete base.sportSeason;
   const goal = "🎯 Your Goal";
   assert.ok(stepComplete(goal, { ...base, focusType: "general", "🥊 Sport / Focus": "General Fitness" }, "athlete"));
-  assert.ok(stepComplete(goal, { ...base, focusType: "general", "🥊 Sport / Focus": "HYROX" }, "athlete"));
   assert.equal(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": null }, "athlete"), false,
     "Sport can be left without saying which sport");
-  assert.ok(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Soccer" }, "athlete"));
+  assert.equal(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Soccer" }, "athlete"), false,
+    "a soccer player can leave without saying where they are in their season");
+  assert.ok(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Soccer", sportSeason: "In season" }, "athlete"));
   // Combat sports still get the fighter question; so does everyone already stored as MMA.
   assert.equal(stepComplete(goal, { ...base, focusType: "sport", "🥊 Sport / Focus": "Combat Sports" }, "athlete"), false);
   assert.ok(stepComplete(goal, { ...base, "🥊 Sport / Focus": "Combat Sports", isFighter: false }, "athlete"));
   assert.ok(/label: "Main focus"/.test(src), "the question is not called Main focus");
+});
+
+test("sports: the list, the season follow-up, and Not applicable (Isaiah, 31 Oct)", () => {
+  assert.ok(/const SPORTS = \[[\s\S]*"Tennis"[\s\S]*"Golf"[\s\S]*"Bodybuilding"[\s\S]*"Powerlifting"[\s\S]*"Other",\s*\]/.test(src), "the sport list is not the agreed one");
+  assert.ok(!/HYROX|Calisthenics/.test(src.slice(src.indexOf("const SPORTS = ["), src.indexOf("];", src.indexOf("const SPORTS = [")))), "HYROX or Calisthenics is back");
+  assert.ok(!/FOCUS_GENERAL/.test(src), "General Fitness has a dropdown again");
+  const soccer = { focusType: "sport", "🥊 Sport / Focus": "Soccer" };
+  assert.ok(sportProfileApplies(soccer));
+  assert.ok(!sportProfileApplies({ focusType: "sport", "🥊 Sport / Focus": "Combat Sports" }), "combat sports keeps its own questions");
+  assert.ok(!sportProfileApplies({ focusType: "general", "🥊 Sport / Focus": "General Fitness" }));
+  assert.ok(sportProgramOn({ ...soccer, sportSeason: "Off season" }));
+  assert.equal(sportProgramOn({ ...soccer, sportSeason: "Not applicable" }), false, "a fan gets a sport-specific program");
+  assert.equal(SPORT_SEASONS[0].key, "Off season");
+  assert.ok(SPORT_SEASONS.some(x => x.key === "Not applicable"));
+  assert.ok(/NSCA-certified strength and conditioning coach/.test(src), "the generator is not told to work as an NSCA coach for the sport");
 });
 
 test("an email that already has an account blocks the account screen, and says so", () => {
