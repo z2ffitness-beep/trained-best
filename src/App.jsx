@@ -13345,49 +13345,57 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
 // session's colour — which is what makes "Day 2 is the amber one, on Friday"
 // readable without comparing two sets of labels. Call sites that don't pass it
 // keep the plain blue treatment.
-function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf }) {
+function DayWeekdayPicker({ value, onChange, otherDays = [], colorOf, allDays = null, thisDayId = null }) {
+  // A list of the week, one row per weekday, each saying what is on it
+  // (Isaiah, 31 Oct: the letters with dots under them were hard to read).
+  // Tap a free day to move this session there; tap a day with a session on
+  // it to swap the two.
   const occupantFor = (day) => otherDays.find(d => d.weekday === day);
   const tint = (id) => (colorOf ? colorOf(id) : C.blue);
+  const numberOf = (id) => {
+    const i = (allDays || []).findIndex(d => d.id === id);
+    return i >= 0 ? i + 1 : null;
+  };
+  const labelOf = (d) => {
+    const n = numberOf(d?.id);
+    const rest = calendarSessionLabel(d?.name || "");
+    if (!n) return rest;
+    return /^day\s*\d+$/i.test(rest) ? `Day ${n}` : `Day ${n} · ${rest}`;
+  };
+  const thisNo = numberOf(thisDayId);
   return (
-    <div>
-      <div className="flex gap-1 mt-2.5">
-        {WEEKDAY_ORDER.map(day => {
-          const isActive = value === day;
-          const occupant = !isActive && occupantFor(day);
-          const activeColor = tint(null);
-          const occupantColor = occupant ? tint(occupant.id) : null;
-          return (
-            <button key={day} type="button"
-              // Tapping the day it's already on is a no-op. It used to clear the
-              // weekday, and an unscheduled session can't be logged — one stray
-              // tap silently took a session off the calendar.
-              onClick={() => !isActive && onChange(day)}
-              title={occupant ? `Swap with ${occupant.name}` : day}
-              className="flex-1 aspect-square rounded-md text-[11px] font-bold flex flex-col items-center justify-center gap-0.5"
-              // Selected reads as a ring and coloured text, not a solid
-              // block. The filled square was the loudest thing on the screen
-              // and sat right beside the day tabs, which are also filled -
-              // two different "this one is selected" blocks competing a
-              // centimetre apart. The ring is drawn with an inset shadow
-              // rather than a thicker border so nothing shifts by a pixel
-              // when the selection moves.
-              style={{
-                background: isActive ? `${activeColor}1F` : occupant ? `${occupantColor}18` : C.bg,
-                color: isActive ? activeColor : occupant ? occupantColor : C.sub,
-                border: `1px solid ${isActive ? activeColor : occupant ? `${occupantColor}55` : C.border}`,
-                boxShadow: isActive ? `inset 0 0 0 1px ${activeColor}` : "none",
-              }}>
-              <span>{WEEKDAY_SHORT[day]}</span>
-              {occupant && <span style={{ width: 3, height: 3, borderRadius: 999, background: occupantColor }} />}
-            </button>
-          );
-        })}
-      </div>
-      {otherDays.some(d => d.weekday) && (
-        <p className="text-[11px] mt-1.5" style={{ color: C.faint }}>
-          Dotted days already have a session — tapping one swaps the two.
-        </p>
-      )}
+    <div className="mt-2.5 rounded-xl overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+      {WEEKDAY_ORDER.map((day, i) => {
+        const isActive = value === day;
+        const occupant = !isActive && occupantFor(day);
+        const color = isActive ? tint(thisDayId) : occupant ? tint(occupant.id) : null;
+        return (
+          <button key={day} type="button"
+            // Tapping the day it is already on does nothing: clearing it
+            // would take the session off the calendar.
+            onClick={() => !isActive && onChange(day)}
+            aria-label={isActive ? `${day}, this session` : occupant ? `${day}, swap with ${occupant.name}` : `${day}, free, move here`}
+            className="w-full flex items-center gap-3 px-3.5 py-3 text-left"
+            style={{
+              background: isActive ? `${color}1A` : C.panel,
+              borderTop: i === 0 ? "none" : `1px solid ${C.border}`,
+              borderLeft: `3px solid ${color || "transparent"}`,
+            }}>
+            <span className="w-[92px] shrink-0 text-[15px] font-semibold" style={{ color: isActive ? color : C.text }}>{day}</span>
+            <span className="flex-1 min-w-0 truncate text-[13px]" style={{ color: isActive ? color : occupant ? C.text : C.faint }}>
+              {isActive ? `${thisNo ? `Day ${thisNo}` : "This session"} (this one)` : occupant ? labelOf(occupant) : "Free"}
+            </span>
+            {isActive && <Check size={16} className="shrink-0" style={{ color }} />}
+            {occupant && (
+              <span className="shrink-0 text-[11px] font-semibold rounded-full px-2 py-0.5"
+                style={{ color: C.sub, border: `1px solid ${C.border}` }}>Swap</span>
+            )}
+          </button>
+        );
+      })}
+      <p className="text-[11px] px-3.5 py-2" style={{ color: C.faint, borderTop: `1px solid ${C.border}`, background: C.bg }}>
+        Tap a free day to move it there. Tap a day with a session to swap the two.
+      </p>
     </div>
   );
 }
@@ -25646,6 +25654,7 @@ function DayDetailModal({ open, onClose, date, day, allDays, logs, exById, onExe
               same title, different workout. It reads as "my tap renamed my
               session", and tapping again just swaps them back. */}
           <DayWeekdayPicker value={day.weekday} otherDays={allDays.filter(d => d.id !== day.id)}
+            allDays={allDays} thisDayId={day.id} colorOf={colorOf}
             onChange={(w) => { if (w) { onSetWeekday(day.id, w); onClose(); } }} />
 
           <ChalkDivider label="Delete From Calendar" />
