@@ -609,8 +609,11 @@ function readableAccent(hex, theme) {
 }
 
 // Applies (or, with null, removes) the brand colour and repaints.
+// Isaiah, 1 Nov: no more coach colours. The app is the standard blue in dark
+// or light mode for everyone, so this now only ever clears an old colour.
+// Coaches keep their logo and business name.
 function setBrandAccent(hex) {
-  const next = hexToRgb(hex) ? String(hex).toUpperCase() : null;
+  const next = null;
   if (next === brandAccentHex) return;
   brandAccentHex = next;
   applyTheme(storedTheme());
@@ -724,7 +727,7 @@ function applyTheme(mode) {
 
 // Applied at module load, before React mounts. The colour of the brand this
 // phone last showed comes first, so the sign-in screen is already theirs.
-brandAccentHex = hexToRgb(rememberedBrand()?.color) ? String(rememberedBrand().color).toUpperCase() : null;
+brandAccentHex = null; // no coach colours (1 Nov); see setBrandAccent
 applyTheme(storedTheme());
 
 // System mode has to follow the device while the app is OPEN, not only at
@@ -782,7 +785,6 @@ function joinCodeFromLink() {
         color: row.brand_color || null,
         initials: row.avatar || null,
       });
-      brandAccentHex = hexToRgb(row.brand_color) ? String(row.brand_color).toUpperCase() : null;
       applyTheme(storedTheme());
       // Repaint even when the colour didn't change: the logo and name did.
       themeWatchers.forEach(fn => { try { fn(); } catch { /* unmounted */ } });
@@ -5898,8 +5900,10 @@ function StatCard({ icon: Icon, label, value, sub, accent = C.orange }) {
   return (
     <div className="p-4 min-w-0" style={card()}>
       <div className="flex items-center gap-1.5 min-w-0">
-        <Icon size={16} style={{ color: C.sub }} />
-        <span className="truncate" style={{ fontSize: 12.5, color: C.sub, fontWeight: 500 }}>{label}</span>
+        <Icon size={16} className="shrink-0" style={{ color: C.sub }} />
+        {/* Wraps rather than cutting off: "Weight" read "W..." on a 360px
+            phone with three cards in a row (1 Nov). */}
+        <span style={{ fontSize: 13, color: C.sub, fontWeight: 500, lineHeight: 1.2, overflowWrap: "anywhere" }}>{label}</span>
       </div>
       <div className="mt-1.5 truncate"
         style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums", letterSpacing: "-.02em" }}>
@@ -5937,8 +5941,8 @@ function Avatar({ initials, size = 40, accent = C.orange, photoUrl }) {
 // card, the My Info preview, the sidebar wordmark, the phone header strip.
 // Falls back to a coloured square of initials when there's no logo yet, so
 // it never renders a blank box while a coach is mid-setup.
-function CoachBrandMark({ name, logoUrl, color, initials, size = 36 }) {
-  const accent = color || C.orange;
+function CoachBrandMark({ name, logoUrl, initials, size = 36 }) {
+  const accent = C.orange;
   return (
     <div className="flex items-center gap-2.5 min-w-0">
       <div className="rounded-lg overflow-hidden shrink-0 flex items-center justify-center"
@@ -6584,13 +6588,16 @@ function programForDate(program, dateIso) {
 function programWeekFor(program, dateIso) {
   const start = program?.startedOn || program?.started_on;
   if (!start || !dateIso) return null;
-  const a = new Date(start + "T00:00:00");
-  const b = new Date(dateIso + "T00:00:00");
-  if (isNaN(a) || isNaN(b)) return null;
+  // Counted in whole calendar days, not local milliseconds. Local midnight
+  // to local midnight across the March clock change is 23 hours, so the old
+  // count came out a day short from March to November: every Monday in that
+  // stretch read as the last day of the previous week, and the athlete was
+  // given last week's prescription (found 1 Nov, in Toronto).
+  const days = daysBetweenISO(String(start).slice(0, 10), String(dateIso).slice(0, 10));
+  if (days == null) return null;
   // Before the start date the program reads as its first week rather than as
   // week zero or a negative, so a coach previewing next month's plan sees
   // something sensible instead of nothing.
-  const days = Math.floor((b - a) / 86400000);
   return days < 0 ? 1 : Math.floor(days / 7) + 1;
 }
 
@@ -9207,40 +9214,86 @@ function markTourSeen(userId) {
 // Written for the app the athlete actually has. A self-guided athlete has no
 // coach to message and no sessions to book, and telling them otherwise on
 // their first screen is how an app teaches somebody to distrust it.
-function tourCards(hasCoach) {
+// The full walkthrough (Isaiah, 1 Nov): everything a new person needs, one
+// screen at a time, written for the app they actually have. Each card says
+// where in the app it lives. Replayable from Profile.
+function tourCards(hasCoach, role = "athlete") {
+  if (role === "coach") {
+    return [
+      { key: "welcome", icon: Sparkles, where: "Welcome", title: "Your coaching business, in one app",
+        points: ["Build programs, see every session your clients log, and talk to them, all here.",
+          "This takes a minute. You can replay it any time from Profile."] },
+      { key: "clients", icon: Users, where: "Clients tab", title: "Bring your clients in",
+        points: ["Tap Add client to get your invite code and join link.",
+          "Clients choose \"I have a coach\" when they sign up and enter your code.",
+          "Tap any client to see their program, history and details."] },
+      { key: "board", icon: Dumbbell, where: "A client's Program", title: "Edit the program by hand",
+        points: ["Tap any exercise to change sets, reps or load, swap it, or remove it.",
+          "Add exercise on any day, or + on any section.",
+          "Pick exactly which days and which weeks a change applies to."] },
+      { key: "ai", icon: Wand2, where: "A client's Program", title: "Or just ask Adjust with AI",
+        points: ["Type it in plain words: \"swap squats for lunges on Tuesday of week 6\".",
+          "You see exactly what changed, and Undo puts it back."] },
+      { key: "templates", icon: Copy, where: "Programs", title: "Write it once, use it again",
+        points: ["Save any program as a template.",
+          "Give a template to a new client in one tap, or copy one client's program to another."] },
+      { key: "reply", icon: MessageCircle, where: "A client's History", title: "See the work, and reply",
+        points: ["Every logged session lands in the client's history, with what they did against what you set.",
+          "Open one to leave a note or fix a number they typed wrong. They're told right away.",
+          "Extra activities they log, like a walk or a game, show there too."] },
+      { key: "messages", icon: MessageSquare, where: "Messages tab", title: "Talk to one client, or all of them",
+        points: ["Message any client from their thread.",
+          "Everyone sends one message to your whole client list."] },
+      ...(FEATURES.booking ? [{ key: "sessions", icon: Calendar, where: "Sessions tab", title: "In-person sessions",
+        points: ["Set your open times and session types.", "Clients book from their app, and you get a heads up each morning."] }] : []),
+      { key: "brand", icon: User, where: "Profile", title: "Make it yours",
+        points: ["Add your logo and business name. Your clients see them on their sign-in and welcome screens.",
+          "Choose dark or light mode, and replay this walkthrough, from Profile."] },
+    ];
+  }
   return [
-    {
-      key: "program", icon: Dumbbell, title: "Your training lives in Program",
-      body: "Today's session sits at the top of the Program tab. One tap on Start and you are training — no hunting for it.",
-    },
-    {
-      key: "log", icon: CheckCircle2, title: "Log it as you lift",
-      body: "Tick each set as you finish it and type the weight you used. Put your phone away mid-session and it picks up exactly where you left off.",
-    },
+    { key: "welcome", icon: Sparkles, where: "Welcome", title: hasCoach ? "Your coach's program, in your pocket" : "Your program, built for you",
+      points: ["Everything you need is on the five tabs at the bottom: Home, My Workout, Week, " + (hasCoach ? "Coach" : "Coach (your AI coach)") + " and Profile.",
+        "This takes a minute. You can replay it any time from Profile."] },
+    { key: "home", icon: LayoutGrid, where: "Home", title: "Today's workout is at the top",
+      points: ["Tap Start Workout and you're training.",
+        "Missed a session? Catch it up today, move it, or let it go.",
+        "Once you're done, it shows your next session."] },
+    { key: "workout", icon: Dumbbell, where: "My Workout", title: "One exercise at a time",
+      points: ["Next Exercise moves you through the session.",
+        "Time the workout if you like. The bar at the top fills as you finish each exercise.",
+        "Close the app mid-session and it picks up where you left off."] },
+    { key: "log", icon: CheckCircle2, where: "My Workout", title: "Log it as you go",
+      points: ["Type your reps and weight, then tick the set.",
+        "Runs and cardio log time or distance. Planks log seconds held. No pounds on a run.",
+        "Last time's numbers show right above your sets."] },
+    { key: "voice", icon: Mic, where: "My Workout", title: "Or just say it",
+      points: ["Tap Voice Log beside Sets and talk: \"135 for 8 twice, then 7. Felt like an 8.\"",
+        "Check what it heard, then Save to my sets.",
+        "Voice Log the whole workout, at the top, does every exercise in one go."] },
+    { key: "week", icon: Calendar, where: "Week", title: "Your whole week, and your month",
+      points: ["Program shows every day and every exercise.",
+        "Calendar shows the month. Tap a day to move a session or do it today instead."] },
+    { key: "extra", icon: Plus, where: "Home", title: "Did something extra?",
+      points: ["A walk, a game, a class: log it under today's workout, by voice or by typing.",
+        hasCoach ? "Your coach sees it, and it never counts against your program." : "It's kept in your history, and it never counts against your program."] },
     hasCoach
-      ? {
-          key: "week", icon: Calendar, title: "Your week, and your coach",
-          body: "Week shows what is coming. Book takes a session with your coach, and Coach is where you message them.",
-        }
-      : {
-          key: "week", icon: Calendar, title: "Your week at a glance",
-          body: "Week shows what is coming up. Swap any movement you cannot do and the rest of the plan stays intact.",
-        },
-    hasCoach
-      ? {
-          key: "sync", icon: Bell, title: "You both stay in the loop",
-          body: "Finish a session and your coach is told. Change something in your program and you get a notice back.",
-        }
-      : {
-          key: "progress", icon: Sparkles, title: "Watch it add up",
-          body: "Every logged set feeds your progress. Check it any time from your Profile.",
-        },
+      ? { key: "coach", icon: MessageSquare, where: "Coach", title: "You and your coach stay in touch",
+          points: ["Message your coach any time.",
+            "Finish a session and they're told. Their notes on your sessions show up on Home.",
+            ...(FEATURES.booking ? ["Book in-person sessions from their open times."] : [])] }
+      : { key: "coach", icon: Wand2, where: "Week", title: "Change your program any time",
+          points: ["On Week, use Adjust with AI: \"swap squats for lunges\", \"make Friday shorter\".",
+            "You see exactly what changed, and Undo puts it back."] },
+    { key: "profile", icon: User, where: "Profile", title: "Make it work for you",
+      points: ["Pounds or kilos, dark or light mode, and your rest timer sound.",
+        "Replay this walkthrough any time from Profile."] },
   ];
 }
 
-function FirstRunTour({ hasCoach, onDone }) {
+function FirstRunTour({ hasCoach, role = "athlete", onDone }) {
   const [i, setI] = useState(0);
-  const cards = tourCards(hasCoach);
+  const cards = tourCards(hasCoach, role);
   const card = cards[Math.min(i, cards.length - 1)];
   const last = i >= cards.length - 1;
   const Icon = card.icon;
@@ -9248,52 +9301,73 @@ function FirstRunTour({ hasCoach, onDone }) {
     <div style={{
       position: "fixed", inset: 0, zIndex: 60, background: HERO.bg,
       display: "flex", flexDirection: "column",
-      paddingTop: "calc(24px + env(safe-area-inset-top, 0px))",
-      paddingBottom: "calc(28px + env(safe-area-inset-bottom, 0px))",
-      paddingLeft: 24, paddingRight: 24,
+      paddingTop: "calc(20px + env(safe-area-inset-top, 0px))",
+      paddingBottom: "calc(24px + env(safe-area-inset-bottom, 0px))",
+      paddingLeft: 20, paddingRight: 20,
     }}>
       <div style={{ position: "absolute", inset: 0, background: HERO.glow, pointerEvents: "none" }} />
 
-      <div className="flex justify-end relative">
+      <div className="flex items-center justify-between relative">
+        <span className="text-[13px] font-semibold tabular-nums" style={{ color: HERO.sub }}>{i + 1} of {cards.length}</span>
         <button type="button" onClick={onDone}
           className="text-[15px] font-semibold px-2 py-1" style={{ color: HERO.sub }}>
           Skip
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col justify-center relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
-        <div style={{
-          width: 62, height: 62, borderRadius: 20, display: "grid", placeItems: "center",
-          background: HERO.glass, border: `1px solid ${HERO.glassLine}`, marginBottom: 26,
-        }}>
-          <Icon size={28} style={{ color: HERO.accentText }} />
+      <div className="flex-1 flex flex-col justify-center relative overflow-y-auto" style={{ maxWidth: 440, width: "100%", margin: "0 auto" }}>
+        <div className="flex items-center gap-3 mb-5">
+          <div style={{
+            width: 54, height: 54, borderRadius: 18, display: "grid", placeItems: "center", flexShrink: 0,
+            background: HERO.glass, border: `1px solid ${HERO.glassLine}`,
+          }}>
+            <Icon size={26} style={{ color: HERO.accentText }} />
+          </div>
+          <span className="text-[12px] uppercase tracking-[.16em] font-bold rounded-full px-3 py-1"
+            style={{ color: HERO.accentText, background: HERO.glass, border: `1px solid ${HERO.glassLine}` }}>{card.where}</span>
         </div>
         <div style={{
           fontFamily: DISPLAY, fontWeight: 800, color: HERO.text, letterSpacing: "-.02em",
-          fontSize: "clamp(26px, 7vw, 32px)", lineHeight: 1.15, textWrap: "balance",
+          fontSize: "clamp(24px, 7vw, 32px)", lineHeight: 1.15, textWrap: "balance",
         }}>
           {card.title}
         </div>
-        <p className="text-[17px] mt-4 leading-relaxed" style={{ color: HERO.body }}>{card.body}</p>
+        <ul className="mt-5 space-y-3">
+          {card.points.map((pt, n) => (
+            <li key={n} className="flex gap-3 text-[16px] leading-relaxed" style={{ color: HERO.body }}>
+              <span aria-hidden="true" className="shrink-0 mt-[9px]" style={{ width: 6, height: 6, borderRadius: 3, background: HERO.accent }} />
+              <span>{pt}</span>
+            </li>
+          ))}
+        </ul>
       </div>
 
-      <div className="relative" style={{ maxWidth: 420, width: "100%", margin: "0 auto" }}>
-        <div className="flex items-center gap-2 mb-5" aria-hidden="true">
+      <div className="relative" style={{ maxWidth: 440, width: "100%", margin: "0 auto" }}>
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap" aria-hidden="true">
           {cards.map((c, n) => (
             <div key={c.key} style={{
               height: 4, borderRadius: 2, transition: "width .25s ease, background .25s ease",
-              width: n === i ? 26 : 16,
-              background: n === i ? HERO.accent : "rgba(255,255,255,.26)",
+              width: n === i ? 22 : 10,
+              background: n <= i ? HERO.accent : "rgba(255,255,255,.26)",
             }} />
           ))}
         </div>
-        <button type="button"
-          onClick={() => (last ? onDone() : setI(n => n + 1))}
-          className="w-full inline-flex items-center justify-center gap-2 rounded-full font-bold"
-          style={{ height: 54, fontSize: 16, background: HERO.accent, color: "#fff", border: 0 }}>
-          {last ? "Start training" : "Next"}
-          {!last && <ChevronRight size={18} />}
-        </button>
+        <div className="flex gap-2.5">
+          {i > 0 && (
+            <button type="button" onClick={() => setI(n => n - 1)}
+              className="inline-flex items-center justify-center rounded-full font-bold px-5"
+              style={{ height: 54, fontSize: 16, background: HERO.glass, color: HERO.text, border: `1px solid ${HERO.glassLine}` }}>
+              <ChevronLeft size={18} />
+            </button>
+          )}
+          <button type="button"
+            onClick={() => (last ? onDone() : setI(n => n + 1))}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-full font-bold"
+            style={{ height: 54, fontSize: 16, background: HERO.accent, color: "#fff", border: 0 }}>
+            {last ? (role === "coach" ? "Get started" : "Start training") : "Next"}
+            {!last && <ChevronRight size={18} />}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -10783,6 +10857,241 @@ function LoadingEstimate({ label, detail, big = false, small = false, tips = nul
   );
 }
 
+// ---------- extra activities ----------
+//
+// Isaiah, 1 Nov: anything done outside the program (a 30 minute walk on a
+// Tuesday, a pickup game, a yoga class) can be logged by voice or by typing.
+// Saved in workout_logs with kind "activity" (migration 017) so it is in the
+// athlete's history and their coach sees it, but it never counts as a planned
+// session done, missed or made up: loaded into state.activityLogs, never into
+// state.workoutLogs, which everything that counts sessions reads.
+function activityFromRow(l) {
+  const first = (l?.exercises || [])[0] || {};
+  const set = (first.sets || [])[0] || {};
+  return {
+    id: l.id, date: l.date, name: l.program_day || "Activity",
+    minutes: typeof l.duration === "number" ? l.duration : null,
+    meters: typeof set.meters === "number" ? set.meters : null,
+    rpe: typeof first.rpeDone === "number" ? first.rpeDone : null,
+    notes: l.notes || null,
+  };
+}
+
+function splitLogRows(rows) {
+  const sessions = [];
+  const activities = [];
+  for (const l of rows || []) (l?.kind === "activity" ? activities : sessions).push(l);
+  return { sessions, activities };
+}
+
+// How an activity reads in a list: "30 min walk", "5 km run, 28 min".
+function describeActivity(a, unit = "lb") {
+  const bits = [];
+  if (a.minutes != null) bits.push(`${a.minutes} min`);
+  if (a.meters != null) {
+    const mi = unit !== "kg";
+    const v = mi ? a.meters / 1609.34 : a.meters / 1000;
+    bits.push(`${Math.round(v * 10) / 10} ${mi ? "mi" : "km"}`);
+  }
+  if (a.rpe != null) bits.push(`felt ${a.rpe}/10`);
+  return bits.join(" · ");
+}
+
+function activitySystem(today, unit) {
+  return `You turn what someone SAID about an extra activity (not their program workout) into a log entry. They talk normally. Respond ONLY with JSON, no markdown:
+{"name":"<short name, e.g. Walk, Pickup basketball, Yoga class, Bike ride>","minutes":30,"distance":{"value":5,"unit":"km"},"rpe":4,"date":"YYYY-MM-DD","note":"<anything else worth keeping, or empty>"}
+Rules:
+- Today is ${today}. "Yesterday", "this morning", "Tuesday" become a date on or before today. If they don't say, use today.
+- minutes: total time. "An hour" is 60, "an hour and a half" is 90. Leave it out if they did not say.
+- distance: only if they said one. unit is "km", "mi" or "m". Their usual unit is ${unit === "kg" ? "km" : "mi"}.
+- rpe: how hard it felt, 1 to 10, only if they said it ("easy" about 3, "moderate" about 5, "hard" about 8, "all out" 10).
+- name: two or three words, capitalised, no numbers in it.`;
+}
+
+function normalizeActivity(raw, today) {
+  const r = raw || {};
+  const name = String(r.name || "").trim().slice(0, 60);
+  const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+  const minutes = num(r.minutes, 1, 1440);
+  let meters = null;
+  const d = r.distance && typeof r.distance === "object" ? r.distance : null;
+  const dv = d ? num(d.value, 0.01, 1000) : null;
+  if (dv != null) meters = Math.round(d.unit === "mi" ? dv * 1609.34 : d.unit === "m" ? dv : dv * 1000);
+  const rpe = num(r.rpe, 1, 10);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") && r.date <= today ? r.date : today;
+  return { name, minutes: minutes != null ? Math.round(minutes) : null, meters, rpe: rpe != null ? Math.round(rpe * 2) / 2 : null, date, note: String(r.note || "").trim().slice(0, 500) };
+}
+
+function activityRow(userId, a) {
+  return {
+    user_id: userId, date: a.date, kind: "activity",
+    program_day: a.name, duration: a.minutes, counts: false,
+    sets_completed: 0, sets_prescribed: 0, notes: a.note || null,
+    exercises: [{
+      name: a.name, tracked: true, metric: a.meters != null ? "distance" : "time",
+      setsPrescribed: 0, setsCompleted: 0, rpeDone: a.rpe,
+      sets: [{ set: 1, done: true, minutes: a.minutes, meters: a.meters, weight: null, unit: null, reps: null, manual: false }],
+    }],
+  };
+}
+
+function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
+  const today = todayISO();
+  const blank = { name: "", minutes: "", distance: "", rpe: null, date: today, note: "" };
+  const [form, setForm] = useState(blank);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [failure, setFailure] = useState(null);
+  const speech = useSpeechToText(text, setText);
+  useEffect(() => {
+    if (open) { setForm({ ...blank, date: todayISO() }); setText(""); setBusy(null); setFailure(null); }
+    else speech.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  if (!open) return null;
+  const distUnit = unit === "kg" ? "km" : "mi";
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const yesterday = (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() - 1); return toLocalISO(d); })();
+
+  const understand = async () => {
+    speech.stop();
+    if (!text.trim()) return;
+    setBusy("reading"); setFailure(null);
+    try {
+      const reply = await callAI({ model: MODEL_CHAT, maxTokens: 600, system: activitySystem(today, unit),
+        messages: [{ role: "user", content: text.trim() }] });
+      const a = normalizeActivity(parseAIJson(reply), today);
+      setForm({
+        name: a.name, minutes: a.minutes != null ? String(a.minutes) : "",
+        distance: a.meters != null ? String(Math.round((distUnit === "mi" ? a.meters / 1609.34 : a.meters / 1000) * 10) / 10) : "",
+        rpe: a.rpe, date: a.date, note: a.note,
+      });
+    } catch (err) { setFailure(errText(err)); }
+    setBusy(null);
+  };
+
+  const save = async () => {
+    const name = form.name.trim();
+    if (!name) { setFailure("Say or type what you did."); return; }
+    const minutes = Number(form.minutes); const dist = Number(form.distance);
+    const a = {
+      name, date: form.date || today, note: form.note.trim(), rpe: form.rpe,
+      minutes: Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : null,
+      meters: Number.isFinite(dist) && dist > 0 ? Math.round(distUnit === "mi" ? dist * 1609.34 : dist * 1000) : null,
+    };
+    if (a.minutes == null && a.meters == null) { setFailure("Add how long it took, or how far."); return; }
+    setBusy("saving"); setFailure(null);
+    try {
+      let id = null;
+      if (userId) {
+        const { data, error } = await supabase.from("workout_logs").insert(activityRow(userId, a)).select("id").single();
+        if (error) throw error;
+        id = data?.id || null;
+      }
+      onSaved({ id: id || `local-${Date.now()}`, date: a.date, name: a.name, minutes: a.minutes, meters: a.meters, rpe: a.rpe, notes: a.note || null });
+      onClose();
+    } catch (err) { setFailure(errText(err)); setBusy(null); }
+  };
+
+  const pill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text });
+  return (
+    <Modal open onClose={onClose} title="Log an extra activity">
+      <p className="text-[13px] mb-3" style={{ color: C.sub }}>
+        Anything outside your program. Say it, or fill it in. For example: "30 minute walk this morning, easy."
+      </p>
+      <div className="flex items-start gap-3 mb-2">
+        {speech.supported && (
+          <button type="button" onClick={speech.listening ? speech.stop : speech.start}
+            aria-label={speech.listening ? "Stop listening" : "Start talking"}
+            className="rounded-full flex items-center justify-center shrink-0"
+            style={{ width: 52, height: 52, background: speech.listening ? C.red : C.orange, color: "#fff" }}>
+            {speech.listening ? <MicOff size={22} /> : <Mic size={22} />}
+          </button>
+        )}
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={2} aria-label="What you did"
+          placeholder={speech.supported ? "Tap the mic and talk, or type here" : "Type here, or use the mic on your keyboard"}
+          style={{ ...inputStyle, resize: "vertical", minHeight: 52 }} />
+      </div>
+      {speech.error && <p className="text-[12.5px] mb-2" style={{ color: C.red }}>{speech.error}</p>}
+      <Btn variant="secondary" className="w-full mb-4" disabled={!text.trim() || busy === "reading"} onClick={understand}>
+        {busy === "reading" ? <LoadingEstimate small label="Reading what you said" /> : "Fill it in from what I said"}
+      </Btn>
+
+      <Field label="What you did">
+        <input style={inputStyle} placeholder="e.g. Walk, Pickup basketball, Yoga class"
+          value={form.name} onChange={e => set("name", e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Minutes">
+          <input style={inputStyle} inputMode="numeric" type="number" min="1" placeholder="30"
+            value={form.minutes} onChange={e => set("minutes", e.target.value)} />
+        </Field>
+        <Field label={`Distance (${distUnit}, optional)`}>
+          <input style={inputStyle} inputMode="decimal" type="number" min="0" step="0.1" placeholder="—"
+            value={form.distance} onChange={e => set("distance", e.target.value)} />
+        </Field>
+      </div>
+      <Field label="How hard was it? (optional)">
+        <div className="grid grid-cols-5 gap-1.5">
+          {[2, 4, 6, 8, 10].map(n => (
+            <button key={n} type="button" onClick={() => set("rpe", form.rpe === n ? null : n)}
+              className="rounded-lg py-2.5 text-[15px] font-semibold tabular-nums" style={pill(form.rpe === n)}>{n}</button>
+          ))}
+        </div>
+        <div className="flex justify-between text-[11px] mt-1" style={{ color: C.faint }}><span>Easy</span><span>All out</span></div>
+      </Field>
+      <Field label="When">
+        <div className="grid grid-cols-3 gap-2">
+          <button type="button" onClick={() => set("date", today)} className="rounded-lg py-2.5 text-[14px]" style={pill(form.date === today)}>Today</button>
+          <button type="button" onClick={() => set("date", yesterday)} className="rounded-lg py-2.5 text-[14px]" style={pill(form.date === yesterday)}>Yesterday</button>
+          <input type="date" aria-label="Another day" max={today} value={form.date !== today && form.date !== yesterday ? form.date : ""}
+            onChange={e => e.target.value && set("date", e.target.value)} style={{ ...inputStyle, padding: "8px 6px", fontSize: 13 }} />
+        </div>
+      </Field>
+      <Field label="Note (optional)">
+        <input style={inputStyle} placeholder="Anything worth remembering" value={form.note} onChange={e => set("note", e.target.value)} />
+      </Field>
+      {failure && <p className="text-[12.5px] mb-2" style={{ color: C.red }}>{failure}</p>}
+      <Btn className="w-full" disabled={busy === "saving"} onClick={save}>{busy === "saving" ? "Saving…" : "Save activity"}</Btn>
+    </Modal>
+  );
+}
+
+// On Home, under today's workout.
+function ExtraActivityCard({ state, setState }) {
+  const [open, setOpen] = useState(false);
+  const unit = state.me?.unitPref === "kg" ? "kg" : "lb";
+  const since = (() => { const d = new Date(todayISO() + "T12:00:00"); d.setDate(d.getDate() - 6); return toLocalISO(d); })();
+  const recent = (state.activityLogs || []).filter(a => a.date >= since).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 4);
+  return (
+    <div className="rounded-2xl p-4 mb-6" style={card()}>
+      <div className="flex items-start gap-3">
+        <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Plus size={18} style={{ color: C.olive }} /></div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[16px] font-semibold" style={{ color: C.text }}>Did something extra?</div>
+          <div className="text-[13px] mt-0.5" style={{ color: C.sub }}>A walk, a game, a class. Log it so it counts{state.me?.coachId ? " and your coach sees it" : ""}.</div>
+        </div>
+      </div>
+      <Btn variant="secondary" icon={Mic} className="w-full mt-3" onClick={() => setOpen(true)}>Log an extra activity</Btn>
+      {recent.length > 0 && (
+        <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: `1px solid ${C.border}` }}>
+          <div className="text-[11px] uppercase tracking-[.14em] font-semibold" style={{ color: C.faint }}>This week</div>
+          {recent.map(a => (
+            <div key={a.id} className="flex items-baseline justify-between gap-3 text-[14px]">
+              <span className="min-w-0" style={{ color: C.text }}>{a.name}</span>
+              <span className="shrink-0 text-[12.5px] tabular-nums" style={{ color: C.sub }}>
+                {describeActivity(a, unit)}{describeActivity(a, unit) ? " · " : ""}{formatSessionDate(a.date, { withWeekday: true }) || a.date}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <ActivityLogSheet open={open} onClose={() => setOpen(false)} userId={state.me?.id} unit={unit}
+        onSaved={(a) => setState(s => ({ ...s, activityLogs: [a, ...(s.activityLogs || [])] }))} />
+    </div>
+  );
+}
+
 // ---------- Voice Log ----------
 //
 // Isaiah, 31 Oct: say the workout instead of typing it, on each exercise or
@@ -11738,7 +12047,7 @@ function CoachInviteCard({ code, coachName, compact = false }) {
       </div>
       {!compact && (
         <p className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: C.sub }}>
-          Share sends your join link. It opens with your logo and name and fills this code in. Athletes pick{" "}
+          Share sends your join link. It opens with your logo and name and fills this code in. Clients pick{" "}
           <span className="font-semibold" style={{ color: C.text }}>I have a coach</span> when they sign up.
           Existing users can join from Profile {"\u2192"} Join your coach.
         </p>
@@ -12968,7 +13277,10 @@ function AthleteDetailTabs({ tab, onChange }) {
     // 11px of side padding brings the row to 384px: the whole of it fits by
     // 390px, and at 320px a 21px slice of the last pill stays on screen, which
     // is the cue that there is more.
-    <div className="flex gap-1.5 mb-5 overflow-x-auto -mx-5 px-5" style={{ scrollbarWidth: "none" }}>
+    // 1 Nov: with the larger text, the row no longer fit a 360px phone and
+    // Notes sat off the edge. The tabs now wrap onto a second line on a small
+    // phone instead, so all four are always in view.
+    <div className="flex flex-wrap gap-1.5 mb-5">
       {ATHLETE_TABS.map(t => {
         const on = tab === t.key;
         return (
@@ -13739,6 +14051,20 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
               {athleteLogs.slice(0, 8).map(l => <SessionLogRow key={l.id} log={l} onCoachEdit={setReplyLog} />)}
             </div>
           )}
+          {(athlete.activityLogs || []).length > 0 && (<>
+            <ChalkDivider label="Extra activities" />
+            <div className="rounded-xl overflow-hidden mb-4" style={card({ borderRadius: 16 })}>
+              {[...athlete.activityLogs].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 10).map((a, i) => (
+                <div key={a.id} className="px-3.5 py-3 flex items-baseline justify-between gap-3 text-[14px]"
+                  style={i ? { borderTop: `1px solid ${C.border}` } : undefined}>
+                  <span className="min-w-0" style={{ color: C.text }}>{a.name}{a.notes ? <span className="block text-[12px]" style={{ color: C.faint }}>{a.notes}</span> : null}</span>
+                  <span className="shrink-0 text-[12.5px] tabular-nums text-right" style={{ color: C.sub }}>
+                    {describeActivity(a, state.me?.unitPref === "kg" ? "kg" : "lb")}<span className="block">{formatSessionDate(a.date, { withWeekday: true }) || a.date}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>)}
           <CoachSessionModal log={replyLog} onClose={() => setReplyLog(null)}
             onSaved={(updated) => setState(s => ({
               ...s,
@@ -16391,18 +16717,6 @@ function CoachProfile({ state, setState, nav }) {
     }
   };
 
-  const saveBrandColor = async (hex) => {
-    const prev = coach.brandColor || null;
-    if (hex === prev) return;
-    setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: hex } }));
-    if (!coach.id) return;
-    const { error } = await supabase.from("profiles").update({ brand_color: hex }).eq("id", coach.id);
-    if (error) {
-      setState(s => ({ ...s, coachProfile: { ...(s.coachProfile || {}), brandColor: prev } }));
-      setSettingError("Couldn't save that setting. Check your connection and try again.");
-    }
-  };
-
   const uploadLogo = async (file) => {
     if (!coach.id || !file) return;
     if (!file.type.startsWith("image/")) { setSettingError("That file isn't an image we can use."); return; }
@@ -16510,37 +16824,6 @@ function CoachProfile({ state, setState, nav }) {
               style={inputStyle}
             />
           </Field>
-
-          <div className="mb-4">
-            <label className="block text-[12.5px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>Colour</label>
-            <div className="flex gap-2">
-              {BRAND_COLORS.map(hex => (
-                <button key={hex} onClick={() => saveBrandColor(hex)} aria-label={`Use ${hex} as your brand colour`}
-                  style={{
-                    width: 32, height: 32, borderRadius: "50%", background: hex,
-                    boxShadow: coach.brandColor === hex ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${hex}` : `0 0 0 1px ${C.border}`,
-                  }} />
-              ))}
-              {/* Any colour (28 Oct): the exact one from their logo. */}
-              {(() => {
-                const custom = coach.brandColor && !BRAND_COLORS.includes(coach.brandColor) ? coach.brandColor : null;
-                return (
-                  <label aria-label="Pick your own brand colour" className="relative cursor-pointer flex items-center justify-center"
-                    style={{
-                      width: 32, height: 32, borderRadius: "50%",
-                      background: custom || "conic-gradient(#FF5D6E, #F0A93C, #2BC47A, #2E86FF, #7C5CFC, #FF5D6E)",
-                      boxShadow: custom ? `0 0 0 2px ${C.panel}, 0 0 0 4px ${custom}` : `0 0 0 1px ${C.border}`,
-                    }}>
-                    <input type="color" value={custom || "#2E86FF"} onChange={e => saveBrandColor(e.target.value.toUpperCase())}
-                      className="absolute inset-0 opacity-0 cursor-pointer" style={{ width: 32, height: 32 }} />
-                  </label>
-                );
-              })()}
-            </div>
-            <div className="text-[11.5px] mt-1.5" style={{ color: C.faint }}>
-              Becomes the colour of buttons and highlights in your app and your clients' apps. The last one picks any colour.
-            </div>
-          </div>
 
           {(coach.businessName || coach.logoPath) && (
             <div className="pt-1">
@@ -16745,7 +17028,8 @@ function CoachProfile({ state, setState, nav }) {
           </div>
         )}
 
-        <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
+        {nav.showTour && <Btn variant="secondary" className="w-full mt-6" icon={Sparkles} onClick={nav.showTour}>Show the app walkthrough</Btn>}
+        <Btn variant="danger" className="w-full mt-3" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
         {/* Required to be reachable from inside the app, not only by writing
             in and asking. Sits below Log Out, in its own block, so it reads as
@@ -17044,13 +17328,13 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
       <div className="px-5 pt-6 pb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 style={{
-            fontFamily: DISPLAY, fontSize: wideHome ? 34 : 24, fontWeight: 700,
+            fontFamily: DISPLAY, fontSize: wideHome ? 34 : "clamp(21px, 6.2vw, 24px)", fontWeight: 700,
             letterSpacing: "-.02em", color: C.text, lineHeight: 1.15, textWrap: "balance",
           }}>
             {greeting}, {state.me.name.split(" ")[0]}
           </h1>
           {myProgram && (
-            <div className="mt-1 truncate" style={{ fontSize: 15, color: C.sub }}>
+            <div className="mt-1" style={{ fontSize: 15, color: C.sub, lineHeight: 1.35 }}>
               Week {programWeekFor(myProgram, today) || 1} of {myProgram.weeks || 6}
               {todayDay?.name ? ` \u00b7 ${todayDay.name}` : ""}
             </div>
@@ -17117,7 +17401,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
                       padding: "5px 10px", borderRadius: 8,
                     }}>WEEK {week}{dayNo > 0 ? ` \u00b7 DAY ${dayNo}` : ""}</span>
                   )}
-                  <h2 style={{ fontFamily: DISPLAY, fontSize: 27, fontWeight: 700, lineHeight: 1.1, letterSpacing: "-.02em", maxWidth: leadPhoto ? "62%" : "100%", color: HERO.text }}>
+                  <h2 style={{ fontFamily: DISPLAY, fontSize: "clamp(22px, 6.6vw, 27px)", fontWeight: 700, lineHeight: 1.12, letterSpacing: "-.02em", maxWidth: leadPhoto ? "60%" : "100%", color: HERO.text, overflowWrap: "anywhere" }}>
                     {todayDay.name}
                   </h2>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 13.5, fontWeight: 500, color: HERO.sub }}>
@@ -17193,6 +17477,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         )}
 
+        {!isCoach && <ExtraActivityCard state={state} setState={setState} />}
         {!isCoach && <CoachReplyCard logs={state.workoutLogs} />}
         {/* Booked sessions with the coach, under today's workout. Clients only:
             a coach in their own training mode is the one running them. */}
@@ -24388,7 +24673,8 @@ function AthleteProfile({ state, setState, nav }) {
             on the Week tab. */}
         {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space,
             and every session is on the Week tab's calendar. */}
-        <Btn variant="danger" className="w-full mt-6" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
+        {nav.showTour && <Btn variant="secondary" className="w-full mt-6" icon={Sparkles} onClick={nav.showTour}>Show the app walkthrough</Btn>}
+        <Btn variant="danger" className="w-full mt-3" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
         {/* Required to be reachable from inside the app, not only by writing
             in and asking. Sits below Log Out, in its own block, so it reads as
@@ -28728,6 +29014,7 @@ const initialState = () => ({
   aiThread: null,
   progress: [],
   workoutLogs: [],
+  activityLogs: [], // extra activities (kind "activity"), never counted as sessions
   booking: { sessionTypes: [], slots: [], bookings: [], packs: [], openings: {}, requests: [], loaded: false, error: null },
   sessionCheckins: {}, // { "YYYY-MM-DD": { confirmed: bool, programDay: string, confirmedAt: string } }
   // id starts NULL, not a placeholder string. It used to be "a1", which is
@@ -29180,6 +29467,7 @@ function AppInner() {
 
       const ids = (athleteRows || []).map(a => a.id);
       let logsByAthlete = {};
+      const activitiesByAthlete = {};
       let progressByAthlete = {};
       let checkinsByAthlete = {};
       let movesByAthlete = {};
@@ -29203,7 +29491,9 @@ function AppInner() {
             programDay: m.program_day, fromDate: m.from_date, toDate: m.to_date, kind: m.kind,
           });
         });
-        (logRows || []).forEach(l => { (logsByAthlete[l.user_id] ||= []).push(l); });
+        const { sessions: sessionRows, activities: activityRows } = splitLogRows(logRows);
+        sessionRows.forEach(l => { (logsByAthlete[l.user_id] ||= []).push(l); });
+        activityRows.forEach(l => { (activitiesByAthlete[l.user_id] ||= []).push(l); });
         (progressRows || []).forEach(p => { (progressByAthlete[p.user_id] ||= []).push(p); });
         (checkinRows || []).forEach(c => {
           (checkinsByAthlete[c.user_id] ||= {})[c.date] = {
@@ -29313,6 +29603,7 @@ function AppInner() {
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
             workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })),
+            activityLogs: (activitiesByAthlete[a.id] || []).map(activityFromRow),
             checkins: checkinsByAthlete[a.id] || {},
             // Same shape as state.sessionMoves, so planForWeek and
             // missedSessions read an athlete exactly as they read the
@@ -29444,7 +29735,8 @@ function AppInner() {
           })),
         };
         if (logRows?.length) {
-          next = { ...next, workoutLogs: logRows.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })) };
+          const split = splitLogRows(logRows);
+          next = { ...next, activityLogs: split.activities.map(activityFromRow), workoutLogs: split.sessions.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -29592,16 +29884,21 @@ function AppInner() {
       .order("date", { ascending: false });
     if (!rows) return;
     const byAthlete = {};
-    rows.forEach(l => { (byAthlete[l.user_id] = byAthlete[l.user_id] || []).push(l); });
+    const byActivity = {};
+    rows.forEach(l => {
+      const into = l?.kind === "activity" ? byActivity : byAthlete;
+      (into[l.user_id] = into[l.user_id] || []).push(l);
+    });
     setState(s => ({
       ...s,
       athletes: s.athletes.map(a => {
         const list = byAthlete[a.id];
-        if (!list) return a;
+        if (!list && !byActivity[a.id]) return a;
         return {
           ...a,
-          lastActive: list[0]?.date || a.lastActive,
-          workoutLogs: list.map(l => ({
+          activityLogs: (byActivity[a.id] || []).map(activityFromRow),
+          lastActive: (list || [])[0]?.date || a.lastActive,
+          workoutLogs: (list || []).map(l => ({
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
             setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
@@ -29939,6 +30236,8 @@ function AppInner() {
 
   const nav = {
     go: (key, param) => { setView(key); setNavParam(param ?? null); },
+    // Profile's "Show the walkthrough" (Isaiah, 1 Nov).
+    showTour: () => setTourOpen(true),
     logout: () => {
       supabase.auth.signOut();
       setAuthed(null); setView(null); setAuthUserId(null); setState(initialState());
@@ -30001,16 +30300,25 @@ function AppInner() {
   // starter, even on a handset that has never seen the app.
   useEffect(() => {
     if (tourDecided.current) return;
+    if (authed === "coach") {
+      // A coach's first time: no clients yet and never shown it.
+      const cid = state.coachProfile?.id;
+      if (!cid) return;
+      tourDecided.current = true;
+      if ((state.athletes || []).length === 0 && !tourAlreadySeen(cid)) setTourOpen(true);
+      return;
+    }
     const id = state.me?.id;
-    if (!authed || authed === "coach" || !id) return;
+    if (!authed || !id) return;
     tourDecided.current = true;
     if ((state.workoutLogs || []).length === 0 && !tourAlreadySeen(id)) setTourOpen(true);
-  }, [authed, state.me?.id, state.workoutLogs]);
+  }, [authed, state.me?.id, state.coachProfile?.id, state.athletes, state.workoutLogs]);
 
+  const tourRole = authed === "coach" && !trainingMode ? "coach" : "athlete";
   const closeTour = React.useCallback(() => {
     setTourOpen(false);
-    markTourSeen(state.me?.id);
-  }, [state.me?.id]);
+    markTourSeen(authed === "coach" ? state.coachProfile?.id : state.me?.id);
+  }, [authed, state.me?.id, state.coachProfile?.id]);
 
   // Ahead of everything else: someone who has just clicked a reset link must
   // choose a password before being dropped into the app.
@@ -30206,7 +30514,7 @@ function AppInner() {
   return (
     <NotificationContext.Provider value={notificationContext}>
       <WideContext.Provider value={wide}>
-        {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} onDone={closeTour} />}
+        {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} role={tourRole} onDone={closeTour} />}
         {wide ? (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100dvh", display: "flex", alignItems: "flex-start" }}>
             <SideNav

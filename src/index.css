@@ -28,6 +28,24 @@ html[data-theme="light"] body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Easier to read on a phone (Isaiah, 1 Nov: people found the app hard to
+   see and bunched up). The smallest text sizes in the app come up a step and
+   get a little more line height. Nothing below 12px. */
+.text-\[11px\] { font-size: 12px !important; line-height: 1.4; }
+.text-\[11\.5px\] { font-size: 12.5px !important; line-height: 1.4; }
+.text-\[12px\] { font-size: 13px !important; line-height: 1.45; }
+.text-\[12\.5px\] { font-size: 13.5px !important; line-height: 1.45; }
+.text-\[13px\] { font-size: 14px !important; line-height: 1.45; }
+
+/* Small phones (iPhone SE and mini, most budget Androids): a little more
+   width for content, and a little more room between stacked items. */
+@media (max-width: 400px) {
+  .px-5 { padding-left: 16px !important; padding-right: 16px !important; }
+  .space-y-2 > :not([hidden]) ~ :not([hidden]) { margin-top: 10px !important; }
+  .space-y-2\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 12px !important; }
+  .gap-2 { gap: 10px; }
+}
+
 ::-webkit-scrollbar {
   display: none;
 }

@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = path.join(here, "..", "src", "App.jsx");
 const src = readSource(APP);
 const H = await load(APP, [
-  "programWeekFor", "weekEntryFor", "resolveExerciseForWeek",
+  "daysBetweenISO", "programWeekFor", "weekEntryFor", "resolveExerciseForWeek",
   "resolveDayForWeek", "dayHasWeeklyPlan", "programHasWeeklyPlan", "weekChanges",
 ]);
 
@@ -200,7 +200,7 @@ test("week 1 has no previous week to compare against", () => {
 // THE program - this week's numbers burned in and the other 25 weeks gone. It
 // is silent, it is permanent, and it would look like the feature working.
 
-const { programForDate } = await load(APP, ["programForDate", "programWeekFor",
+const { programForDate } = await load(APP, ["programForDate", "daysBetweenISO", "programWeekFor",
   "programHasWeeklyPlan", "dayHasWeeklyPlan", "resolveDayForWeek",
   "resolveExerciseForWeek", "weekEntryFor"]);
 
@@ -265,7 +265,7 @@ test("no start date means no resolution rather than a wrong week", () => {
 const P = await load(APP, ["prescribeForWeek", "buildProgramPlan", "weekWithinPhase",
   { name: "SESSION_BLOCKS", kind: "const" },
   "applyPhaseIntent", "applyProgression", "applyDeload", "blockForPhase", "resolveExerciseForWeek",
-  "weekEntryFor", "currentProgramWeek", "programWeekFor",
+  "weekEntryFor", "currentProgramWeek", "daysBetweenISO", "programWeekFor",
   { name: "todayISO", kind: "const" },
   { name: "PHASE_WEEKS", kind: "const" }, { name: "MIN_WEEKS_FOR_DELOAD", kind: "const" }]);
 
