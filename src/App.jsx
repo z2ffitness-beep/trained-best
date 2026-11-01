@@ -10792,7 +10792,7 @@ function voiceLogSystem(scope, unit) {
   const list = (scope || []).map(e =>
     `- id: ${e.id} | ${e.name} | logged by: ${VOICE_MODE_WORDS[e.mode] || VOICE_MODE_WORDS.load} | prescribed: ${e.sets} x ${e.reps}`).join("\n");
   return `You turn what an athlete SAID about their training into numbers for their workout log. They talk the way people talk: filler words, half sentences, corrections. Respond ONLY with JSON, no markdown, in exactly this shape:
-{"exercises":[{"id":"<an id from the list>","sets":[{"set":1,"weight":225,"unit":"lb","reps":5}]}],"unclear":"<one short sentence about anything you could not place, or empty>"}
+{"exercises":[{"id":"<an id from the list>","rpe":8,"sets":[{"set":1,"weight":225,"unit":"lb","reps":5}]}],"unclear":"<one short sentence about anything you could not place, or empty>"}
 
 The exercises in this log:
 ${list}
@@ -10804,6 +10804,7 @@ Rules:
 - Distance: convert to meters (1 km = 1000, 1 mile = 1609, 1 yard = 0.9144). Time: minutes for timed work, seconds for holds and intervals.
 - "3 sets of 5 at 225" is three sets of 5 reps at 225. "Same again" or "same weight" repeats the set before. A correction ("no, actually 6") replaces what it corrects.
 - Number sets in the order they were done, starting at 1. Never invent a set they did not describe, and never more sets than prescribed.
+- "rpe" is how hard the exercise felt, 1 to 10, only if they said it: "RPE 8", "felt like an 8", "two reps left in the tank" (8), "one left" (9), "nothing left" or "failure" (10), "easy" (5 to 6). Leave it out if they did not say.
 - Leave out exercises they did not mention.`;
 }
 
@@ -10838,7 +10839,9 @@ function normalizeVoiceLog(raw, scope, unit) {
       }
       if (Object.keys(row).length > 1) { sets.push(row); next = Math.max(next, index + 1); }
     }
-    if (sets.length) out.push({ id: ex.id, sets: sets.sort((a, b) => a.index - b.index) });
+    const r = Number(entry?.rpe);
+    const rpe = Number.isFinite(r) && r >= 1 && r <= 10 ? Math.round(r * 2) / 2 : null;
+    if (sets.length || rpe != null) out.push({ id: ex.id, sets: sets.sort((a, b) => a.index - b.index), ...(rpe != null ? { rpe } : {}) });
   }
   return { entries: out, unclear: typeof raw?.unclear === "string" ? raw.unclear.trim() : "" };
 }
@@ -10935,7 +10938,7 @@ function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
           <p className="text-[13px] mb-3" style={{ color: C.sub }}>
             {many
               ? "Say what you did, exercise by exercise. For example: \"Squats, 225 for 5, 5 and 4. Bench, 3 sets of 8 at 155. Then a 20 minute run.\""
-              : "Say what you did. For example: \"225 for 5, then 5 again, last set only 4\"."}
+              : "Say what you did. For example: \"225 for 5, then 5 again, last set only 4. Felt like an 8.\""}
           </p>
           <div className="flex flex-col items-center gap-2 mb-3">
             {speech.supported && (
@@ -10976,6 +10979,12 @@ function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
                     <span className="font-semibold" style={{ color: C.text }}>{describeVoiceSet(row, modeOf(e.id), unit)}</span>
                   </div>
                 ))}
+                {e.rpe != null && (
+                  <div className="flex items-center justify-between text-[15px] py-1 tabular-nums">
+                    <span style={{ color: C.sub }}>How hard (RPE)</span>
+                    <span className="font-semibold" style={{ color: C.blue }}>{e.rpe} / 10</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -16814,6 +16823,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
       exIdx: pausedWorkout.exIdx || 0,
       notes: pausedWorkout.notes || "",
       setChecks: pausedWorkout.setChecks || {},
+      exerciseRpe: pausedWorkout.exerciseRpe || {},
       setWeights: pausedWorkout.setWeights || {},
       setReps: pausedWorkout.setReps || {},
       handSet: pausedWorkout.handSet || {},
@@ -17300,7 +17310,7 @@ function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
     // Recomputed from `sets` rather than trusting a stored topWeight, so the
     // number here always agrees with the sets listed beneath it.
     // A loaded carry is listed with the distances below, not as a lift too.
-    .map(e => ({ name: e.name, sets: (e.sets || []).filter(st => wasLifted(st) && st.meters == null), top: topSetWeight((e.sets || []).filter(st => st?.meters == null)) }))
+    .map(e => ({ name: e.name, rpe: e.rpeDone, sets: (e.sets || []).filter(st => wasLifted(st) && st.meters == null), top: topSetWeight((e.sets || []).filter(st => st?.meters == null)) }))
     .filter(e => e.top?.weight != null);
   // Cardio, holds, intervals and distance, in their own units (29 Oct). The
   // coach saw only lifts with a weight, so a 40-minute ride logged as nothing.
@@ -17363,6 +17373,7 @@ function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
                   </div>
                   <div className="tabular-nums text-[11px] mt-0.5" style={{ color: C.faint }}>
                     {e.sets.map(s => `${s.weight}`).join(" · ")} {e.top.unit}
+                    {typeof e.rpe === "number" ? ` · felt ${e.rpe}/10` : ""}
                   </div>
                 </div>
               ))}
@@ -20538,6 +20549,9 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
   const [stopOpen, setStopOpen] = useState(null);
   // Voice Log: null, or the exercises a recording is about.
   const [voiceScope, setVoiceScope] = useState(null);
+  // How hard each exercise felt (1 to 10), when the athlete said so in a Voice
+  // Log (Isaiah, 31 Oct). Saved with the exercise as rpeDone.
+  const [exerciseRpe, setExerciseRpe] = useState({});
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -20591,6 +20605,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     setSetWeights(remapExerciseKeys(draft?.setWeights, toCurrent));
     setSetReps(remapExerciseKeys(draft?.setReps, toCurrent));
     setSetMetrics(remapExerciseKeys(draft?.setMetrics, toCurrent));
+    setExerciseRpe(remapExerciseKeys(draft?.exerciseRpe, toCurrent));
     setHandSet(remapExerciseKeys(draft?.handSet, toCurrent));
     setSessionDay(todayISO());
     sessionRowIdRef.current = null;
@@ -20671,6 +20686,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
       setMetrics: remapExerciseKeys(setMetrics, toStable),
+      exerciseRpe: remapExerciseKeys(exerciseRpe, toStable),
       // Saved with the rest of the draft, or a reload mid-session turns every
       // deliberately different set back into a box the next fill will stamp
       // over.
@@ -20679,7 +20695,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     };
     if (!draftHasContent(draft)) return;
     writeSessionDraft(draft, state.me.id);
-  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, setMetrics, handSet, swappedMap, notes, finished]);
+  }, [dayKey, sessionDay, exIdx, setChecks, setWeights, setReps, setMetrics, exerciseRpe, handSet, swappedMap, notes, finished]);
 
   // "Last time" is memoised because it sorts the athlete's entire log history,
   // and without it that ran on every keystroke into a weight field.
@@ -21154,6 +21170,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         setsCompleted: checked.filter(i => i < (item.sets || 0)).length,
         reps: item.reps,
         rpe: item.rpe,
+        rpeDone: typeof exerciseRpe[item.id] === "number" ? exerciseRpe[item.id] : null,
         metric: mode,
         sets,
         topWeight: mode === "load" ? topSetWeight(sets) : null,
@@ -21344,6 +21361,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       setWeights: remapExerciseKeys(setWeights, toStable),
       setReps: remapExerciseKeys(setReps, toStable),
       setMetrics: remapExerciseKeys(setMetrics, toStable),
+      exerciseRpe: remapExerciseKeys(exerciseRpe, toStable),
       handSet: remapExerciseKeys(handSet, toStable),
       swappedMap: remapExerciseKeys(swappedMap, toStable),
       seconds: timerIsLive ? liveTimerSeconds() : 0,
@@ -21461,6 +21479,13 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       }
       return out;
     });
+    if (entries.some(e => e.rpe != null)) {
+      setExerciseRpe(r => {
+        const out = { ...r };
+        for (const e of entries) if (e.rpe != null) out[e.id] = e.rpe;
+        return out;
+      });
+    }
     const nextChecks = { ...checksRef.current };
     for (const e of entries) {
       const cur = new Set(nextChecks[e.id] || []);
@@ -21622,13 +21647,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               <span>{x.sets} {tracked && metricMode !== "intervals" && metricMode !== "time" ? "sets" : `round${Number(x.sets) === 1 ? "" : "s"}`}</span><span>{x.reps}{metricMode === "load" ? " reps" : ""}</span>
               {tracked && <span>rest {x.rest}</span>}
             </div>
-            {tracked && (
-              <button type="button" onClick={() => setVoiceScope({ title: ex?.name || "This exercise", items: voiceScopeFor(block?.items) })}
-                className="mt-3 inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-semibold"
-                style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}66`, color: C.orange }}>
-                <Mic size={15} /> Voice Log
-              </button>
-            )}
+
             {x.note && (
               <p className="text-[13px] mt-2 leading-relaxed rounded-lg px-3 py-2" style={{ color: C.text, background: C.bg, border: `1px solid ${C.border}` }}>
                 <span className="font-semibold" style={{ color: C.sub }}>Note: </span>{x.note}
@@ -21690,7 +21709,25 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         </div>
 
         <div className="mb-2">
-          <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : metricMode === "hold" ? "Holds" : metricMode === "distance" ? "Distance" : "Sets"}</div>
+          {/* Voice Log sits with the sets it fills (Isaiah, 31 Oct). */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold" style={{ color: C.sub }}>{metricMode === "intervals" ? "Rounds" : metricMode === "time" ? "Time" : metricMode === "hold" ? "Holds" : metricMode === "distance" ? "Distance" : "Sets"}</div>
+            {voiceScopeFor(block?.items).length > 0 && <button type="button" onClick={() => setVoiceScope({ title: ex?.name || "This exercise", items: voiceScopeFor(block?.items) })}
+              aria-label={`Voice Log ${ex?.name || "this exercise"}`}
+              className="shrink-0 inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-semibold"
+              style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}66`, color: C.orange }}>
+              <Mic size={15} /> Voice Log
+            </button>}
+          </div>
+          {typeof exerciseRpe[x.id] === "number" && (
+            <div className="mt-2 inline-flex items-center gap-2 rounded-full px-3 py-1 text-[12.5px] font-semibold"
+              style={{ background: `${C.blue}18`, color: C.blue }}>
+              How hard: {exerciseRpe[x.id]} / 10
+              <button type="button" aria-label="Clear how hard it felt" onClick={() => setExerciseRpe(r => { const o = { ...r }; delete o[x.id]; return o; })}>
+                <X size={13} />
+              </button>
+            </div>
+          )}
           <div className="text-[12.5px] mt-0.5" style={{ color: C.faint }}>
             {metricMode === "time"
               ? "Type how many minutes you went for, then tick it."
