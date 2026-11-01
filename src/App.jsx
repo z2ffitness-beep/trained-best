@@ -10863,36 +10863,113 @@ function speechRecognitionCtor() {
 }
 
 // Speech to text, with the browser doing the listening.
+//
+// iPhone Safari (Isaiah, 31 Oct: "it won't go through"): its "keep listening"
+// mode often hands back nothing at all, so the box stays empty and Fill it in
+// stays greyed out. On an iPhone it listens one phrase at a time instead and
+// quietly starts again after each pause until Stop is tapped, keeping every
+// phrase heard. If nothing at all arrives, it says so and points to the
+// keyboard's mic, which always works.
+function isIOSDevice() {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 function useSpeechToText(text, setText) {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState(null);
   const recRef = useRef(null);
+  const wantRef = useRef(false);
+  const keptRef = useRef("");
+  const heardRef = useRef(false);
+  const quietTimer = useRef(null);
+  const emptyRuns = useRef(0);
   const supported = !!speechRecognitionCtor();
-  const stop = () => { try { recRef.current?.stop(); } catch { /* already stopped */ } setListening(false); };
-  const start = () => {
+  const ios = isIOSDevice();
+
+  const clearQuiet = () => { if (quietTimer.current) { clearTimeout(quietTimer.current); quietTimer.current = null; } };
+  const stop = () => {
+    wantRef.current = false;
+    clearQuiet();
+    try { recRef.current?.stop(); } catch { /* already stopped */ }
+    setListening(false);
+  };
+
+  const listenOnce = () => {
     const Ctor = speechRecognitionCtor();
-    if (!Ctor) return;
-    setError(null);
-    const base = (text || "").trim();
+    if (!Ctor || !wantRef.current) return;
     const rec = new Ctor();
     rec.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
-    rec.continuous = true;
+    rec.continuous = !ios;
     rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    let finals = "";
     rec.onresult = (e) => {
-      let heard = "";
-      for (let i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript;
-      setText([base, heard.trim()].filter(Boolean).join(" "));
+      heardRef.current = true;
+      clearQuiet();
+      let interim = "";
+      finals = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0]?.transcript || "";
+        if (e.results[i].isFinal) finals += t; else interim += t;
+      }
+      setText([keptRef.current, (finals + " " + interim).trim()].filter(Boolean).join(" "));
     };
     rec.onerror = (e) => {
-      setError(e?.error === "not-allowed" || e?.error === "service-not-allowed"
-        ? "The microphone is blocked. Allow it for this site in your phone's settings, or use the mic on your keyboard."
-        : e?.error === "no-speech" ? "Didn't hear anything. Tap the mic and try again." : "Listening stopped. Tap the mic to carry on, or type it.");
+      const code = e?.error;
+      if (code === "no-speech" || code === "aborted") return; // a pause, not a failure
+      wantRef.current = false;
+      setError(code === "not-allowed"
+        ? "The microphone is blocked for this site. Allow it in your phone's settings, or tap the box and use the mic on your keyboard."
+        : code === "service-not-allowed"
+          ? "Speech recognition is switched off on this phone (Siri & Dictation). Tap the box and use the mic on your keyboard instead."
+          : "Listening stopped. Tap the box and use the mic on your keyboard, or try the mic again.");
     };
-    rec.onend = () => setListening(false);
+    rec.onend = () => {
+      if (finals.trim()) { keptRef.current = [keptRef.current, finals.trim()].filter(Boolean).join(" "); emptyRuns.current = 0; }
+      else emptyRuns.current += 1;
+      // A phone that ends every attempt without hearing anything is not going
+      // to start hearing on the twentieth try. Stop, and say what to do.
+      if (wantRef.current && emptyRuns.current >= 12) {
+        wantRef.current = false;
+        if (!heardRef.current) setError("Not picking anything up. Tap the box and use the mic on your keyboard instead.");
+      }
+      if (wantRef.current) {
+        // Still meant to be listening: pick up the next phrase.
+        try { listenOnce(); return; } catch { /* fall through to stopped */ }
+      }
+      clearQuiet();
+      setListening(false);
+    };
     recRef.current = rec;
-    try { rec.start(); setListening(true); } catch { setListening(false); }
+    rec.start();
   };
-  useEffect(() => () => { try { recRef.current?.abort(); } catch { /* gone */ } }, []);
+
+  const start = () => {
+    if (!speechRecognitionCtor()) return;
+    setError(null);
+    keptRef.current = (text || "").trim();
+    heardRef.current = false;
+    emptyRuns.current = 0;
+    wantRef.current = true;
+    try {
+      listenOnce();
+      setListening(true);
+    } catch {
+      wantRef.current = false;
+      setListening(false);
+      setError("Couldn't start the microphone. Tap the box and use the mic on your keyboard instead.");
+      return;
+    }
+    clearQuiet();
+    quietTimer.current = setTimeout(() => {
+      if (!heardRef.current && wantRef.current) {
+        setError("Not picking anything up. Tap the box and use the mic on your keyboard instead.");
+      }
+    }, 6000);
+  };
+
+  useEffect(() => () => { wantRef.current = false; clearQuiet(); try { recRef.current?.abort(); } catch { /* gone */ } }, []);
   return { supported, listening, error, start, stop };
 }
 
@@ -10951,7 +11028,7 @@ function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
               </button>
             )}
             <div className="text-[12.5px]" style={{ color: speech.listening ? C.red : C.faint }}>
-              {speech.supported ? (speech.listening ? "Listening... tap to stop" : "Tap the mic and talk") : "Tap the box, then the mic on your keyboard"}
+              {speech.supported ? (speech.listening ? "Listening... tap to stop" : "Tap the mic and talk, or use the mic on your keyboard") : "Tap the box, then the mic on your keyboard"}
             </div>
           </div>
           <textarea value={text} onChange={e => setText(e.target.value)} rows={4}
