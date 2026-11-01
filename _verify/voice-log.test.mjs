@@ -87,6 +87,14 @@ test("how hard it felt (RPE) is kept, 1 to 10, even with no sets said", () => {
   assert.ok(/rpeDone: typeof exerciseRpe\[item\.id\] === "number"/.test(src), "RPE is not saved with the exercise");
 });
 
+test("iPhone: listens a phrase at a time and keeps going, and says when it hears nothing", () => {
+  const hook = src.slice(src.indexOf("function useSpeechToText"), src.indexOf("function VoiceLogSheet"));
+  assert.ok(/rec\.continuous = !ios/.test(hook), "iPhone is still put in the continuous mode that returns nothing");
+  assert.ok(/if \(wantRef\.current\) \{\s*\/\/ Still meant to be listening/.test(hook), "it stops after the first pause");
+  assert.ok(/keptRef\.current = \[keptRef\.current, finals\.trim\(\)\]/.test(hook), "earlier phrases are lost on restart");
+  assert.ok(/Not picking anything up/.test(hook), "silence leaves the athlete guessing");
+});
+
 test("read back in words", () => {
   assert.equal(H.describeVoiceSet({ weight: 225, reps: 5 }, "load", "lb"), "225 lb x 5");
   assert.equal(H.describeVoiceSet({ minutes: 20 }, "time", "lb"), "20 min");
