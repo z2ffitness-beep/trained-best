@@ -39,6 +39,8 @@ const H = await load(APP, [
   { name: "NAV_PARENT", kind: "const" },
   { name: "TOUR_SEEN_KEY", kind: "const" },
   { name: "FEATURES", kind: "const" },
+  { name: "TOUR_SHOTS", kind: "const" },
+  "tourShot",
   "tourCards",
   "tourAlreadySeen",
   "markTourSeen",
@@ -122,6 +124,25 @@ test("a full walkthrough, not four cards (Isaiah, 1 Nov)", () => {
   }
   assert.ok(/showTour: \(\) => setTourOpen\(true\)/.test(src), "the walkthrough cannot be replayed");
   assert.ok(/Show the app walkthrough/.test(src));
+});
+
+test("every walkthrough card shows a picture of the screen (Isaiah, 1 Nov)", async () => {
+  const fs = await import("node:fs");
+  const pub = path.join(here, "..", "public");
+  const seen = new Set();
+  for (const [hasCoach, role] of [[true, "athlete"], [false, "athlete"], [false, "coach"]]) {
+    for (const c of H.tourCards(hasCoach, role)) {
+      const shot = H.tourShot(role, c.key, hasCoach);
+      assert.ok(shot, `${role} card ${c.key} has no picture`);
+      assert.ok(fs.existsSync(path.join(pub, shot)), `${shot} is missing from public/`);
+      seen.add(shot);
+    }
+  }
+  // A no-coach athlete sees Adjust with AI, not the coach thread.
+  assert.equal(H.tourShot("athlete", "coach", false), "/tour/s-ai.jpg");
+  assert.equal(H.tourShot("athlete", "coach", true), "/tour/c-coach.jpg");
+  const at = src.indexOf("function FirstRunTour");
+  assert.ok(/<img key=\{card\.key\} src=\{tourShot\(role, card\.key, hasCoach\)\}/.test(src.slice(at)), "the picture is not drawn");
 });
 
 test("a self-guided athlete is never told to message a coach", () => {

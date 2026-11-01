@@ -9217,6 +9217,21 @@ function markTourSeen(userId) {
 // The full walkthrough (Isaiah, 1 Nov): everything a new person needs, one
 // screen at a time, written for the app they actually have. Each card says
 // where in the app it lives. Replayable from Profile.
+// The picture on each card: a real screenshot of what the card is about, in
+// public/tour (Isaiah, 1 Nov: show it, don't only say it). Taken from the app
+// itself; retake them when a screen changes a lot.
+const TOUR_SHOTS = {
+  coach: { welcome: "k-home", clients: "k-clients", board: "k-edit", ai: "k-ai", templates: "k-templates",
+    reply: "k-reply", messages: "k-messages", sessions: "k-sessions", brand: "k-brand" },
+  athlete: { welcome: "c-tabs", home: "c-home", workout: "c-workout", log: "c-log", voice: "c-voice",
+    week: "c-week", extra: "c-extra", coach: "c-coach", coachSolo: "s-ai", profile: "c-profile" },
+};
+function tourShot(role, key, hasCoach) {
+  const map = TOUR_SHOTS[role === "coach" ? "coach" : "athlete"];
+  const name = role !== "coach" && key === "coach" && !hasCoach ? map.coachSolo : map[key];
+  return name ? `/tour/${name}.jpg` : null;
+}
+
 function tourCards(hasCoach, role = "athlete") {
   if (role === "coach") {
     return [
@@ -9315,26 +9330,35 @@ function FirstRunTour({ hasCoach, role = "athlete", onDone }) {
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col justify-center relative overflow-y-auto" style={{ maxWidth: 440, width: "100%", margin: "0 auto" }}>
-        <div className="flex items-center gap-3 mb-5">
+      <div className="flex-1 flex flex-col justify-center relative overflow-y-auto py-3" style={{ maxWidth: 440, width: "100%", margin: "0 auto" }}>
+        {tourShot(role, card.key, hasCoach) && (
+          <div className="mb-4 rounded-2xl overflow-hidden mx-auto" style={{
+            border: `1px solid ${HERO.glassLine}`, background: "#05070D", width: "100%", maxWidth: 360,
+            boxShadow: "0 14px 40px rgba(0,0,0,.45)",
+          }}>
+            <img key={card.key} src={tourShot(role, card.key, hasCoach)} alt={`What ${card.title} looks like in the app`}
+              style={{ display: "block", width: "100%", maxHeight: "34vh", objectFit: "cover", objectPosition: "top" }} />
+          </div>
+        )}
+        <div className="flex items-center gap-3 mb-3">
           <div style={{
-            width: 54, height: 54, borderRadius: 18, display: "grid", placeItems: "center", flexShrink: 0,
+            width: 44, height: 44, borderRadius: 14, display: "grid", placeItems: "center", flexShrink: 0,
             background: HERO.glass, border: `1px solid ${HERO.glassLine}`,
           }}>
-            <Icon size={26} style={{ color: HERO.accentText }} />
+            <Icon size={22} style={{ color: HERO.accentText }} />
           </div>
           <span className="text-[12px] uppercase tracking-[.16em] font-bold rounded-full px-3 py-1"
             style={{ color: HERO.accentText, background: HERO.glass, border: `1px solid ${HERO.glassLine}` }}>{card.where}</span>
         </div>
         <div style={{
           fontFamily: DISPLAY, fontWeight: 800, color: HERO.text, letterSpacing: "-.02em",
-          fontSize: "clamp(24px, 7vw, 32px)", lineHeight: 1.15, textWrap: "balance",
+          fontSize: "clamp(22px, 6.4vw, 30px)", lineHeight: 1.15, textWrap: "balance",
         }}>
           {card.title}
         </div>
-        <ul className="mt-5 space-y-3">
+        <ul className="mt-3 space-y-2">
           {card.points.map((pt, n) => (
-            <li key={n} className="flex gap-3 text-[16px] leading-relaxed" style={{ color: HERO.body }}>
+            <li key={n} className="flex gap-3 text-[15px] leading-relaxed" style={{ color: HERO.body }}>
               <span aria-hidden="true" className="shrink-0 mt-[9px]" style={{ width: 6, height: 6, borderRadius: 3, background: HERO.accent }} />
               <span>{pt}</span>
             </li>
