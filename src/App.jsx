@@ -10859,21 +10859,39 @@ function LoadingEstimate({ label, detail, big = false, small = false, tips = nul
 
 // ---------- extra activities ----------
 //
-// Isaiah, 1 Nov: anything done outside the program (a 30 minute walk on a
-// Tuesday, a pickup game, a yoga class) can be logged by voice or by typing.
-// Saved in workout_logs with kind "activity" (migration 017) so it is in the
-// athlete's history and their coach sees it, but it never counts as a planned
-// session done, missed or made up: loaded into state.activityLogs, never into
-// state.workoutLogs, which everything that counts sessions reads.
+// Isaiah, 1 Nov: anything done outside the program can be logged, by voice
+// or by typing: what it was, how long it took overall, how hard it felt, the
+// day, and each thing done in the measure it was done in (weight and reps,
+// reps, minutes, seconds held or distance). A 30 minute walk is one line; a
+// home workout is push-ups 3 x 20, a plank for 60 s and a 2 mile run.
+// Saved in workout_logs with kind "activity" (migration 017): in the
+// athlete's history and their coach's view, never counted as a planned
+// session. Loaded into state.activityLogs, never state.workoutLogs.
+const ACTIVITY_METRICS = [
+  { key: "load", label: "Weight and reps" },
+  { key: "reps", label: "Reps" },
+  { key: "time", label: "Minutes" },
+  { key: "hold", label: "Seconds" },
+  { key: "distance", label: "Distance" },
+];
+const ACTIVITY_FIELDS = { load: ["weight", "reps"], reps: ["reps"], time: ["minutes"], hold: ["seconds"], distance: ["meters"] };
+
 function activityFromRow(l) {
-  const first = (l?.exercises || [])[0] || {};
-  const set = (first.sets || [])[0] || {};
+  const ex = (l?.exercises || []).filter(e => e && e.name);
+  const items = ex.filter(e => ACTIVITY_FIELDS[e.metric] && (e.sets || []).length).map(e => ({
+    name: e.name, metric: e.metric,
+    sets: (e.sets || []).map(st => {
+      const out = {};
+      for (const f of ["weight", "reps", "minutes", "seconds", "meters"]) if (typeof st[f] === "number") out[f] = st[f];
+      if (out.weight != null) out.unit = st.unit === "kg" ? "kg" : "lb";
+      return out;
+    }),
+  }));
+  const rpe = ex.map(e => e.rpeDone).find(v => typeof v === "number");
   return {
     id: l.id, date: l.date, name: l.program_day || "Activity",
     minutes: typeof l.duration === "number" ? l.duration : null,
-    meters: typeof set.meters === "number" ? set.meters : null,
-    rpe: typeof first.rpeDone === "number" ? first.rpeDone : null,
-    notes: l.notes || null,
+    rpe: typeof rpe === "number" ? rpe : null, notes: l.notes || null, items,
   };
 }
 
@@ -10884,60 +10902,177 @@ function splitLogRows(rows) {
   return { sessions, activities };
 }
 
-// How an activity reads in a list: "30 min walk", "5 km run, 28 min".
+const fmtNum = (n) => String(Math.round(n * 10) / 10);
+function fmtDistance(m, unit) {
+  const mi = unit !== "kg";
+  return `${fmtNum(mi ? m / 1609.34 : m / 1000)} ${mi ? "mi" : "km"}`;
+}
+
+// One thing done, in its own measure: "Push-ups 3 x 20", "Deadlift 225 lb x 5, 5, 3",
+// "Plank 60 s, 45 s", "Run 2 mi", "Bike 20 min".
+function describeActivityItem(item, unit = "lb") {
+  const sets = item?.sets || [];
+  const same = (k) => sets.length > 1 && sets.every(st => st[k] === sets[0][k]);
+  let what = "";
+  if (item.metric === "load") {
+    const w = sets[0]?.weight;
+    if (sets.every(st => st.weight === w) && w != null) {
+      what = `${fmtNum(w)} ${sets[0].unit || unit} x ${same("reps") ? `${sets[0].reps} (${sets.length} sets)` : sets.map(st => st.reps ?? "?").join(", ")}`;
+    } else {
+      what = sets.map(st => `${st.weight != null ? fmtNum(st.weight) : "?"} x ${st.reps ?? "?"}`).join(", ") + (sets[0]?.unit ? ` ${sets[0].unit}` : "");
+    }
+  } else if (item.metric === "reps") {
+    what = same("reps") ? `${sets.length} x ${sets[0].reps}` : sets.map(st => st.reps ?? "?").join(", ") + " reps";
+  } else if (item.metric === "time") {
+    what = sets.map(st => `${fmtNum(st.minutes ?? 0)} min`).join(", ");
+  } else if (item.metric === "hold") {
+    what = sets.map(st => `${fmtNum(st.seconds ?? 0)} s`).join(", ");
+  } else if (item.metric === "distance") {
+    what = sets.map(st => fmtDistance(st.meters ?? 0, unit)).join(", ");
+  }
+  return `${item.name} ${what}`.trim();
+}
+
+// The headline: how long overall and how hard.
 function describeActivity(a, unit = "lb") {
   const bits = [];
   if (a.minutes != null) bits.push(`${a.minutes} min`);
-  if (a.meters != null) {
-    const mi = unit !== "kg";
-    const v = mi ? a.meters / 1609.34 : a.meters / 1000;
-    bits.push(`${Math.round(v * 10) / 10} ${mi ? "mi" : "km"}`);
-  }
   if (a.rpe != null) bits.push(`felt ${a.rpe}/10`);
   return bits.join(" · ");
 }
 
 function activitySystem(today, unit) {
   return `You turn what someone SAID about an extra activity (not their program workout) into a log entry. They talk normally. Respond ONLY with JSON, no markdown:
-{"name":"<short name, e.g. Walk, Pickup basketball, Yoga class, Bike ride>","minutes":30,"distance":{"value":5,"unit":"km"},"rpe":4,"date":"YYYY-MM-DD","note":"<anything else worth keeping, or empty>"}
+{"name":"<short name for the whole thing, e.g. Walk, Home workout, Pickup basketball>","minutes":45,"rpe":7,"date":"YYYY-MM-DD","note":"",
+ "items":[{"name":"Push-ups","metric":"reps","sets":[{"reps":20},{"reps":20},{"reps":15}]},
+          {"name":"Deadlift","metric":"load","sets":[{"weight":225,"unit":"lb","reps":5}]},
+          {"name":"Plank","metric":"hold","sets":[{"seconds":60}]},
+          {"name":"Run","metric":"distance","sets":[{"distance":{"value":2,"unit":"mi"}}]},
+          {"name":"Bike","metric":"time","sets":[{"minutes":20}]}]}
 Rules:
 - Today is ${today}. "Yesterday", "this morning", "Tuesday" become a date on or before today. If they don't say, use today.
-- minutes: total time. "An hour" is 60, "an hour and a half" is 90. Leave it out if they did not say.
-- distance: only if they said one. unit is "km", "mi" or "m". Their usual unit is ${unit === "kg" ? "km" : "mi"}.
-- rpe: how hard it felt, 1 to 10, only if they said it ("easy" about 3, "moderate" about 5, "hard" about 8, "all out" 10).
-- name: two or three words, capitalised, no numbers in it.`;
+- minutes: how long the whole thing took, only if they said. "An hour" is 60.
+- rpe: how hard it felt overall, 1 to 10, only if they said ("easy" about 3, "moderate" 5, "hard" 8, "all out" 10).
+- items: each thing they did, in the measure they did it in. metric is one of: load (weight and reps), reps (no weight), time (minutes), hold (seconds), distance. "3 sets of 20" is three sets of 20. Leave items empty if they only described one simple thing like a walk with a time.
+- Weight unit: lb or kg as said; if not said, ${unit}. Distance unit: mi, km or m as said; if not said, ${unit === "kg" ? "km" : "mi"}.
+- name fields: two or three words, capitalised.`;
 }
 
-function normalizeActivity(raw, today) {
+function normalizeActivityItem(it, unit) {
+  const metric = ACTIVITY_FIELDS[it?.metric] ? it.metric : null;
+  const name = String(it?.name || "").trim().slice(0, 60);
+  if (!metric || !name) return null;
+  const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+  const sets = [];
+  for (const st of (Array.isArray(it.sets) ? it.sets : []).slice(0, 20)) {
+    const row = {};
+    if (metric === "load") {
+      const w = num(st?.weight, 0, 2000); const said = st?.unit === "kg" || st?.unit === "lb" ? st.unit : unit;
+      if (w != null) { row.weight = Math.round(w * 2) / 2; row.unit = said; }
+    }
+    if (metric === "load" || metric === "reps") { const r = num(st?.reps, 0, 999); if (r != null) row.reps = Math.round(r); }
+    if (metric === "time") { const m = num(st?.minutes, 0, 1440); if (m != null) row.minutes = Math.round(m * 10) / 10; }
+    if (metric === "hold") { const sec = num(st?.seconds, 0, 36000); if (sec != null) row.seconds = Math.round(sec); }
+    if (metric === "distance") {
+      const d = st?.distance && typeof st.distance === "object" ? st.distance : null;
+      const v = d ? num(d.value, 0.01, 1000) : null;
+      if (d && v != null) row.meters = Math.round(d.unit === "mi" ? v * 1609.34 : d.unit === "m" ? v : d.unit === "km" ? v * 1000 : (unit === "kg" ? v * 1000 : v * 1609.34));
+      else { const m = num(st?.meters, 1, 1000000); if (m != null) row.meters = Math.round(m); }
+    }
+    if (Object.keys(row).some(k => k !== "unit")) sets.push(row);
+  }
+  return sets.length ? { name, metric, sets } : null;
+}
+
+function normalizeActivity(raw, today, unit = "lb") {
   const r = raw || {};
-  const name = String(r.name || "").trim().slice(0, 60);
   const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
   const minutes = num(r.minutes, 1, 1440);
-  let meters = null;
-  const d = r.distance && typeof r.distance === "object" ? r.distance : null;
-  const dv = d ? num(d.value, 0.01, 1000) : null;
-  if (dv != null) meters = Math.round(d.unit === "mi" ? dv * 1609.34 : d.unit === "m" ? dv : dv * 1000);
   const rpe = num(r.rpe, 1, 10);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") && r.date <= today ? r.date : today;
-  return { name, minutes: minutes != null ? Math.round(minutes) : null, meters, rpe: rpe != null ? Math.round(rpe * 2) / 2 : null, date, note: String(r.note || "").trim().slice(0, 500) };
+  const items = (Array.isArray(r.items) ? r.items : []).map(it => normalizeActivityItem(it, unit)).filter(Boolean).slice(0, 20);
+  return {
+    name: String(r.name || "").trim().slice(0, 60), minutes: minutes != null ? Math.round(minutes) : null,
+    rpe: rpe != null ? Math.round(rpe) : null, date, note: String(r.note || "").trim().slice(0, 500), items,
+  };
 }
 
 function activityRow(userId, a) {
+  const items = a.items || [];
+  const exercises = items.length
+    ? items.map(it => ({
+        name: it.name, tracked: true, metric: it.metric, setsPrescribed: 0, setsCompleted: it.sets.length, rpeDone: a.rpe ?? null,
+        sets: it.sets.map((st, i) => ({ set: i + 1, done: true, weight: st.weight ?? null, unit: st.weight != null ? (st.unit || "lb") : null,
+          reps: st.reps ?? null, minutes: st.minutes ?? null, seconds: st.seconds ?? null, meters: st.meters ?? null, manual: true })),
+      }))
+    // Nothing broken down (a walk): one line carrying how hard it felt.
+    : [{ name: a.name, tracked: false, metric: null, setsPrescribed: 0, setsCompleted: 0, rpeDone: a.rpe ?? null, sets: [] }];
   return {
     user_id: userId, date: a.date, kind: "activity",
     program_day: a.name, duration: a.minutes, counts: false,
-    sets_completed: 0, sets_prescribed: 0, notes: a.note || null,
-    exercises: [{
-      name: a.name, tracked: true, metric: a.meters != null ? "distance" : "time",
-      setsPrescribed: 0, setsCompleted: 0, rpeDone: a.rpe,
-      sets: [{ set: 1, done: true, minutes: a.minutes, meters: a.meters, weight: null, unit: null, reps: null, manual: false }],
-    }],
+    sets_completed: 0, sets_prescribed: 0, notes: a.note || null, exercises,
   };
+}
+
+// Editing state for one item: strings while typing, numbers when saved.
+const blankActivitySet = (metric) => ({ weight: "", reps: "", minutes: "", seconds: "", distance: "" });
+function itemToDraft(it, unit) {
+  return { name: it.name, metric: it.metric, sets: it.sets.map(st => ({
+    weight: st.weight != null ? String(st.weight) : "", reps: st.reps != null ? String(st.reps) : "",
+    minutes: st.minutes != null ? String(st.minutes) : "", seconds: st.seconds != null ? String(st.seconds) : "",
+    distance: st.meters != null ? fmtNum(unit === "kg" ? st.meters / 1000 : st.meters / 1609.34) : "",
+  })) };
+}
+function draftToItem(d, unit) {
+  const sets = d.sets.map(st => ({
+    weight: st.weight, unit, reps: st.reps, minutes: st.minutes, seconds: st.seconds,
+    distance: st.distance === "" ? null : { value: st.distance, unit: unit === "kg" ? "km" : "mi" },
+  }));
+  return normalizeActivityItem({ name: d.name, metric: d.metric, sets }, unit);
+}
+
+function ActivityItemEditor({ item, unit, onChange, onRemove }) {
+  const fields = ACTIVITY_FIELDS[item.metric] || [];
+  const label = { weight: unit, reps: "reps", minutes: "min", seconds: "sec", meters: unit === "kg" ? "km" : "mi" };
+  const key = (f) => (f === "meters" ? "distance" : f);
+  const setSet = (i, f, v) => onChange({ ...item, sets: item.sets.map((st, n) => (n === i ? { ...st, [key(f)]: v } : st)) });
+  return (
+    <div className="rounded-xl p-3 mb-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+      <div className="flex gap-2 mb-2">
+        <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} placeholder="e.g. Push-ups, Deadlift, Plank"
+          aria-label="Exercise" value={item.name} onChange={e => onChange({ ...item, name: e.target.value })} />
+        <button type="button" onClick={onRemove} aria-label="Remove this exercise" className="shrink-0 px-2" style={{ color: C.faint }}><X size={18} /></button>
+      </div>
+      <select aria-label="Measured by" style={{ ...inputStyle, marginBottom: 8 }} value={item.metric}
+        onChange={e => onChange({ ...item, metric: e.target.value })}>
+        {ACTIVITY_METRICS.map(m => <option key={m.key} value={m.key}>{m.key === "distance" ? `Distance (${unit === "kg" ? "km" : "mi"})` : m.label}</option>)}
+      </select>
+      {item.sets.map((st, i) => (
+        <div key={i} className="flex items-center gap-2 mb-1.5">
+          <span className="text-[13px] w-12 shrink-0 tabular-nums" style={{ color: C.sub }}>Set {i + 1}</span>
+          {fields.map(f => (
+            <label key={f} className="flex items-center gap-1 flex-1 min-w-0">
+              <input inputMode="decimal" type="number" min="0" aria-label={`Set ${i + 1} ${label[f]}`}
+                value={st[key(f)]} onChange={e => setSet(i, f, e.target.value)}
+                className="tabular-nums text-center rounded-lg py-2 w-full min-w-0" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.text }} />
+              <span className="text-[12px] shrink-0" style={{ color: C.faint }}>{label[f]}</span>
+            </label>
+          ))}
+          {item.sets.length > 1 && (
+            <button type="button" aria-label={`Remove set ${i + 1}`} onClick={() => onChange({ ...item, sets: item.sets.filter((_, n) => n !== i) })}
+              className="shrink-0" style={{ color: C.faint }}><Minus size={16} /></button>
+          )}
+        </div>
+      ))}
+      <button type="button" onClick={() => onChange({ ...item, sets: [...item.sets, { ...(item.sets[item.sets.length - 1] || blankActivitySet()) }] })}
+        className="text-[13px] font-semibold mt-1" style={{ color: C.orange }}>+ Add a set</button>
+    </div>
+  );
 }
 
 function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
   const today = todayISO();
-  const blank = { name: "", minutes: "", distance: "", rpe: null, date: today, note: "" };
+  const blank = { name: "", minutes: "", rpe: null, date: today, note: "", items: [] };
   const [form, setForm] = useState(blank);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(null);
@@ -10949,7 +11084,6 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   if (!open) return null;
-  const distUnit = unit === "kg" ? "km" : "mi";
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const yesterday = (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() - 1); return toLocalISO(d); })();
 
@@ -10958,14 +11092,11 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
     if (!text.trim()) return;
     setBusy("reading"); setFailure(null);
     try {
-      const reply = await callAI({ model: MODEL_CHAT, maxTokens: 600, system: activitySystem(today, unit),
+      const reply = await callAI({ model: MODEL_CHAT, maxTokens: 1500, system: activitySystem(today, unit),
         messages: [{ role: "user", content: text.trim() }] });
-      const a = normalizeActivity(parseAIJson(reply), today);
-      setForm({
-        name: a.name, minutes: a.minutes != null ? String(a.minutes) : "",
-        distance: a.meters != null ? String(Math.round((distUnit === "mi" ? a.meters / 1609.34 : a.meters / 1000) * 10) / 10) : "",
-        rpe: a.rpe, date: a.date, note: a.note,
-      });
+      const a = normalizeActivity(parseAIJson(reply), today, unit);
+      setForm({ name: a.name, minutes: a.minutes != null ? String(a.minutes) : "", rpe: a.rpe, date: a.date, note: a.note,
+        items: a.items.map(it => itemToDraft(it, unit)) });
     } catch (err) { setFailure(errText(err)); }
     setBusy(null);
   };
@@ -10973,13 +11104,11 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
   const save = async () => {
     const name = form.name.trim();
     if (!name) { setFailure("Say or type what you did."); return; }
-    const minutes = Number(form.minutes); const dist = Number(form.distance);
-    const a = {
-      name, date: form.date || today, note: form.note.trim(), rpe: form.rpe,
-      minutes: Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : null,
-      meters: Number.isFinite(dist) && dist > 0 ? Math.round(distUnit === "mi" ? dist * 1609.34 : dist * 1000) : null,
-    };
-    if (a.minutes == null && a.meters == null) { setFailure("Add how long it took, or how far."); return; }
+    const minutes = Number(form.minutes);
+    const items = form.items.map(d => draftToItem(d, unit)).filter(Boolean);
+    const a = { name, date: form.date || today, note: form.note.trim(), rpe: form.rpe, items,
+      minutes: Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : null };
+    if (a.minutes == null && !items.length) { setFailure("Add how long it took, or what you did with a number."); return; }
     setBusy("saving"); setFailure(null);
     try {
       let id = null;
@@ -10988,7 +11117,7 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
         if (error) throw error;
         id = data?.id || null;
       }
-      onSaved({ id: id || `local-${Date.now()}`, date: a.date, name: a.name, minutes: a.minutes, meters: a.meters, rpe: a.rpe, notes: a.note || null });
+      onSaved({ id: id || `local-${Date.now()}`, date: a.date, name: a.name, minutes: a.minutes, rpe: a.rpe, notes: a.note || null, items });
       onClose();
     } catch (err) { setFailure(errText(err)); setBusy(null); }
   };
@@ -10997,7 +11126,7 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
   return (
     <Modal open onClose={onClose} title="Log an extra activity">
       <p className="text-[13px] mb-3" style={{ color: C.sub }}>
-        Anything outside your program. Say it, or fill it in. For example: "30 minute walk this morning, easy."
+        Anything outside your program. Say it, or fill it in. For example: "Home workout this morning, 40 minutes. Push-ups 3 sets of 20, plank for a minute, then a 2 mile run. Felt like a 7."
       </p>
       <div className="flex items-start gap-3 mb-2">
         {speech.supported && (
@@ -11017,28 +11146,9 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
         {busy === "reading" ? <LoadingEstimate small label="Reading what you said" /> : "Fill it in from what I said"}
       </Btn>
 
-      <Field label="What you did">
-        <input style={inputStyle} placeholder="e.g. Walk, Pickup basketball, Yoga class"
+      <Field label="What was it?">
+        <input style={inputStyle} placeholder="e.g. Walk, Home workout, Pickup basketball"
           value={form.name} onChange={e => set("name", e.target.value)} />
-      </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Minutes">
-          <input style={inputStyle} inputMode="numeric" type="number" min="1" placeholder="30"
-            value={form.minutes} onChange={e => set("minutes", e.target.value)} />
-        </Field>
-        <Field label={`Distance (${distUnit}, optional)`}>
-          <input style={inputStyle} inputMode="decimal" type="number" min="0" step="0.1" placeholder="—"
-            value={form.distance} onChange={e => set("distance", e.target.value)} />
-        </Field>
-      </div>
-      <Field label="How hard was it? (optional)">
-        <div className="grid grid-cols-5 gap-1.5">
-          {[2, 4, 6, 8, 10].map(n => (
-            <button key={n} type="button" onClick={() => set("rpe", form.rpe === n ? null : n)}
-              className="rounded-lg py-2.5 text-[15px] font-semibold tabular-nums" style={pill(form.rpe === n)}>{n}</button>
-          ))}
-        </div>
-        <div className="flex justify-between text-[11px] mt-1" style={{ color: C.faint }}><span>Easy</span><span>All out</span></div>
       </Field>
       <Field label="When">
         <div className="grid grid-cols-3 gap-2">
@@ -11048,12 +11158,53 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
             onChange={e => e.target.value && set("date", e.target.value)} style={{ ...inputStyle, padding: "8px 6px", fontSize: 13 }} />
         </div>
       </Field>
+      <Field label="How long, overall (minutes)">
+        <input style={inputStyle} inputMode="numeric" type="number" min="1" placeholder="e.g. 45"
+          value={form.minutes} onChange={e => set("minutes", e.target.value)} />
+      </Field>
+      <Field label="What you did (optional)">
+        {form.items.map((it, i) => (
+          <ActivityItemEditor key={i} item={it} unit={unit}
+            onChange={(next) => setForm(f => ({ ...f, items: f.items.map((x, n) => (n === i ? next : x)) }))}
+            onRemove={() => setForm(f => ({ ...f, items: f.items.filter((_, n) => n !== i) }))} />
+        ))}
+        <Btn variant="ghost" icon={Plus} className="w-full" onClick={() => setForm(f => ({ ...f, items: [...f.items, { name: "", metric: "reps", sets: [blankActivitySet()] }] }))}>
+          Add an exercise
+        </Btn>
+      </Field>
+      <Field label="How hard was it? (RPE)">
+        <div className="grid grid-cols-5 gap-1.5">
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
+            <button key={n} type="button" onClick={() => set("rpe", form.rpe === n ? null : n)}
+              className="rounded-lg py-2.5 text-[15px] font-semibold tabular-nums" style={pill(form.rpe === n)}>{n}</button>
+          ))}
+        </div>
+        <div className="flex justify-between text-[11px] mt-1" style={{ color: C.faint }}><span>Easy</span><span>All out</span></div>
+      </Field>
       <Field label="Note (optional)">
         <input style={inputStyle} placeholder="Anything worth remembering" value={form.note} onChange={e => set("note", e.target.value)} />
       </Field>
       {failure && <p className="text-[12.5px] mb-2" style={{ color: C.red }}>{failure}</p>}
       <Btn className="w-full" disabled={busy === "saving"} onClick={save}>{busy === "saving" ? "Saving…" : "Save activity"}</Btn>
     </Modal>
+  );
+}
+
+// An activity as a list row: name and date, the headline, then each thing done.
+function ActivitySummary({ a, unit }) {
+  const head = describeActivity(a, unit);
+  return (
+    <div className="min-w-0">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[15px] font-semibold min-w-0" style={{ color: C.text }}>{a.name}</span>
+        <span className="shrink-0 text-[13px]" style={{ color: C.sub }}>{formatSessionDate(a.date, { withWeekday: true }) || a.date}</span>
+      </div>
+      {head && <div className="text-[13px] tabular-nums" style={{ color: C.sub }}>{head}</div>}
+      {(a.items || []).map((it, i) => (
+        <div key={i} className="text-[13px] tabular-nums" style={{ color: C.text }}>{describeActivityItem(it, unit)}</div>
+      ))}
+      {a.notes && <div className="text-[12.5px]" style={{ color: C.faint }}>{a.notes}</div>}
+    </div>
   );
 }
 
@@ -11069,21 +11220,14 @@ function ExtraActivityCard({ state, setState }) {
         <div className="rounded-xl p-2.5 shrink-0" style={{ background: `${C.olive}22` }}><Plus size={18} style={{ color: C.olive }} /></div>
         <div className="flex-1 min-w-0">
           <div className="text-[16px] font-semibold" style={{ color: C.text }}>Did something extra?</div>
-          <div className="text-[13px] mt-0.5" style={{ color: C.sub }}>A walk, a game, a class. Log it so it counts{state.me?.coachId ? " and your coach sees it" : ""}.</div>
+          <div className="text-[13px] mt-0.5" style={{ color: C.sub }}>A walk, a game, a class, a home workout. Log it so it counts{state.me?.coachId ? " and your coach sees it" : ""}.</div>
         </div>
       </div>
       <Btn variant="secondary" icon={Mic} className="w-full mt-3" onClick={() => setOpen(true)}>Log an extra activity</Btn>
       {recent.length > 0 && (
-        <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: `1px solid ${C.border}` }}>
+        <div className="mt-3 pt-3 space-y-3" style={{ borderTop: `1px solid ${C.border}` }}>
           <div className="text-[11px] uppercase tracking-[.14em] font-semibold" style={{ color: C.faint }}>This week</div>
-          {recent.map(a => (
-            <div key={a.id} className="flex items-baseline justify-between gap-3 text-[14px]">
-              <span className="min-w-0" style={{ color: C.text }}>{a.name}</span>
-              <span className="shrink-0 text-[12.5px] tabular-nums" style={{ color: C.sub }}>
-                {describeActivity(a, unit)}{describeActivity(a, unit) ? " · " : ""}{formatSessionDate(a.date, { withWeekday: true }) || a.date}
-              </span>
-            </div>
-          ))}
+          {recent.map(a => <ActivitySummary key={a.id} a={a} unit={unit} />)}
         </div>
       )}
       <ActivityLogSheet open={open} onClose={() => setOpen(false)} userId={state.me?.id} unit={unit}
@@ -14055,12 +14199,8 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             <ChalkDivider label="Extra activities" />
             <div className="rounded-xl overflow-hidden mb-4" style={card({ borderRadius: 16 })}>
               {[...athlete.activityLogs].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 10).map((a, i) => (
-                <div key={a.id} className="px-3.5 py-3 flex items-baseline justify-between gap-3 text-[14px]"
-                  style={i ? { borderTop: `1px solid ${C.border}` } : undefined}>
-                  <span className="min-w-0" style={{ color: C.text }}>{a.name}{a.notes ? <span className="block text-[12px]" style={{ color: C.faint }}>{a.notes}</span> : null}</span>
-                  <span className="shrink-0 text-[12.5px] tabular-nums text-right" style={{ color: C.sub }}>
-                    {describeActivity(a, state.me?.unitPref === "kg" ? "kg" : "lb")}<span className="block">{formatSessionDate(a.date, { withWeekday: true }) || a.date}</span>
-                  </span>
+                <div key={a.id} className="px-3.5 py-3" style={i ? { borderTop: `1px solid ${C.border}` } : undefined}>
+                  <ActivitySummary a={a} unit={state.me?.unitPref === "kg" ? "kg" : "lb"} />
                 </div>
               ))}
             </div>
