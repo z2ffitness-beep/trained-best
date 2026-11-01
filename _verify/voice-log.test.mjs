@@ -74,6 +74,19 @@ test("the AI is told the exercises, how each is logged, and the unit", () => {
   assert.ok(/correction/.test(sys), "corrections in speech are not handled");
 });
 
+test("how hard it felt (RPE) is kept, 1 to 10, even with no sets said", () => {
+  const out = H.normalizeVoiceLog({ exercises: [
+    { id: "a", rpe: 8, sets: [{ set: 1, weight: 225, reps: 5 }] },
+    { id: "c", rpe: 7.3 },
+    { id: "b", rpe: 14, sets: [] },
+  ] }, scope, "lb");
+  assert.equal(out.entries[0].rpe, 8);
+  assert.deepEqual(out.entries[1], { id: "c", sets: [], rpe: 7.5 });
+  assert.equal(out.entries.length, 2, "an RPE of 14 was kept");
+  assert.ok(/"rpe":8/.test(H.voiceLogSystem(scope, "lb")), "the AI is not asked for RPE");
+  assert.ok(/rpeDone: typeof exerciseRpe\[item\.id\] === "number"/.test(src), "RPE is not saved with the exercise");
+});
+
 test("read back in words", () => {
   assert.equal(H.describeVoiceSet({ weight: 225, reps: 5 }, "load", "lb"), "225 lb x 5");
   assert.equal(H.describeVoiceSet({ minutes: 20 }, "time", "lb"), "20 min");
