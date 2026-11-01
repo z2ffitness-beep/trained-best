@@ -9,7 +9,7 @@ import {
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
   Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle,
-  Mic, MicOff,
+  Mic, MicOff, Hourglass,
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -10714,53 +10714,73 @@ function countPastedDays(raw) {
   return n > 0 ? n : 4;
 }
 
-// Percentage bar for long waits. `fraction` is 0 to 1.
-function LoadingPercent({ fraction, label, detail, big = false }) {
-  const pct = Math.max(0, Math.min(100, Math.round((Number(fraction) || 0) * 100)));
+// Loading, shown as a turning hourglass (Isaiah, 31 Oct: an animation, not a
+// number). While a program is being built the line under it changes every few
+// seconds: a bit of encouragement, then what the app can do.
+const BUILD_TIPS_CLIENT = [
+  "We're working on it. Building you the best program possible.",
+  "Built around your goals, your schedule and your equipment.",
+  "Log every set as you go. The bar at the top fills as you finish each exercise.",
+  "Tap Voice Log on any exercise and just say what you did.",
+  "Can't make a session? Do it today instead, or move it on your calendar.",
+  "Working with a coach? Every session you log goes straight to them.",
+  "Lifts log weight and reps. Runs log time and distance. No pounds on a run.",
+];
+const BUILD_TIPS_COACH = [
+  "Working on it. Building the best program possible for your client.",
+  "Change any day or any week with Adjust with AI, or by hand on the board.",
+  "Save a program as a template and give it to the next client in one tap.",
+  "Open any logged session to leave a note or fix a number.",
+  "Message every client at once from Messages.",
+  "Your logo and colour are on your clients' app, not ours.",
+];
+const TIP_EVERY_MS = 4500;
+
+function HourglassSpinner({ size = 40 }) {
   return (
-    <div className="w-full max-w-xs mx-auto text-center">
-      <div className={`tabular-nums font-bold ${big ? "text-5xl" : "text-4xl"}`} style={{ fontFamily: DISPLAY, color: C.orange }}>{pct}%</div>
-      <div className="h-2 rounded-full mt-3 overflow-hidden" style={{ background: C.border }}
-        role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
-        <div className="h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 400ms ease-out" }} />
-      </div>
-      {label && <p className={`${big ? "text-2xl font-bold" : "text-[15px]"} mt-4`} style={{ color: C.text, ...(big ? { fontFamily: DISPLAY } : {}) }}>{label}</p>}
-      {detail && <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>{detail}</p>}
-    </div>
+    <span aria-hidden="true" className="inline-flex items-center justify-center" style={{ width: size, height: size }}>
+      <style>{`@keyframes tb-hourglass{0%,40%{transform:rotate(0deg)}50%,90%{transform:rotate(180deg)}100%{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.tb-hourglass{animation:none!important}}`}</style>
+      <Hourglass className="tb-hourglass" size={size} strokeWidth={1.75}
+        style={{ color: C.orange, animation: "tb-hourglass 2.4s ease-in-out infinite" }} />
+    </span>
   );
 }
 
-// A percentage for waits nothing can measure (Isaiah, 30 Oct: loading screens
-// should show a number). An estimate, said plainly: it climbs quickly at
-// first and slows as it nears 90, and never passes 90 on its own. The screen
-// it sits on goes away the moment the real thing has loaded, so it never says
-// 100 early; on a slow connection it waits near 90.
-function estimatedFraction(elapsedMs, expectedMs) {
-  const t = Math.max(0, Number(elapsedMs) || 0) / Math.max(1, Number(expectedMs) || 1);
-  return 0.9 * (1 - Math.exp(-2.3 * t));
+function RotatingTip({ tips }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    if (!tips || tips.length < 2) return;
+    const t = setInterval(() => setI(n => (n + 1) % tips.length), TIP_EVERY_MS);
+    return () => clearInterval(t);
+  }, [tips]);
+  if (!tips || !tips.length) return null;
+  return (
+    <p key={i} className="text-[15px] mt-4 leading-relaxed" role="status"
+      style={{ color: C.text, animation: "tb-tip-in 500ms ease-out" }}>
+      <style>{"@keyframes tb-tip-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}"}</style>
+      {tips[i % tips.length]}
+    </p>
+  );
 }
 
-function LoadingEstimate({ expectedMs = 2500, label, detail, big = false, small = false }) {
-  const [started] = useState(() => Date.now());
-  const [now, setNow] = useState(started);
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 120);
-    return () => clearInterval(t);
-  }, []);
-  const fraction = estimatedFraction(now - started, expectedMs);
+// `small` sits inline beside a label; otherwise it is the centred block.
+function LoadingEstimate({ label, detail, big = false, small = false, tips = null }) {
   if (small) {
-    const pct = Math.round(fraction * 100);
     return (
-      <span className="inline-flex items-center gap-2 tabular-nums">
-        <span className="font-semibold" style={{ color: C.orange }}>{pct}%</span>
-        <span className="inline-block h-1.5 w-20 rounded-full overflow-hidden" style={{ background: C.border }}>
-          <span className="block h-full rounded-full" style={{ background: C.orange, width: `${pct}%`, transition: "width 200ms linear" }} />
-        </span>
-        {label}
+      <span className="inline-flex items-center gap-2" role="status">
+        <HourglassSpinner size={16} />{label}
       </span>
     );
   }
-  return <LoadingPercent fraction={fraction} label={label} detail={detail} big={big} />;
+  return (
+    <div className="w-full max-w-xs mx-auto text-center" role="status" aria-label={label || "Loading"}>
+      <HourglassSpinner size={big ? 64 : 40} />
+      {label && <p className={`${big ? "text-2xl font-bold" : "text-[15px]"} mt-4`} style={{ color: C.text, ...(big ? { fontFamily: DISPLAY } : {}) }}>{label}</p>}
+      {tips ? <RotatingTip tips={tips} /> : null}
+      {detail && <p className="text-[12.5px] mt-2" style={{ color: C.sub }}>{detail}</p>}
+    </div>
+  );
 }
 
 // ---------- Voice Log ----------
@@ -11041,7 +11061,7 @@ function VoiceLogSheet({ open, onClose, title, scope, unit, onApply }) {
         </div>
       )}
       {stage === "working" && (
-        <div className="py-8 text-center"><LoadingEstimate expectedMs={5000} label="Reading what you said" /></div>
+        <div className="py-8 text-center"><LoadingEstimate label="Reading what you said" /></div>
       )}
       {stage === "confirm" && result && (
         <div>
@@ -11266,7 +11286,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingPercent fraction={progress.fraction} label="Building the program" detail="Built around the client's profile. Usually two to four minutes." />
+          <LoadingEstimate label="Building the program" tips={BUILD_TIPS_COACH} detail="Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -12663,8 +12683,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
 
         {bulkProgress ? (
           <div className="text-center py-6">
-            <LoadingPercent fraction={bulkProgress.done / Math.max(1, bulkProgress.total)}
-              label={`${bulkProgress.done + 1} of ${bulkProgress.total}`} detail={bulkProgress.name} />
+            <LoadingEstimate label={`${bulkProgress.done + 1} of ${bulkProgress.total}`} detail={bulkProgress.name} tips={BUILD_TIPS_COACH} />
           </div>
         ) : (
           <div className="space-y-2.5">
@@ -14086,7 +14105,7 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
 
       {status === "converting" && (
         <div className="text-center py-10">
-          <LoadingPercent fraction={progress.fraction} label="Reading your program" detail="Keeping your numbers, working out which section each movement belongs to." />
+          <LoadingEstimate label="Reading your program" tips={BUILD_TIPS_COACH} detail="Keeping your numbers, working out which section each movement belongs to." />
         </div>
       )}
 
@@ -15498,7 +15517,7 @@ function CoachMessages({ state, setState, nav, myUserId }) {
       ) : (
         <>
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-            {loading && <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>}
+            {loading && <div className="text-center py-8"><LoadingEstimate /></div>}
             {!loading && messages.length === 0 && (
               <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>No messages yet with {active?.name}.</div>
             )}
@@ -16048,7 +16067,7 @@ function FormChecksPage({ state, nav, isCoach }) {
           </>
         )}
 
-        {loading && <div className="py-6 text-center"><LoadingEstimate expectedMs={1500} /></div>}
+        {loading && <div className="py-6 text-center"><LoadingEstimate /></div>}
 
         {error && (
           <div className="rounded-lg p-3 mb-3 text-[12.5px]" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55`, color: C.red }}>
@@ -23070,7 +23089,7 @@ function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
           </div>
         )}
         {tab === "coach" && hasCoach && coachLoading && (
-          <div className="text-center py-8"><LoadingEstimate expectedMs={1500} /></div>
+          <div className="text-center py-8"><LoadingEstimate /></div>
         )}
         {rendered.length === 0 && !(tab === "coach" && (!hasCoach || coachLoading)) && (
           <div className="text-center text-[15px] mt-10" style={{ color: C.faint }}>
@@ -25641,7 +25660,7 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
         ))}
         {busy && (
           <div className="flex items-center gap-2 text-[12.5px]" style={{ color: C.sub }}>
-            <LoadingEstimate small expectedMs={25000} label="Making the changes" />
+            <LoadingEstimate small label="Making the changes" />
           </div>
         )}
         {error && <div className="text-[12.5px]" style={{ color: C.red }}>{error}</div>}
@@ -27876,7 +27895,7 @@ function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
       <div className="px-5 pt-5">
         {booking.loaded
           ? <SessionAndBillingHistory booking={booking} athleteId={state.me.id} />
-          : <div className="pt-12 text-center"><LoadingEstimate expectedMs={1500} /></div>}
+          : <div className="pt-12 text-center"><LoadingEstimate /></div>}
       </div>
     </div>
   );
@@ -27981,7 +28000,7 @@ function AthleteBooking({ state, setState, nav, header = null, showHistory = tru
       <div className="pb-28">
         {header || <TopBar title="Book" onLogout={nav.logout} />}
         <div className="px-5 pt-16 text-center">
-          <LoadingEstimate expectedMs={1500} />
+          <LoadingEstimate />
         </div>
       </div>
     );
@@ -28613,7 +28632,7 @@ function CommunityPage({ state, setState, nav, isCoach = false }) {
       {/* Feed */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {!loaded && (
-          <div className="text-center py-16"><LoadingEstimate expectedMs={1500} /></div>
+          <div className="text-center py-16"><LoadingEstimate /></div>
         )}
         {loaded && filteredPosts.length === 0 && (
           <div className="text-center py-16">
@@ -30002,7 +30021,7 @@ function AppInner() {
   if (sessionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <LoadingEstimate expectedMs={2000} label="Loading" />
+        <LoadingEstimate label="Loading" />
       </div>
     );
   }
@@ -30022,8 +30041,8 @@ function AppInner() {
     if (generatingProgram) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
-          <LoadingPercent big fraction={signupProgress.fraction} label="Building your program"
-            detail="AI is creating a personalized plan based on your goals, sport, schedule and equipment. Usually two to four minutes." />
+          <LoadingEstimate big label="Building your program" tips={BUILD_TIPS_CLIENT}
+            detail="Usually two to four minutes." />
         </div>
       );
     }
