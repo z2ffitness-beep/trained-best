@@ -9253,9 +9253,9 @@ function tourCards(hasCoach, role = "athlete") {
         points: ["Save any program as a template.",
           "Give a template to a new client in one tap, or copy one client's program to another."] },
       { key: "reply", icon: MessageCircle, where: "A client's History", title: "See the work, and reply",
-        points: ["Every logged session lands in the client's history, with what they did against what you set.",
-          "Open one to leave a note or fix a number they typed wrong. They're told right away.",
-          "Extra activities they log, like a walk or a game, show there too."] },
+        points: ["Every session they log lands in their history, next to what you set.",
+          "Open one to leave a note or fix a number. They're told right away.",
+          "Extra activities they log show there too."] },
       { key: "messages", icon: MessageSquare, where: "Messages tab", title: "Talk to one client, or all of them",
         points: ["Message any client from their thread.",
           "Everyone sends one message to your whole client list."] },
@@ -9332,13 +9332,12 @@ function FirstRunTour({ hasCoach, role = "athlete", onDone }) {
 
       <div className="flex-1 flex flex-col justify-center relative overflow-y-auto py-3" style={{ maxWidth: 440, width: "100%", margin: "0 auto" }}>
         {tourShot(role, card.key, hasCoach) && (
-          <div className="mb-4 rounded-2xl overflow-hidden mx-auto" style={{
-            border: `1px solid ${HERO.glassLine}`, background: "#05070D", width: "100%", maxWidth: 360,
-            boxShadow: "0 14px 40px rgba(0,0,0,.45)",
-          }}>
-            <img key={card.key} src={tourShot(role, card.key, hasCoach)} alt={`What ${card.title} looks like in the app`}
-              style={{ display: "block", width: "100%", maxHeight: "34vh", objectFit: "cover", objectPosition: "top" }} />
-          </div>
+          // Each picture is a whole feature on its own backdrop, so it is
+          // shown whole: never cropped, only shrunk to fit (Isaiah, 2 Nov).
+          <img key={card.key} src={tourShot(role, card.key, hasCoach)} alt={`What ${card.title} looks like in the app`}
+            className="mb-4 mx-auto"
+            style={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: "calc(48vh - 100px)", objectFit: "contain", borderRadius: 18,
+              boxShadow: "0 14px 40px rgba(0,0,0,.35)" }} />
         )}
         <div className="flex items-center gap-3 mb-3">
           <div style={{

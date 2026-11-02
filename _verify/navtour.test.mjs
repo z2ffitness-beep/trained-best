@@ -143,6 +143,9 @@ test("every walkthrough card shows a picture of the screen (Isaiah, 1 Nov)", asy
   assert.equal(H.tourShot("athlete", "coach", true), "/tour/c-coach.jpg");
   const at = src.indexOf("function FirstRunTour");
   assert.ok(/<img key=\{card\.key\} src=\{tourShot\(role, card\.key, hasCoach\)\}/.test(src.slice(at)), "the picture is not drawn");
+  // 2 Nov: never cropped. A half-shown word or button looks broken.
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/objectFit: "contain"/.test(body) && !/objectFit: "cover"/.test(body), "the walkthrough picture can be cropped again");
 });
 
 test("a self-guided athlete is never told to message a coach", () => {
