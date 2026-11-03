@@ -26,6 +26,7 @@ const { planReadySummary, planReadyWeek, WEEKDAY_ORDER } = await load(APP, [
   "deriveSplit",
   { name: "WEEKDAY_ORDER", kind: "const" },
   "planReadySummary", "planReadyWeek",
+  "startLevelOf", { name: "START_LEVELS", kind: "const" },
 ]);
 
 let passed = 0;

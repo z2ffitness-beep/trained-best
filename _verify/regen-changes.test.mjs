@@ -47,7 +47,7 @@ test("the generator has the box, the mic, and sends the request", () => {
   const body = src.slice(at, src.indexOf("\n}\n", at));
   assert.ok(/Want anything changed\?/.test(body), "no change box");
   assert.ok(/useSpeechToText\(changes, setChanges\)/.test(body), "no way to say it");
-  assert.ok(/buildAIPrompt\(intake\) \+ regenerationRequest\(previous, asked\)/.test(body), "the request never reaches the model");
+  assert.ok(/buildAIPrompt\(\{ \.\.\.intake, startLevel: level \}\) \+ regenerationRequest\(previous, asked\)/.test(body), "the request never reaches the model");
   assert.ok(/onClick=\{regenerate\}/.test(body), "Regenerate ignores the box");
   assert.ok(/Rebuild with changes/.test(body));
 });

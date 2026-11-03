@@ -9,7 +9,7 @@ import {
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
   Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle,
-  Mic, MicOff, Hourglass,
+  Mic, MicOff, Hourglass, Sprout,
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -2997,8 +2997,9 @@ function prescribeForWeek(exercise, plan, week, authored = false) {
   // Doing the phase shift first is what makes week 3 of phase 2 harder than
   // week 3 of phase 1, which is the whole point.
   const forPhase = applyPhaseIntent(exercise, info.phase?.index);
-  if (info.isDeload) return applyDeload(forPhase, true);
-  return applyProgression(forPhase, info);
+  // 4. the starting ramp for someone coming back (3 Nov), on top of the rest.
+  if (info.isDeload) return applyStartRamp(applyDeload(forPhase, true), week);
+  return applyStartRamp(applyProgression(forPhase, info), week);
 }
 
 // One line of plain English about where this week sits, for the program
@@ -3026,6 +3027,88 @@ function applyDeload(exercise, deload) {
   const sets = Math.max(1, Math.round((Number(exercise.sets) || 1) * DELOAD_SET_FACTOR));
   const rpe = Math.max(4, (Number(exercise.rpe) || 7) - DELOAD_DIFFICULTY_DROP);
   return { ...exercise, sets, rpe };
+}
+
+// ---- Starting level (Isaiah, 3 Nov) -----------------------------------------
+// The days someone CAN train are not the days they ARE training. Someone who
+// has not trained consistently for months starts with a lighter ramp, so the
+// first weeks build tendons, aerobic base and the habit before the full load.
+// Grounded in the CSCCa and NSCA transition-period guidelines (2019): the
+// 50/30/20/10 volume ramp, and a 2 week cut for anyone back from a break.
+const RECENT_TRAINING_OPTIONS = [
+  { key: "0", label: "None" }, { key: "1", label: "1 day" }, { key: "2", label: "2 days" }, { key: "3+", label: "3 or more" },
+];
+const LAST_CONSISTENT_OPTIONS = [
+  { key: "now", label: "I'm training consistently now" },
+  { key: "under1m", label: "Less than a month ago" },
+  { key: "1to3m", label: "1 to 3 months ago" },
+  { key: "3to12m", label: "3 to 12 months ago" },
+  { key: "over1y", label: "Over a year ago" },
+  { key: "never", label: "I've never trained consistently" },
+];
+const START_LEVELS = {
+  ready: { label: "Ready", weeks: 0, blurb: "Training consistently now. The full program from week 1." },
+  rebuilding: { label: "Rebuilding", weeks: 2, setFactors: [0.5, 0.7], rpeCaps: [7, 7],
+    blurb: "Back after a short break. Two lighter weeks (half the sets, then 70%) before the full program." },
+  foundation: { label: "Foundation", weeks: 4, setFactors: [0.5, 0.7, 0.8, 0.9], rpeCaps: [6, 6, 7, 7],
+    blurb: "Months out of training, or new to it. Four weeks building tendons, cardio and the habit, easing from half the sets up to full." },
+};
+
+// Which level someone starts at, from their answers. null when they were
+// never asked (accounts made before 3 Nov), so nothing changes for them.
+function startLevelOf(intake) {
+  if (intake?.startLevel && START_LEVELS[intake.startLevel]) return intake.startLevel;
+  const last = intake?.lastConsistent;
+  if (!last) return null;
+  if (last === "3to12m" || last === "over1y" || last === "never") return "foundation";
+  if (last === "under1m" || last === "1to3m") return "rebuilding";
+  return intake?.recentDaysPerWeek === "0" ? "rebuilding" : "ready";
+}
+
+// The answers behind the level, in plain words, for the coach and the prompt.
+function startLevelReason(intake) {
+  const last = LAST_CONSISTENT_OPTIONS.find(o => o.key === intake?.lastConsistent);
+  const recent = RECENT_TRAINING_OPTIONS.find(o => o.key === intake?.recentDaysPerWeek);
+  const parts = [];
+  if (last) parts.push(last.key === "now" ? "training consistently now"
+    : last.key === "never" ? "never trained consistently" : `last trained consistently ${last.label.toLowerCase()}`);
+  if (recent) parts.push(recent.key === "0" ? "not training at all in the last 4 weeks" : `${recent.label} a week in the last 4 weeks`);
+  return parts.join(", ");
+}
+
+// Marks every exercise of a newly built program with its starting level, so
+// the ramp below travels with the program wherever it is shown or printed.
+function tagStartRamp(days, level) {
+  const ramp = level && START_LEVELS[level]?.weeks ? level : null;
+  return (days || []).map(d => ({ ...d, exercises: (d.exercises || []).map(x => ({ ...x, startRamp: ramp })) }));
+}
+
+function programStartRamp(program) {
+  for (const d of program?.days || []) for (const x of d.exercises || []) if (x?.startRamp && START_LEVELS[x.startRamp]) return x.startRamp;
+  return null;
+}
+
+// The ramp itself: fewer sets and a lower difficulty ceiling in the first
+// weeks. Warm-ups and cool-downs are left as they are.
+function applyStartRamp(exercise, week) {
+  const cfg = START_LEVELS[exercise?.startRamp];
+  if (!cfg || !cfg.weeks || week > cfg.weeks || week < 1) return exercise;
+  const block = blockForPhase(exercise.phase);
+  if (block.key === "warmup" || block.key === "cooldown") return exercise;
+  const i = week - 1;
+  const sets = Math.max(1, Math.round((Number(exercise.sets) || 1) * cfg.setFactors[i]));
+  const target = Number(exercise.rpe);
+  return { ...exercise, sets, ...(isFinite(target) ? { rpe: Math.min(cfg.rpeCaps[i], target) } : {}) };
+}
+
+function startRampNotice(level, week) {
+  const cfg = START_LEVELS[level];
+  if (!cfg || !cfg.weeks || week < 1 || week > cfg.weeks) return null;
+  const pct = Math.round(cfg.setFactors[week - 1] * 100);
+  return {
+    title: `${cfg.label} week ${week} of ${cfg.weeks}`,
+    text: `Lighter on purpose: about ${pct}% of the sets, kept to ${cfg.rpeCaps[week - 1]} out of 10 or easier. This builds your tendons, your cardio and the habit first, so the full program doesn't hurt you. Showing up matters more than how hard it feels.`,
+  };
 }
 
 const SESSION_LENGTHS = [
@@ -3149,6 +3232,8 @@ function planReadySummary(intake, splitStyle) {
   // Said out loud either way. "Working around: nothing" is worth reading when
   // you have just spent a screen saying what hurts.
   rows.push({ label: "Working around", value: hurt.length ? hurt.join(", ") : "Nothing you told us about" });
+  const level = startLevelOf(intake);
+  if (level && START_LEVELS[level].weeks) rows.push({ label: "Starting with", value: `${START_LEVELS[level].label}: ${START_LEVELS[level].weeks} lighter weeks` });
   return rows;
 }
 
@@ -7503,6 +7588,8 @@ const SIGNUP_V2_SECTIONS = {
     { step: "🥋 Sport Details", label: "Your fighting", when: d => isCombatFocus(d["🥊 Sport / Focus"]) },
     { step: "🏟️ Sport Profile", label: "Your sport", when: d => sportProfileApplies(d) },
     { step: "💪 Training Experience", label: "How long you have trained" },
+    // 3 Nov: what they have actually been doing, not what they could do.
+    { step: "🔋 Training Lately", label: "Your training lately" },
   ],
   "📅 Your Week": [
     // Session style is not here, and not anywhere. See deriveSplit.
@@ -7567,6 +7654,7 @@ function stepComplete(stepName, data, role) {
   switch (stepName) {
     case "👤 Your Name": return !!(data.name || "").trim();
     case "💪 Training Experience": return !!data.experience;
+    case "🔋 Training Lately": return !!data.recentDaysPerWeek && !!data.lastConsistent;
     // Requires a code that actually resolves to a real coach, not just six
     // characters — "AAAAAA" used to pass, and the athlete finished the whole
     // signup believing they'd joined a roster they were never linked to.
@@ -7694,7 +7782,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     // 3. health
     "🩹 Injuries",
     // 4. programming
-    "💪 Training Experience", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
+    "💪 Training Experience", "🔋 Training Lately", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
     "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
     "📸 Profile Photo",
   ];
@@ -8458,6 +8546,32 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
 
   // ATHLETE STEPS
   switch (stepName) {
+    case "🔋 Training Lately": {
+      const pill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text, fontWeight: on ? 600 : 400 });
+      return (
+        <div>
+          <Field label="In the last 4 weeks, how many days a week did you actually train?">
+            <div className="grid grid-cols-4 gap-2">
+              {RECENT_TRAINING_OPTIONS.map(o => (
+                <button key={o.key} type="button" onClick={() => set("recentDaysPerWeek", o.key)}
+                  className="rounded-lg px-2 py-3 text-[14px] text-center" style={pill(data.recentDaysPerWeek === o.key)}>{o.label}</button>
+              ))}
+            </div>
+          </Field>
+          <Field label="When did you last train consistently, at least twice a week for a month?">
+            <div className="grid grid-cols-1 gap-2">
+              {LAST_CONSISTENT_OPTIONS.map(o => (
+                <button key={o.key} type="button" onClick={() => set("lastConsistent", o.key)}
+                  className="text-left rounded-lg px-4 py-3 text-[14px] flex items-center justify-between" style={pill(data.lastConsistent === o.key)}>
+                  <span>{o.label}</span>{data.lastConsistent === o.key && <Check size={16} />}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <p className="text-[12.5px]" style={{ color: C.sub }}>Be honest. It sets how your first weeks start, so your body catches up with your schedule.</p>
+        </div>
+      );
+    }
     case "💪 Training Experience": {
       const list = ["New to training", "Beginner (under 1 year)", "Intermediate (1-3 years)", "Advanced (3+ years)"];
       return (
@@ -9744,6 +9858,19 @@ You are a high-level NSCA-certified strength and conditioning coach (CSCS) progr
 - Say in the rationale how the program fits their sport and their season.`;
 }
 
+function startLevelPromptBlock(intake) {
+  const level = startLevelOf(intake);
+  if (!level || level === "ready") return "";
+  const cfg = START_LEVELS[level];
+  return `STARTING LEVEL: ${cfg.label.toUpperCase()}. This person is ${startLevelReason(intake) || "returning after time off"}. The days they CAN train are not the days they HAVE been training, so their tendons, aerobic base and habits are behind what their schedule suggests.
+- The app eases them in by itself: for the first ${cfg.weeks} weeks it cuts the sets (${cfg.setFactors.map(f => `${Math.round(f * 100)}%`).join(", ")} of what you write) and caps difficulty at ${cfg.rpeCaps.join(", ")} out of 10. So write the normal program; do not shrink it yourself.
+- Choose exercises this person can do well now: stable, simpler variations over complex ones (goblet or box squat before a heavy back squat, trap bar before a conventional deadlift from the floor, no Olympic lifts as a main lift yet).
+- Build soft tissue capacity: include slow-tempo work or isometric holds for the knees, ankles, hips and shoulders in the main work, not only the warm-up.
+- Include an easy aerobic piece at a conversational pace in every session, and keep conditioning sub-maximal: no all-out sprints or repeat-sprint finishers.
+- Plyometrics stay low level (pogo jumps, snap downs, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
+- Say in the rationale, plainly, that the first ${cfg.weeks} weeks are lighter on purpose and why: building tendons, cardio and the habit first lowers the injury risk and keeps them showing up.`;
+}
+
 function buildAIPrompt(intake) {
   return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${intake["🥊 Sport / Focus"]}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
@@ -9758,6 +9885,7 @@ Athlete intake:
 - Discipline: ${intake.discipline || "n/a"}
 - Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
 - Training experience: ${intake.experience || "Beginner"}
+- Training lately: ${startLevelReason(intake) || "not asked"}
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
 - Competition date: ${intake.fightDate ? `${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out` : "none"}
 - Injuries: ${injuryLines(intake)}
@@ -9794,6 +9922,8 @@ WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
 - A fully recovered injury needs no special treatment beyond a normal thorough warm-up.
 
 ${sportPromptBlock(intake)}
+
+${startLevelPromptBlock(intake)}
 
 BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - The program is split into ${PHASE_WEEKS}-week phases (mesocycles). A program of ${MIN_WEEKS_FOR_DELOAD} weeks or more gets a DELOAD on the last week of every block except the final one — the app automatically cuts sets by about 40% and drops the difficulty target by ${DELOAD_DIFFICULTY_DROP} points on those weeks.
@@ -10007,6 +10137,8 @@ function buildDaysWithExerciseIds(rawDays, state, { sortByPhase = false } = {}) 
         byWeek: byWeek,
         // A coach's note or cue on this exercise (Adjust with AI, 28 Oct).
         note: x.note || null,
+        // The starting ramp (3 Nov). Listed here and in denormalizeDays.
+        startRamp: x.startRamp || null,
       };
     }).sort((a, b) => (sortByPhase ? phaseIndex(a.phase) - phaseIndex(b.phase) : 0))
   }));
@@ -10054,6 +10186,7 @@ function denormalizeDays(days, state) {
         // quietly revert or go blank the next time the program was opened.
         byWeek: denormalizeByWeek(x.byWeek, state),
         note: x.note || null,
+        startRamp: x.startRamp || null,
       };
     })
   }));
@@ -11759,6 +11892,9 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
   const [result, setResult] = useState(null);
   const [changes, setChanges] = useState("");
   const [appliedChanges, setAppliedChanges] = useState("");
+  // Starting level (3 Nov): suggested from the intake, changeable here.
+  const suggestedLevel = startLevelOf(intake);
+  const [level, setLevel] = useState(suggestedLevel || "ready");
   // What the next build changes from, kept so Try Again after an error
   // repeats the same request.
   const pending = useRef({ previous: null, asked: "" });
@@ -11776,12 +11912,13 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
     const { previous, asked } = pending.current;
     try {
       const text = await callAI({
-        messages: [{ role: "user", content: buildAIPrompt(intake) + regenerationRequest(previous, asked) }],
+        messages: [{ role: "user", content: buildAIPrompt({ ...intake, startLevel: level }) + regenerationRequest(previous, asked) }],
         maxTokens: 32000,
         onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
       });
       progress.setFraction(1);
       const parsed = parseAIJson(text);
+      parsed.days = tagStartRamp(parsed.days, level);
       setResult(parsed);
       setAppliedChanges(previous ? asked : "");
       if (previous) setChanges("");
@@ -11800,7 +11937,24 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
             <Bot size={26} style={{ color: C.orange }} />
           </div>
           <p className="text-[15px] mb-1" style={{ color: C.text }}>{forSelf ? "Generate a program from your answers." : "Generate a program from this client's intake data."}</p>
-          <p className="text-[12.5px] mb-6" style={{ color: C.sub }}>Goals, injuries, sport, schedule, and equipment will all be factored in — with correct phase ordering.</p>
+          <p className="text-[12.5px] mb-5" style={{ color: C.sub }}>Goals, injuries, sport, schedule, and equipment will all be factored in — with correct phase ordering.</p>
+          <div className="text-left rounded-lg p-3 mb-5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+            <div className="text-[13px] font-semibold" style={{ color: C.text }}>Starting level</div>
+            <div className="text-[12px] mb-2.5" style={{ color: C.sub }}>
+              {suggestedLevel
+                ? `Suggested from ${forSelf ? "your" : "their"} answers: ${startLevelReason(intake)}.`
+                : `${forSelf ? "You weren't" : "They weren't"} asked about recent training, so pick what fits.`}
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              {Object.entries(START_LEVELS).map(([key, cfg]) => (
+                <button key={key} type="button" onClick={() => setLevel(key)} aria-pressed={level === key}
+                  className="rounded-lg px-2 py-2.5 text-[13px] text-center"
+                  style={{ background: level === key ? `${C.orange}18` : C.panel, border: `1px solid ${level === key ? C.orange : C.border}`,
+                    color: level === key ? C.orange : C.text, fontWeight: level === key ? 600 : 400 }}>{cfg.label}</button>
+              ))}
+            </div>
+            <div className="text-[12px]" style={{ color: C.sub }}>{START_LEVELS[level].blurb}</div>
+          </div>
           <Btn className="w-full" icon={Sparkles} onClick={generate}>Generate Program</Btn>
         </div>
       )}
@@ -11826,6 +11980,9 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
             <div className="text-[12.5px] mt-1" style={{ color: C.text }}>{programSynopsis(result.rationale).synopsis}</div>
             {appliedChanges && (
               <div className="text-[12px] mt-2" style={{ color: C.sub }}>Built with your changes: "{appliedChanges}"</div>
+            )}
+            {START_LEVELS[level].weeks > 0 && (
+              <div className="text-[12px] mt-2" style={{ color: C.sub }}>Starts with {START_LEVELS[level].weeks} lighter {START_LEVELS[level].label} weeks.</div>
             )}
           </div>
 
@@ -12314,7 +12471,7 @@ function ModeSwitch({ training, onChange, className = "mb-4" }) {
 // those three taken out - and it renders through the same step bodies, so the
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
-  "💪 Training Experience", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
+  "💪 Training Experience", "🔋 Training Lately", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
   "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
 ];
 
@@ -12337,6 +12494,7 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
   const complete = () => {
     switch (stepName) {
       case "💪 Training Experience": return !!data.experience;
+      case "🔋 Training Lately": return !!data.recentDaysPerWeek && !!data.lastConsistent;
       case "🧬 Sex": return !!data.sex;
       case "🥊 Sport / Focus": return focusComplete(data);
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
@@ -14013,6 +14171,21 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             </div>
           </div>
         </div>
+
+        {/* Starting level flag (3 Nov): who needs easing in, and why. */}
+        {(() => {
+          const level = startLevelOf(athlete.intake);
+          if (!level || level === "ready") return null;
+          return (
+            <div className="rounded-xl p-3.5 mb-5 flex items-start gap-2.5" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              <Sprout size={15} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
+              <div className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                <span className="font-semibold" style={{ color: C.olive }}>{START_LEVELS[level].label}. </span>
+                {(r => r.charAt(0).toUpperCase() + r.slice(1))(startLevelReason(athlete.intake))}. Programs you generate start with {START_LEVELS[level].weeks} lighter weeks; you can change that when you generate.
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="grid grid-cols-3 gap-2.5 mb-5">
           {/* Guarded: an athlete who hasn't recorded these rendered "NaN lb"
@@ -19403,6 +19576,18 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
           onRemoveWeek={(w) => reshapeProgram(prog => removeProgramWeeks(prog, w, 1))}
           onRemoveBlock={(b) => reshapeProgram(prog => removeProgramBlock(prog, b))} />
 
+        {!authoredWeeks && (() => {
+          const ramp = startRampNotice(programStartRamp(myProgram), shownWeek);
+          if (!ramp) return null;
+          return (
+            <div className="rounded-xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              <Sprout size={15} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
+              <div className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                <span className="font-semibold" style={{ color: C.olive }}>{ramp.title}. </span>{ramp.text}
+              </div>
+            </div>
+          );
+        })()}
         {shownIsDeload && (
           <div className="rounded-xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
             <RotateCcw size={15} className="shrink-0 mt-0.5" style={{ color: C.amber }} />
@@ -22184,6 +22369,21 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         {/* Said out loud, because an unexplained lighter session reads as the
             app being wrong — and the athlete adds the sets back, which defeats
             the entire point of the week. */}
+        {(() => {
+          const ramp = startRampNotice(programStartRamp(myProgram), programWeek);
+          if (!ramp) return null;
+          return (
+            <div className="rounded-xl p-4 mb-5" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              <div className="flex items-start gap-2.5">
+                <Sprout size={16} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
+                <div className="min-w-0">
+                  <div className="text-[15px] font-semibold" style={{ color: C.olive }}>{ramp.title}</div>
+                  <p className="text-[12.5px] mt-1 leading-relaxed" style={{ color: C.sub }}>{ramp.text}</p>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         {deloadWeek && (
           <div className="rounded-xl p-4 mb-5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
             <div className="flex items-start gap-2.5">
@@ -25867,7 +26067,9 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditEx
   const nowWeek = currentProgramWeek(program);
   const named = storedPhasesValid(program.phases, total) ? program.phases : null;
   const phaseName = (w) => named?.find(ph => w >= ph.startWeek && w <= ph.endWeek)?.name || null;
-  const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
+  const rampLevel = authored ? null : programStartRamp(program);
+  const rampTag = (w) => (startRampNotice(rampLevel, w) ? START_LEVELS[rampLevel].label : null);
+  const weekLabel = (w) => `Week ${w}${phaseName(w) ? ` · ${phaseName(w)}` : ""}${rampTag(w) ? ` · ${rampTag(w)}` : ""}${deloads.has(w) ? " · Deload" : ""}${w === nowWeek ? " · This week" : ""}`;
   const shared = { program, plan, authored, exById, onExerciseClick, onEditDay, onEditExercise, onAddExercise };
 
   if (!wide) {
@@ -25879,13 +26081,25 @@ function ProgramBoard({ program, exercises, onExerciseClick, onEditDay, onEditEx
             style={{ opacity: shown <= 1 ? 0.3 : 1 }}><ChevronLeft size={20} style={{ color: C.sub }} /></button>
           <div className="text-center">
             <div className="font-semibold text-[15px]" style={{ fontFamily: DISPLAY, color: C.text }}>Week {shown} of {total}</div>
-            {(phaseName(shown) || deloads.has(shown) || shown === nowWeek) && (
-              <div className="text-[11px]" style={{ color: C.orange }}>{[phaseName(shown), deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
+            {(phaseName(shown) || rampTag(shown) || deloads.has(shown) || shown === nowWeek) && (
+              <div className="text-[11px]" style={{ color: C.orange }}>{[phaseName(shown), rampTag(shown), deloads.has(shown) ? "Deload" : null, shown === nowWeek ? "This week" : null].filter(Boolean).join(" · ")}</div>
             )}
           </div>
           <button onClick={() => setWeek(w => Math.min(total, w + 1))} disabled={shown >= total} aria-label="Next week"
             style={{ opacity: shown >= total ? 0.3 : 1 }}><ChevronRight size={20} style={{ color: C.sub }} /></button>
         </div>
+        {(() => {
+          const ramp = startRampNotice(rampLevel, shown);
+          if (!ramp) return null;
+          return (
+            <div className="rounded-xl p-3.5 mb-3 flex items-start gap-2.5" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              <Sprout size={15} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
+              <div className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                <span className="font-semibold" style={{ color: C.olive }}>{ramp.title}. </span>{ramp.text}
+              </div>
+            </div>
+          );
+        })()}
         <div className="space-y-3">
           {days.map(d => <ProgramBoardDay key={d.id} day={d} week={shown} {...shared} />)}
         </div>
@@ -30194,7 +30408,7 @@ function AppInner() {
         onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
       });
       const parsed = parseAIJson(text);
-      parsed.days = attachWeekdays(parsed.days, data.trainingDays);
+      parsed.days = tagStartRamp(attachWeekdays(parsed.days, data.trainingDays), startLevelOf(data));
       const weeks = parsed.weeks || 6;
       const sport = data["🥊 Sport / Focus"] || "General Fitness";
       const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days, parsed.rationale || null) : null;

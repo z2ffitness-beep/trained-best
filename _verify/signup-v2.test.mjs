@@ -352,7 +352,7 @@ test("a coach who changes their mind does not carry coaching answers across", ()
 const athlete = {
   name: "Alex Reid", email: "a@b.com", password: "abcdefgh", confirmPassword: "abcdefgh",
   sex: "Male", birthday: "1990-01-01", heightCm: 178, weightLb: 175,
-  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)",
+  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)", recentDaysPerWeek: "3+", lastConsistent: "now",
   trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"],
   injuries: ["None currently"],
 };

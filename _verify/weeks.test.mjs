@@ -264,7 +264,7 @@ test("no start date means no resolution rather than a wrong week", () => {
 
 const P = await load(APP, ["prescribeForWeek", "buildProgramPlan", "weekWithinPhase",
   { name: "SESSION_BLOCKS", kind: "const" },
-  "applyPhaseIntent", "applyProgression", "applyDeload", "blockForPhase", "resolveExerciseForWeek",
+  "applyPhaseIntent", "applyProgression", "applyDeload", "applyStartRamp", { name: "START_LEVELS", kind: "const" }, "blockForPhase", "resolveExerciseForWeek",
   "weekEntryFor", "currentProgramWeek", "daysBetweenISO", "programWeekFor",
   { name: "todayISO", kind: "const" },
   { name: "PHASE_WEEKS", kind: "const" }, { name: "MIN_WEEKS_FOR_DELOAD", kind: "const" }]);
