@@ -10822,7 +10822,7 @@ const BUILD_TIPS_CLIENT = [
   "Tap Voice Log on any exercise and just say what you did.",
   "Can't make a session? Do it today instead, or move it on your calendar.",
   "Working with a coach? Every session you log goes straight to them.",
-  "Lifts log weight and reps. Runs log time and distance. No pounds on a run.",
+  "Lifts log weight and reps. Runs log time and distance.",
 ];
 const BUILD_TIPS_COACH = [
   "Working on it. Building the best program possible for your client.",
@@ -10830,7 +10830,7 @@ const BUILD_TIPS_COACH = [
   "Save a program as a template and give it to the next client in one tap.",
   "Open any logged session to leave a note or fix a number.",
   "Message every client at once from Messages.",
-  "Your logo and colour are on your clients' app, not ours.",
+  "Your logo and business name are on your clients' app, not ours.",
 ];
 const TIP_EVERY_MS = 4500;
 
@@ -11750,7 +11750,10 @@ The person reviewing it asked for these changes in the new version, in their own
 Build the full program again with those changes made. Keep everything they did not ask to change as close to the previous version as the rules above allow. A request never overrides an injury, pain or medical limit in the intake: if one would, keep the safe choice and say so in the rationale.`;
 }
 
-function AIProgramGenerator({ intake, onGenerated, onClose }) {
+// forSelf: someone building their own program from My Workout (a solo
+// client, or a coach training themselves), so the screen says "you", not
+// "your client" (3 Nov).
+function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
@@ -11796,14 +11799,14 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
           <div className="rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4" style={{ background: `${C.orange}22` }}>
             <Bot size={26} style={{ color: C.orange }} />
           </div>
-          <p className="text-[15px] mb-1" style={{ color: C.text }}>Generate a program from this client's intake data.</p>
+          <p className="text-[15px] mb-1" style={{ color: C.text }}>{forSelf ? "Generate a program from your answers." : "Generate a program from this client's intake data."}</p>
           <p className="text-[12.5px] mb-6" style={{ color: C.sub }}>Goals, injuries, sport, schedule, and equipment will all be factored in — with correct phase ordering.</p>
           <Btn className="w-full" icon={Sparkles} onClick={generate}>Generate Program</Btn>
         </div>
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingEstimate label="Building the program" tips={BUILD_TIPS_COACH} detail="Usually two to four minutes." />
+          <LoadingEstimate label={forSelf ? "Building your program" : "Building the program"} tips={forSelf ? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH} detail="Usually two to four minutes." />
         </div>
       )}
       {status === "error" && (
@@ -21420,6 +21423,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       {showGenerator && (
         <AIProgramGenerator
           intake={state.me.intake || {}}
+          forSelf
           onClose={() => setShowGenerator(false)}
           onGenerated={async (result) => {
             const weeks = result.weeks || 6;

@@ -57,6 +57,15 @@ test("every way of building a program uses that generator", () => {
   assert.ok(uses.length >= 4, `only ${uses.length} places use the generator`);
 });
 
+test("building your own program says you, not your client (3 Nov)", () => {
+  const at = src.indexOf("function AIProgramGenerator");
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/tips=\{forSelf \? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH\}/.test(body), "a solo build still says 'for your client'");
+  assert.ok(/intake=\{state\.me\.intake \|\| \{\}\}\s+forSelf/.test(src), "My Workout does not say it is building for the person themselves");
+  assert.equal((src.match(/<AIProgramGenerator\b[^>]*?\bforSelf\b/gs) || []).length, 1, "a coach-for-client build was marked as building for yourself");
+  assert.ok(/useSpeechToText\(changes, setChanges\)/.test(body), "the voice option for changes is gone");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; }
   catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
