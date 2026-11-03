@@ -148,6 +148,18 @@ test("every walkthrough card shows a picture of the screen (Isaiah, 1 Nov)", asy
   assert.ok(/objectFit: "contain"/.test(body) && !/objectFit: "cover"/.test(body), "the walkthrough picture can be cropped again");
 });
 
+test("cards name their tab and follow the bottom bar (Isaiah, 3 Nov)", () => {
+  const order = { athlete: ["Home", "My Workout", "Week", "Coach", "Profile"], coach: ["Home", "Clients", "Sessions", "Messages", "Profile"] };
+  for (const [hasCoach, role] of [[true, "athlete"], [false, "athlete"], [false, "coach"]]) {
+    const tabs = H.tourCards(hasCoach, role).slice(1).map(c => {
+      assert.ok(/^[A-Za-z ]+ tab( · \w+)?$/.test(c.where), `${c.key} says "${c.where}", not which tab`);
+      return order[role].indexOf(c.where.replace(/ tab.*$/, ""));
+    });
+    assert.ok(tabs.every(i => i >= 0), `${role}: a card names a tab that is not on the bar`);
+    assert.deepEqual(tabs, [...tabs].sort((x, y) => x - y), `${role} cards jump between tabs: ${tabs}`);
+  }
+});
+
 test("a self-guided athlete is never told to message a coach", () => {
   // The bar they see has no Book and no Coach thread. Describing them is how
   // an app teaches somebody on their first screen that it is not to be
@@ -177,7 +189,7 @@ test("every card has something to show and something to say", () => {
 test("the cards point at Program, which is where training now lives", () => {
   const both = JSON.stringify(H.tourCards(true)) + JSON.stringify(H.tourCards(false));
   assert.ok(/My Workout/.test(both), "the cards do not say where the training is");
-  assert.ok(!/Workout tab/i.test(both), "the cards still describe a tab that no longer exists");
+  assert.ok(!/(?<!My )Workout tab/i.test(both), "the cards still describe a tab that no longer exists");
 });
 
 // ---------- shown once ----------
