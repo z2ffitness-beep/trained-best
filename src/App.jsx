@@ -9280,10 +9280,10 @@ function tourCards(hasCoach, role = "athlete") {
         "Close the app mid-session and it picks up where you left off."] },
     { key: "log", icon: CheckCircle2, where: "My Workout", title: "Log it as you go",
       points: ["Type your reps and weight, then tick the set.",
-        "Runs and cardio log time or distance. Planks log seconds held. No pounds on a run.",
+        "Runs and cardio log time or distance. Planks log seconds held.",
         "Last time's numbers show right above your sets."] },
     { key: "voice", icon: Mic, where: "My Workout", title: "Or just say it",
-      points: ["Tap Voice Log beside Sets and talk: \"135 for 8 twice, then 7. Felt like an 8.\"",
+      points: ["Tap Voice Log beside Sets and talk: \"135 for 8 twice, then 7. Felt like an 8 out of 10 difficulty.\"",
         "Check what it heard, then Save to my sets.",
         "Voice Log the whole workout, at the top, does every exercise in one go."] },
     { key: "week", icon: Calendar, where: "Week", title: "Your whole week, and your month",
@@ -9336,7 +9336,7 @@ function FirstRunTour({ hasCoach, role = "athlete", onDone }) {
           // shown whole: never cropped, only shrunk to fit (Isaiah, 2 Nov).
           <img key={card.key} src={tourShot(role, card.key, hasCoach)} alt={`What ${card.title} looks like in the app`}
             className="mb-4 mx-auto"
-            style={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: "calc(48vh - 100px)", objectFit: "contain", borderRadius: 18,
+            style={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: card.points.length <= 2 ? "calc(62vh - 160px)" : "calc(48vh - 100px)", objectFit: "contain", borderRadius: 18,
               boxShadow: "0 14px 40px rgba(0,0,0,.35)" }} />
         )}
         <div className="flex items-center gap-3 mb-3">
