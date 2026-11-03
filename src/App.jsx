@@ -11725,23 +11725,63 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   return textBlock.text;
 }
 
+// Regenerate with changes (Isaiah, 3 Nov): whoever is building the program,
+// a coach for a client or someone for themselves, can type or say what to
+// change before building it again. The model sees the version it built last
+// and the request, so "more conditioning" changes that program instead of
+// rolling a new one from scratch.
+function summarizeProgramForChanges(result) {
+  const days = (result?.days || []).slice(0, 7).map(d =>
+    `${d.name}: ${(d.exercises || []).map(x => `${x.name} ${x.sets}x${x.reps}`).join(", ")}`);
+  return [`"${result?.programName || "Program"}", ${result?.weeks || "?"} weeks`, ...days].join("\n").slice(0, 4000);
+}
+
+function regenerationRequest(previous, request) {
+  const asked = String(request || "").trim().slice(0, 1500);
+  if (!previous || !asked) return "";
+  return `
+
+CHANGES REQUESTED. You built this version before:
+${summarizeProgramForChanges(previous)}
+
+The person reviewing it asked for these changes in the new version, in their own words:
+"${asked}"
+
+Build the full program again with those changes made. Keep everything they did not ask to change as close to the previous version as the rules above allow. A request never overrides an injury, pain or medical limit in the intake: if one would, keep the safe choice and say so in the rationale.`;
+}
+
 function AIProgramGenerator({ intake, onGenerated, onClose }) {
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
+  const [changes, setChanges] = useState("");
+  const [appliedChanges, setAppliedChanges] = useState("");
+  // What the next build changes from, kept so Try Again after an error
+  // repeats the same request.
+  const pending = useRef({ previous: null, asked: "" });
+  const speech = useSpeechToText(changes, setChanges);
   const progress = useBuildProgress();
+
+  const regenerate = () => {
+    speech.stop();
+    pending.current = { previous: changes.trim() ? result : null, asked: changes.trim() };
+    generate();
+  };
 
   const generate = async () => {
     setStatus("loading"); setErrorMsg(""); progress.reset();
+    const { previous, asked } = pending.current;
     try {
       const text = await callAI({
-        messages: [{ role: "user", content: buildAIPrompt(intake) }],
+        messages: [{ role: "user", content: buildAIPrompt(intake) + regenerationRequest(previous, asked) }],
         maxTokens: 32000,
         onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
       });
       progress.setFraction(1);
       const parsed = parseAIJson(text);
       setResult(parsed);
+      setAppliedChanges(previous ? asked : "");
+      if (previous) setChanges("");
       setStatus("done");
     } catch (err) {
       setErrorMsg(err.message || "Something went wrong generating your program.");
@@ -11781,6 +11821,9 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
             {/* The synopsis only: this card is a yes/no on the program, not
                 the place to read the whole explanation. */}
             <div className="text-[12.5px] mt-1" style={{ color: C.text }}>{programSynopsis(result.rationale).synopsis}</div>
+            {appliedChanges && (
+              <div className="text-[12px] mt-2" style={{ color: C.sub }}>Built with your changes: "{appliedChanges}"</div>
+            )}
           </div>
 
           {/* Said before the program is accepted, not discovered later. The
@@ -11833,9 +11876,32 @@ function AIProgramGenerator({ intake, onGenerated, onClose }) {
               </div>
             ))}
           </div>
-          <div className="flex gap-2.5">
-            <Btn variant="secondary" className="flex-1" icon={RefreshCw} onClick={generate}>Regenerate</Btn>
-            <Btn className="flex-1" icon={Check} onClick={() => onGenerated(result)}>Use This Program</Btn>
+          <div className="rounded-lg p-3 mb-4" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+            <div className="text-[13px] font-semibold mb-0.5" style={{ color: C.text }}>Want anything changed?</div>
+            <div className="text-[12px] mb-2.5" style={{ color: C.sub }}>Type it or say it, then rebuild. Anything you don't mention stays the same.</div>
+            <div className="flex items-start gap-3">
+              {speech.supported && (
+                <button type="button" onClick={speech.listening ? speech.stop : speech.start}
+                  aria-label={speech.listening ? "Stop listening" : "Say what to change"}
+                  className="rounded-full flex items-center justify-center shrink-0"
+                  style={{ width: 48, height: 48, background: speech.listening ? C.red : C.orange, color: "#fff" }}>
+                  {speech.listening ? <MicOff size={20} /> : <Mic size={20} />}
+                </button>
+              )}
+              <textarea value={changes} onChange={e => setChanges(e.target.value)} rows={2} aria-label="What to change"
+                placeholder="e.g. Swap back squats for trap bar deadlifts, add more conditioning, keep sessions under 45 minutes"
+                style={{ ...inputStyle, resize: "vertical", minHeight: 48 }} />
+            </div>
+            {speech.listening && <p className="text-[12px] mt-2" style={{ color: C.red }}>Listening... tap the mic to stop</p>}
+            {speech.error && <p className="text-[12px] mt-2" style={{ color: C.red }}>{speech.error}</p>}
+          </div>
+          {/* Stacked: "Rebuild with changes" and "Use This Program" side by
+              side are wider than a phone and push the sheet sideways. */}
+          <div className="flex flex-col gap-2.5">
+            <Btn className="w-full" icon={Check} onClick={() => { speech.stop(); onGenerated(result); }}>Use This Program</Btn>
+            <Btn variant="secondary" className="w-full" icon={RefreshCw} onClick={regenerate}>
+              {changes.trim() ? "Rebuild with changes" : "Regenerate"}
+            </Btn>
           </div>
         </div>
       )}
