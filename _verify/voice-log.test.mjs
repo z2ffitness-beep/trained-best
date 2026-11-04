@@ -94,7 +94,16 @@ test("the activity date says Select date, not an empty box (4 Nov)", () => {
 test("iPhone: listens a phrase at a time and keeps going, and says when it hears nothing", () => {
   const hook = src.slice(src.indexOf("function useSpeechToText"), src.indexOf("function VoiceLogSheet"));
   assert.ok(/rec\.continuous = !ios/.test(hook), "iPhone is still put in the continuous mode that returns nothing");
-  assert.ok(/if \(wantRef\.current\) \{\s*\/\/ Still meant to be listening/.test(hook), "it stops after the first pause");
+  assert.ok(/\/\/ Still meant to be listening[\s\S]{0,200}const again = \(tries\) =>/.test(hook), "it stops after the first pause");
+  // 4 Nov, "it just stops in the middle": restart after a short breath and
+  // retry if refused; stop on real silence measured in time, not on a count
+  // of refused restarts; ride out small errors; always say when it stopped.
+  assert.ok(/\}, ios \? 250 : 120\);/.test(hook), "it restarts the instant a phrase ends, which iPhone refuses");
+  assert.ok(/again\(2\);/.test(hook), "a refused restart is not retried");
+  assert.ok(/Date\.now\(\) - lastHeardAt\.current > QUIET_STOP_MS/.test(hook), "it stops on a count of attempts again");
+  assert.ok(!/emptyRuns\.current >= 12/.test(hook), "the attempt count that stopped it mid-sentence is back");
+  assert.ok(/\(code === "network" \|\| code === "audio-capture"\) && \+\+hiccups\.current < 5/.test(hook), "one hiccup ends listening");
+  assert.ok(/What you said is kept: tap the mic to keep going/.test(hook), "it stops without saying so");
   assert.ok(/keptRef\.current = \[keptRef\.current, heard\]/.test(hook), "earlier phrases are lost on restart");
   // 4 Nov: words iPhone had not yet marked final when the phrase ended are
   // kept too. Dropping them is how half a sentence went missing.
