@@ -11625,8 +11625,21 @@ function ActivityLogSheet({ open, onClose, onSaved, userId, unit }) {
         <div className="grid grid-cols-3 gap-2">
           <button type="button" onClick={() => set("date", today)} className="rounded-lg py-2.5 text-[14px]" style={pill(form.date === today)}>Today</button>
           <button type="button" onClick={() => set("date", yesterday)} className="rounded-lg py-2.5 text-[14px]" style={pill(form.date === yesterday)}>Yesterday</button>
-          <input type="date" aria-label="Another day" max={today} value={form.date !== today && form.date !== yesterday ? form.date : ""}
-            onChange={e => e.target.value && set("date", e.target.value)} style={{ ...inputStyle, padding: "8px 6px", fontSize: 13 }} />
+          {/* A button that says what it is (Isaiah, 4 Nov): an empty date input
+              is a blank box on iPhone. The real date input sits invisibly on
+              top, so a tap still opens the phone's own date picker. */}
+          {(() => {
+            const other = form.date && form.date !== today && form.date !== yesterday;
+            const shown = other ? new Date(`${form.date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "Select date";
+            return (
+              <label className="relative rounded-lg py-2.5 text-[14px] text-center min-w-0 overflow-hidden" style={pill(other)}>
+                <span className="block truncate px-1">{shown}</span>
+                <input type="date" aria-label="Select date" max={today} value={other ? form.date : ""}
+                  onChange={e => e.target.value && set("date", e.target.value)}
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }} />
+              </label>
+            );
+          })()}
         </div>
       </Field>
       <Field label="How long, overall (minutes)">
@@ -11848,10 +11861,14 @@ function useSpeechToText(text, setText) {
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     let finals = "";
+    // The words still waiting to be marked final. Kept when a phrase ends
+    // (Isaiah, 4 Nov): iPhone often ends a phrase before marking its last
+    // words final, and dropping them is how half a sentence went missing.
+    let interim = "";
     rec.onresult = (e) => {
       heardRef.current = true;
       clearQuiet();
-      let interim = "";
+      interim = "";
       finals = "";
       for (let i = 0; i < e.results.length; i++) {
         const t = e.results[i][0]?.transcript || "";
@@ -11870,7 +11887,8 @@ function useSpeechToText(text, setText) {
           : "Listening stopped. Tap the box and use the mic on your keyboard, or try the mic again.");
     };
     rec.onend = () => {
-      if (finals.trim()) { keptRef.current = [keptRef.current, finals.trim()].filter(Boolean).join(" "); emptyRuns.current = 0; }
+      const heard = [finals.trim(), interim.trim()].filter(Boolean).join(" ");
+      if (heard) { keptRef.current = [keptRef.current, heard].filter(Boolean).join(" "); emptyRuns.current = 0; setText(keptRef.current); }
       else emptyRuns.current += 1;
       // A phone that ends every attempt without hearing anything is not going
       // to start hearing on the twentieth try. Stop, and say what to do.

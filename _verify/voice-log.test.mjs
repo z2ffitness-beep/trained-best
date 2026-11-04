@@ -87,11 +87,18 @@ test("how hard it felt (RPE) is kept, 1 to 10, even with no sets said", () => {
   assert.ok(/rpeDone: typeof exerciseRpe\[item\.id\] === "number"/.test(src), "RPE is not saved with the exercise");
 });
 
+test("the activity date says Select date, not an empty box (4 Nov)", () => {
+  assert.ok(/: "Select date";/.test(src) && /aria-label="Select date"/.test(src));
+});
+
 test("iPhone: listens a phrase at a time and keeps going, and says when it hears nothing", () => {
   const hook = src.slice(src.indexOf("function useSpeechToText"), src.indexOf("function VoiceLogSheet"));
   assert.ok(/rec\.continuous = !ios/.test(hook), "iPhone is still put in the continuous mode that returns nothing");
   assert.ok(/if \(wantRef\.current\) \{\s*\/\/ Still meant to be listening/.test(hook), "it stops after the first pause");
-  assert.ok(/keptRef\.current = \[keptRef\.current, finals\.trim\(\)\]/.test(hook), "earlier phrases are lost on restart");
+  assert.ok(/keptRef\.current = \[keptRef\.current, heard\]/.test(hook), "earlier phrases are lost on restart");
+  // 4 Nov: words iPhone had not yet marked final when the phrase ended are
+  // kept too. Dropping them is how half a sentence went missing.
+  assert.ok(/const heard = \[finals\.trim\(\), interim\.trim\(\)\]/.test(hook), "the last words of a phrase are dropped again");
   assert.ok(/Not picking anything up/.test(hook), "silence leaves the athlete guessing");
 });
 
