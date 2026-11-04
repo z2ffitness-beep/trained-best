@@ -26,7 +26,7 @@ const H = await load(APP, [
   "storedPhasesValid", "fitPhasesToWeeks", "bakeGeneratedProgression", "skipExerciseInRange",
   "limitNewExerciseToRange", "limitNewExerciseToSpans", "programForAI", "applyAdjustOps", "validateAdjustedProgram",
   "adjustDiff", "formatWeekList", "buildAdjustMessages",
-  "buildProgramPlan", "prescribeForWeek", "weekWithinPhase", "applyPhaseIntent", "applyProgression", "applyDeload", "applyStartRamp", { name: "START_LEVELS", kind: "const" },
+  "buildProgramPlan", "prescribeForWeek", "weekWithinPhase", "applyPhaseIntent", "applyProgression", "applyDeload", "applyStartRamp", "conditioningRestFloor", "parseRestSeconds", { name: "START_LEVELS", kind: "const" },
   "programHasWeeklyPlan", "dayHasWeeklyPlan", "programBlocks", "authoredBlocks", "authoredBlockStarts", "authoredBlocksLookReal",
   "weekEntryFor", "resolveExerciseForWeek", "resolveDayForWeek", "weekKeys", "resolvedFields", "tidyByWeek",
   "setWeekEntry", "setFieldsInRange", "clearFieldsInRange", "pinAt", "applyExerciseEdit",

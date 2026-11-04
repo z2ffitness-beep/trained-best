@@ -2998,8 +2998,8 @@ function prescribeForWeek(exercise, plan, week, authored = false) {
   // week 3 of phase 1, which is the whole point.
   const forPhase = applyPhaseIntent(exercise, info.phase?.index);
   // 4. the starting ramp for someone coming back (3 Nov), on top of the rest.
-  if (info.isDeload) return applyStartRamp(applyDeload(forPhase, true), week);
-  return applyStartRamp(applyProgression(forPhase, info), week);
+  if (info.isDeload) return conditioningRestFloor(applyStartRamp(applyDeload(forPhase, true), week), week);
+  return conditioningRestFloor(applyStartRamp(applyProgression(forPhase, info), week), week);
 }
 
 // One line of plain English about where this week sits, for the program
@@ -3074,6 +3074,120 @@ function startLevelReason(intake) {
     : last.key === "never" ? "never trained consistently" : `last trained consistently ${last.label.toLowerCase()}`);
   if (recent) parts.push(recent.key === "0" ? "not training at all in the last 4 weeks" : `${recent.label} a week in the last 4 weeks`);
   return parts.join(", ");
+}
+
+// ---- Screening (Isaiah, 4 Nov) -------------------------------------------
+// What a CSCS would ask before writing anything: a health screen (the seven
+// PAR-Q+ general questions, paraphrased), a short movement check done at
+// home, and the load and recovery outside the gym. Every answer below is
+// turned into a programming decision in screeningPromptBlock; nothing here is
+// asked for decoration.
+const PARQ_QUESTIONS = [
+  { key: "heart", label: "A doctor has said you have a heart condition or high blood pressure" },
+  { key: "chestPain", label: "You get chest pain at rest, in daily life, or when active" },
+  { key: "dizzy", label: "In the last year you've lost your balance from dizziness, or passed out" },
+  { key: "chronic", label: "You have another chronic medical condition" },
+  { key: "meds", label: "You take prescribed medication for a chronic condition" },
+  { key: "boneJoint", label: "You have a bone, joint or soft tissue problem that exercise could make worse" },
+  { key: "supervised", label: "A doctor has said you should only exercise under medical supervision" },
+];
+const MOVE_CHECKS = [
+  { key: "sitStand", short: "Sit to stand", label: "Sit down to a chair and stand up, no hands, 5 times" },
+  { key: "toeTouch", short: "Toe touch", label: "Standing, legs straight, touch your toes" },
+  { key: "overhead", short: "Overhead reach", label: "Reach both arms straight overhead, ribs down, elbows by your ears" },
+  { key: "balance", short: "One-leg balance", label: "Stand on one leg for 30 seconds, each side" },
+  { key: "pushup", short: "Push-up", label: "One full push-up, chest to the floor" },
+];
+const MOVE_RESULTS = [
+  { key: "easy", label: "Easy" }, { key: "hard", label: "Hard" }, { key: "cant", label: "Can't" }, { key: "pain", label: "Hurts" },
+];
+const SLEEP_OPTIONS = [{ key: "<6", label: "Under 6 h" }, { key: "6-7", label: "6 to 7 h" }, { key: "7-8", label: "7 to 8 h" }, { key: "8+", label: "8 h or more" }];
+const OTHER_TRAINING_OPTIONS = [{ key: "0", label: "None" }, { key: "1-2", label: "1 to 2 h" }, { key: "3-5", label: "3 to 5 h" }, { key: "6+", label: "6 h or more" }];
+
+function parqFlags(intake) {
+  return PARQ_QUESTIONS.filter(q => intake?.parq?.[q.key] === true);
+}
+// A yes and no clearance yet: train moderately and see a doctor first.
+function needsClearance(intake) {
+  return parqFlags(intake).length > 0 && intake?.parqCleared !== true;
+}
+function parqAnswered(intake) {
+  const p = intake?.parq || {};
+  if (!PARQ_QUESTIONS.every(q => typeof p[q.key] === "boolean")) return false;
+  return parqFlags(intake).length === 0 || typeof intake?.parqCleared === "boolean";
+}
+function movementAnswered(intake) {
+  return MOVE_CHECKS.every(m => MOVE_RESULTS.some(r => r.key === intake?.move?.[m.key]));
+}
+// The movement checks someone found hard, couldn't do, or that hurt.
+function movementLimits(intake) {
+  return MOVE_CHECKS.filter(m => ["hard", "cant", "pain"].includes(intake?.move?.[m.key]))
+    .map(m => ({ ...m, result: intake.move[m.key] }));
+}
+
+// Every screening answer as a programming rule for the generator.
+function screeningPromptBlock(intake) {
+  const out = [];
+  const flags = parqFlags(intake);
+  if (flags.length) {
+    out.push(`HEALTH SCREEN: answered YES to: ${flags.map(f => f.label.toLowerCase()).join("; ")}. ${intake.parqCleared
+      ? "They say a doctor has cleared them to exercise. Program normally, but keep the first two weeks moderate and include the reason in the rationale."
+      : "They have NOT been cleared by a doctor yet. Program light to moderate work ONLY: no prescription above 7 out of 10, no maximal lifts, no all-out conditioning or sprint intervals, longer rests. The rationale must start by telling them to see their doctor before training hard."}`);
+  }
+  const move = intake?.move || {};
+  const rule = {
+    sitStand: {
+      hard: "Squat pattern: start from a box or bench squat or a goblet squat to a box. No barbell back squat until it is easy.",
+      cant: "Squat pattern: sit-to-stand to a raised box, supported squats and split squats holding on. No loaded barbell squatting.",
+      pain: "Squatting hurts: no loaded squatting. Use pain-free range only (box height that does not hurt), and treat the knees and hips as a current injury.",
+    },
+    toeTouch: {
+      hard: "Hip hinge and hamstrings: RDLs to mid-shin or a block, trap bar from high handles, hamstring mobility in every warm-up. No conventional deadlift from the floor yet.",
+      cant: "Hip hinge: teach the hinge first (dowel hinge, hip thrust, glute bridge, 45 degree back extension). No deadlift from the floor.",
+      pain: "Bending forward hurts: no loaded hinging from the floor. Glute bridges, hip thrusts and back extensions in a pain-free range, and treat the low back as a current injury.",
+    },
+    overhead: {
+      hard: "Overhead mobility is limited: no barbell overhead press, snatch, jerk or overhead squat. Use landmine press, incline press and half-kneeling single-arm press, with thoracic and lat mobility in every warm-up.",
+      cant: "Cannot reach overhead: no overhead pressing at all. Horizontal and landmine pressing only, thoracic and shoulder mobility in every warm-up.",
+      pain: "Reaching overhead hurts: no overhead work. Treat the shoulder as a current injury.",
+    },
+    balance: {
+      hard: "Single-leg control is limited: split stance before true single-leg work, hold a support on single-leg exercises, a balance drill in every warm-up, no single-leg jumps.",
+      cant: "Cannot balance on one leg: bilateral and supported split-stance work only, balance drills every warm-up, no single-leg jumps or hops.",
+      pain: "Standing on one leg hurts: treat the ankle, knee and hip of that side as a current injury.",
+    },
+    pushup: {
+      hard: "Upper body pressing: incline push-ups and dumbbell presses before barbell bench.",
+      cant: "Cannot do a push-up: incline or knee push-ups, and dumbbell or machine pressing to build to the floor.",
+      pain: "Push-ups hurt: no loaded horizontal pressing through pain. Treat the shoulder, elbow or wrist as a current injury.",
+    },
+  };
+  const moves = MOVE_CHECKS.map(m => rule[m.key]?.[move[m.key]]).filter(Boolean);
+  if (moves.length) out.push(`MOVEMENT CHECK, done by the athlete at home. Pick exercises to match:\n${moves.map(r => `- ${r}`).join("\n")}\nAnything rated easy has no limit. Progress the regressed patterns through the phases as they improve.`);
+  const other = intake?.otherTraining;
+  if (other === "3-5") out.push("OTHER TRAINING: 3 to 5 hours a week of other sport or classes. Count it as part of their load: at most one short conditioning piece per session, and no extra long aerobic days.");
+  if (other === "6+") out.push("OTHER TRAINING: 6 or more hours a week of other sport or classes. That is their conditioning: no conditioning pieces beyond a short finisher, keep main lifts to 3 sets, and keep the hardest lower-body work away from the day before their sport where the schedule allows.");
+  if (intake?.sleep === "<6") out.push("SLEEP: under 6 hours a night. Recovery is limited: keep main lifts to 2 to 3 sets, no sets to failure, and say in the rationale that more sleep is the cheapest way to progress faster.");
+  return out.join("\n\n");
+}
+
+// NSCA and CSCCa return-to-training rule for conditioning (2019): rest at least
+// 4 times the work in week 1, 3 times in week 2, and at least 2 times after
+// that (kept for the rest of the Foundation ramp). Applied by the app for the
+// Rebuilding and Foundation ramps, where it is a time-based interval.
+function conditioningRestFloor(exercise, week) {
+  if (blockForPhase(exercise?.phase).key !== "conditioning" || !START_LEVELS[exercise?.startRamp]?.weeks) return exercise;
+  const ramp = START_LEVELS[exercise.startRamp].weeks;
+  const ratio = week === 1 ? 4 : week === 2 ? 3 : week <= ramp ? 2 : 0;
+  if (!ratio) return exercise;
+  const reps = String(exercise.reps || "").trim().toLowerCase();
+  if (!/^\d+(\.\d+)?\s*(s|sec|secs|seconds|m|min|mins|minutes)$/.test(reps)) return exercise;
+  const work = parseRestSeconds(reps, 0);
+  if (!work || work > 120) return exercise;
+  const need = work * ratio;
+  if (parseRestSeconds(exercise.rest, 0) >= need) return exercise;
+  const rest = need % 60 === 0 ? `${need / 60}min` : `${need}s`;
+  return { ...exercise, rest };
 }
 
 // Marks every exercise of a newly built program with its starting level, so
@@ -3234,6 +3348,9 @@ function planReadySummary(intake, splitStyle) {
   rows.push({ label: "Working around", value: hurt.length ? hurt.join(", ") : "Nothing you told us about" });
   const level = startLevelOf(intake);
   if (level && START_LEVELS[level].weeks) rows.push({ label: "Starting with", value: `${START_LEVELS[level].label}: ${START_LEVELS[level].weeks} lighter weeks` });
+  const limits = movementLimits(intake);
+  if (limits.length) rows.push({ label: "Built around", value: `Your movement check (${limits.length} ${limits.length === 1 ? "area" : "areas"} to build up)` });
+  if (needsClearance(intake)) rows.push({ label: "Health", value: "Light to moderate until a doctor clears you. Please check with yours." });
   return rows;
 }
 
@@ -7524,11 +7641,14 @@ const SIGNUP_KEYS = {
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
   goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate",
-    "sportSeason", "sportSeasonEnd", "sportPosition", "sportLevel", "sportPractices", "sportGames"],
+    "sportSeason", "sportSeasonEnd", "sportPosition", "sportLevel", "sportPractices", "sportGames",
+    "recentDaysPerWeek", "lastConsistent"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
   // being inferred from anyway.
-  week: ["trainingDays", "sessionMinutes", "equipment", "splitStyle"],
+  week: ["trainingDays", "sessionMinutes", "equipment", "splitStyle", "otherTraining", "sleep"],
+  // 4 Nov: the screening, on one screen. parqCleared is only asked after a yes.
+  health: ["parq", "parqCleared", "move"],
   injuries: ["injuries", "injuryNotes"],
   // Coached athletes only, and asked FIRST - the code decides whose roster
   // they land on, and showing the coach's card before anything else is what
@@ -7547,7 +7667,7 @@ const SIGNUP_KEYS = {
 // flag below, so the live signup keeps working while this is built and the
 // switch is one line to put back.
 const SIGNUP_V2_STEPS = {
-  athlete: ["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
+  athlete: ["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩺 Health Check"],
   // The code first, then the account. The design is explicit about this and
   // it is the right way round: someone joining a coach wants to see whose
   // app this is before they type a password into it.
@@ -7557,7 +7677,7 @@ const SIGNUP_V2_STEPS = {
   // timeframe - and produced a General Fitness programme for a fighter with
   // no error anywhere. signup-v2.test.mjs now fails on a missing key rather
   // than letting the list and the contract drift apart.
-  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"],
+  athlete_coached: ["🔑 Coach Invite Code", "🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩺 Health Check"],
   coach: ["🔐 Create Account", "🏅 Your Coaching Business", "📩 Invite Your Clients"],
 };
 
@@ -7599,6 +7719,17 @@ const SIGNUP_V2_SECTIONS = {
     // nothing still gets the split this screen used to choose silently.
     { step: "🧩 Session Style", label: "Week split" },
     { step: "🏋️ Equipment", label: "What you can train with" },
+    // 4 Nov: their load and recovery outside the program.
+    { step: "🏃 Other Training", label: "Other sport or training" },
+    { step: "🌙 Sleep", label: "Your sleep" },
+  ],
+  // 4 Nov: the screening a coach does before writing a program. One screen.
+  // Injuries moved onto this screen too, so the signup got one screen
+  // SHORTER while asking more (Isaiah: "the less screens, the better").
+  "🩺 Health Check": [
+    { step: "❤️ Health Questions", label: "Health questions" },
+    { step: "🩹 Injuries", label: "Injuries and pain" },
+    { step: "🧍 Movement Check", label: "Movement check" },
   ],
   "🏅 Your Coaching Business": [
     { step: "💼 Business Name", label: "Your business name" },
@@ -7655,6 +7786,10 @@ function stepComplete(stepName, data, role) {
     case "👤 Your Name": return !!(data.name || "").trim();
     case "💪 Training Experience": return !!data.experience;
     case "🔋 Training Lately": return !!data.recentDaysPerWeek && !!data.lastConsistent;
+    case "🏃 Other Training": return !!data.otherTraining;
+    case "🌙 Sleep": return !!data.sleep;
+    case "❤️ Health Questions": return parqAnswered(data);
+    case "🧍 Movement Check": return movementAnswered(data);
     // Requires a code that actually resolves to a real coach, not just six
     // characters — "AAAAAA" used to pass, and the athlete finished the whole
     // signup believing they'd joined a roster they were never linked to.
@@ -7783,7 +7918,8 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
     "🩹 Injuries",
     // 4. programming
     "💪 Training Experience", "🔋 Training Lately", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
-    "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
+    "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment", "🏃 Other Training", "🌙 Sleep",
+    "❤️ Health Questions", "🧍 Movement Check",
     "📸 Profile Photo",
   ];
   // The code decides whose roster they land on, so it is asked next to the
@@ -8545,7 +8681,95 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   }
 
   // ATHLETE STEPS
+  const choicePill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text, fontWeight: on ? 600 : 400 });
+  const fourChoices = (value, options, pick) => (
+    <div className="grid grid-cols-4 gap-2">
+      {options.map(o => (
+        <button key={o.key} type="button" onClick={() => pick(o.key)} aria-pressed={value === o.key}
+          className="rounded-lg px-1.5 py-3 text-[13.5px] text-center" style={choicePill(value === o.key)}>{o.label}</button>
+      ))}
+    </div>
+  );
   switch (stepName) {
+    case "🏃 Other Training": {
+      return (
+        <div>
+          <p className="text-[13px] mb-2.5" style={{ color: C.sub }}>Hours a week of other sport or classes on top of this program (team practice, BJJ, running club).</p>
+          {fourChoices(data.otherTraining, OTHER_TRAINING_OPTIONS, v => set("otherTraining", v))}
+        </div>
+      );
+    }
+    case "🌙 Sleep": {
+      return (
+        <div>
+          <p className="text-[13px] mb-2.5" style={{ color: C.sub }}>How much do you usually sleep a night?</p>
+          {fourChoices(data.sleep, SLEEP_OPTIONS, v => set("sleep", v))}
+        </div>
+      );
+    }
+    case "❤️ Health Questions": {
+      const parq = data.parq || {};
+      const setQ = (k, v) => setData(d => ({ ...d, parq: { ...(d.parq || {}), [k]: v } }));
+      const anyYes = PARQ_QUESTIONS.some(q => parq[q.key] === true);
+      const allNo = PARQ_QUESTIONS.every(q => parq[q.key] === false);
+      return (
+        <div>
+          <button type="button" onClick={() => setData(d => ({ ...d, parq: Object.fromEntries(PARQ_QUESTIONS.map(q => [q.key, false])), parqCleared: null }))}
+            className="w-full rounded-lg px-4 py-3 mb-3 text-[14px] flex items-center justify-between" style={choicePill(allNo)}>
+            <span>None of these apply to me</span>{allNo && <Check size={16} />}
+          </button>
+          <div className="space-y-2">
+            {PARQ_QUESTIONS.map(q => (
+              <div key={q.key} className="rounded-lg px-3 py-2.5 flex items-center gap-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="text-[13px] leading-snug flex-1 min-w-0" style={{ color: C.text }}>{q.label}</div>
+                <div className="flex gap-1.5 shrink-0">
+                  {[["No", false], ["Yes", true]].map(([label, v]) => (
+                    <button key={label} type="button" onClick={() => setQ(q.key, v)} aria-pressed={parq[q.key] === v}
+                      className="rounded-lg py-2 text-[13px]" style={{ ...choicePill(parq[q.key] === v), width: 46 }}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {anyYes && (
+            <div className="rounded-lg p-3.5 mt-3" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+              <div className="text-[13.5px] mb-2" style={{ color: C.text }}>Has a doctor cleared you to exercise?</div>
+              <div className="grid grid-cols-2 gap-2">
+                {[["Yes", true], ["Not yet", false]].map(([label, v]) => (
+                  <button key={label} type="button" onClick={() => set("parqCleared", v)} aria-pressed={data.parqCleared === v}
+                    className="rounded-lg py-2 text-[13.5px]" style={choicePill(data.parqCleared === v)}>{label}</button>
+                ))}
+              </div>
+              {data.parqCleared === false && (
+                <p className="text-[12.5px] mt-2" style={{ color: C.sub }}>Your program will stay light to moderate until you are. Please check with your doctor before training hard.</p>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+    case "🧍 Movement Check": {
+      const move = data.move || {};
+      const setM = (k, v) => setData(d => ({ ...d, move: { ...(d.move || {}), [k]: v } }));
+      return (
+        <div>
+          <p className="text-[13px] mb-3" style={{ color: C.sub }}>Try each one now, wherever you are. It decides where your exercises start.</p>
+          <div className="space-y-2">
+            {MOVE_CHECKS.map(m => (
+              <div key={m.key} className="rounded-lg px-3.5 py-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="text-[13.5px] mb-2" style={{ color: C.text }}>{m.label}</div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {MOVE_RESULTS.map(r => (
+                    <button key={r.key} type="button" onClick={() => setM(m.key, r.key)} aria-pressed={move[m.key] === r.key}
+                      className="rounded-lg py-2 text-[13px]" style={choicePill(move[m.key] === r.key)}>{r.label}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     case "🔋 Training Lately": {
       const pill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text, fontWeight: on ? 600 : 400 });
       return (
@@ -9862,12 +10086,13 @@ function startLevelPromptBlock(intake) {
   const level = startLevelOf(intake);
   if (!level || level === "ready") return "";
   const cfg = START_LEVELS[level];
-  return `STARTING LEVEL: ${cfg.label.toUpperCase()}. This person is ${startLevelReason(intake) || "returning after time off"}. The days they CAN train are not the days they HAVE been training, so their tendons, aerobic base and habits are behind what their schedule suggests.
+  return `STARTING LEVEL: ${cfg.label.toUpperCase()}. Their answers: ${startLevelReason(intake) || "returning after time off"}. The days they CAN train are not the days they HAVE been training, so their tendons, aerobic base and habits are behind what their schedule suggests.
 - The app eases them in by itself: for the first ${cfg.weeks} weeks it cuts the sets (${cfg.setFactors.map(f => `${Math.round(f * 100)}%`).join(", ")} of what you write) and caps difficulty at ${cfg.rpeCaps.join(", ")} out of 10. So write the normal program; do not shrink it yourself.
 - Choose exercises this person can do well now: stable, simpler variations over complex ones (goblet or box squat before a heavy back squat, trap bar before a conventional deadlift from the floor, no Olympic lifts as a main lift yet).
 - Build soft tissue capacity: include slow-tempo work or isometric holds for the knees, ankles, hips and shoulders in the main work, not only the warm-up.
 - Include an easy aerobic piece at a conversational pace in every session, and keep conditioning sub-maximal: no all-out sprints or repeat-sprint finishers.
 - Plyometrics stay low level (pogo jumps, snap downs, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
+- NSCA/CSCCa return-to-training (FIT) rules for the first two weeks, which the program must already respect at the set counts the app will use: each movement type (squat, hinge, push, pull, jumps) in no more than 3 sessions a week; jump foot contacts no more than about 70 a session (35 written, since the app halves week 1); keep main lifts at moderate reps (5 to 10), never singles, doubles or triples; conditioning as intervals with long rests (the app sets work to rest at 1:4 then 1:3).
 - Say in the rationale, plainly, that the first ${cfg.weeks} weeks are lighter on purpose and why: building tendons, cardio and the habit first lowers the injury risk and keeps them showing up.`;
 }
 
@@ -9886,6 +10111,8 @@ Athlete intake:
 - Age: ${ageFromBirthday(intake.birthday) ?? "unspecified"}
 - Training experience: ${intake.experience || "Beginner"}
 - Training lately: ${startLevelReason(intake) || "not asked"}
+- Sleep: ${SLEEP_OPTIONS.find(o => o.key === intake.sleep)?.label || "not asked"} a night
+- Other sport or training outside this program: ${OTHER_TRAINING_OPTIONS.find(o => o.key === intake.otherTraining)?.label || "not asked"} a week
 - Goals: ${(intake.goals || []).join(", ") || "General fitness"}
 - Competition date: ${intake.fightDate ? `${intake.fightDate}, ${Math.max(1, Math.round((new Date(intake.fightDate) - new Date()) / (1000*60*60*24*7)))} weeks out` : "none"}
 - Injuries: ${injuryLines(intake)}
@@ -9924,6 +10151,8 @@ WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
 ${sportPromptBlock(intake)}
 
 ${startLevelPromptBlock(intake)}
+
+${screeningPromptBlock(intake)}
 
 BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 - The program is split into ${PHASE_WEEKS}-week phases (mesocycles). A program of ${MIN_WEEKS_FOR_DELOAD} weeks or more gets a DELOAD on the last week of every block except the final one — the app automatically cuts sets by about 40% and drops the difficulty target by ${DELOAD_DIFFICULTY_DROP} points on those weeks.
@@ -11955,6 +12184,12 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
             </div>
             <div className="text-[12px]" style={{ color: C.sub }}>{START_LEVELS[level].blurb}</div>
           </div>
+          {needsClearance(intake) && (
+            <div className="text-left rounded-lg p-3 mb-5 text-[12.5px]" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66`, color: C.sub }}>
+              <span className="font-semibold" style={{ color: C.amber }}>Health screen: not cleared yet. </span>
+              The program will stay light to moderate until a doctor clears {forSelf ? "you" : "them"}.
+            </div>
+          )}
           <Btn className="w-full" icon={Sparkles} onClick={generate}>Generate Program</Btn>
         </div>
       )}
@@ -12472,7 +12707,8 @@ function ModeSwitch({ training, onChange, className = "mb-4" }) {
 // questions can never drift apart from the ones athletes answer.
 const TRAINING_INTAKE_STEPS = [
   "💪 Training Experience", "🔋 Training Lately", "🧬 Sex", "🥊 Sport / Focus", "🥋 Sport Details", "🏟️ Sport Profile", "🎯 Goals",
-  "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight", "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment",
+  "❤️ Health Questions", "🧍 Movement Check", "🩹 Injuries", "🎂 Birthday", "📏 Height", "⚖️ Weight",
+  "📅 Training Schedule", "🧩 Session Style", "🏋️ Equipment", "🏃 Other Training", "🌙 Sleep",
 ];
 
 function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
@@ -12495,6 +12731,10 @@ function CoachTrainingIntake({ state, setState, onDone, onCancel }) {
     switch (stepName) {
       case "💪 Training Experience": return !!data.experience;
       case "🔋 Training Lately": return !!data.recentDaysPerWeek && !!data.lastConsistent;
+      case "❤️ Health Questions": return parqAnswered(data);
+      case "🧍 Movement Check": return movementAnswered(data);
+      case "🏃 Other Training": return !!data.otherTraining;
+      case "🌙 Sleep": return !!data.sleep;
       case "🧬 Sex": return !!data.sex;
       case "🥊 Sport / Focus": return focusComplete(data);
       case "🥋 Sport Details": return data.isFighter !== undefined && data.isFighter !== null;
@@ -14172,17 +14412,39 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           </div>
         </div>
 
-        {/* Starting level flag (3 Nov): who needs easing in, and why. */}
+        {/* Screening (3 and 4 Nov): starting level, health screen and the
+            movement check, so the coach reads it before generating. */}
         {(() => {
-          const level = startLevelOf(athlete.intake);
-          if (!level || level === "ready") return null;
+          const i = athlete.intake || {};
+          const level = startLevelOf(i);
+          const flags = parqFlags(i);
+          const limits = movementLimits(i);
+          if ((!level || level === "ready") && !flags.length && !limits.length) return null;
+          const cap = (r) => r.charAt(0).toUpperCase() + r.slice(1);
+          const word = { hard: "hard", cant: "can't", pain: "hurts" };
           return (
-            <div className="rounded-xl p-3.5 mb-5 flex items-start gap-2.5" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
-              <Sprout size={15} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
-              <div className="text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
-                <span className="font-semibold" style={{ color: C.olive }}>{START_LEVELS[level].label}. </span>
-                {(r => r.charAt(0).toUpperCase() + r.slice(1))(startLevelReason(athlete.intake))}. Programs you generate start with {START_LEVELS[level].weeks} lighter weeks; you can change that when you generate.
-              </div>
+            <div className="rounded-xl p-3.5 mb-5 space-y-2" style={{ background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              {level && level !== "ready" && (
+                <div className="flex items-start gap-2.5 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                  <Sprout size={15} className="shrink-0 mt-0.5" style={{ color: C.olive }} />
+                  <div><span className="font-semibold" style={{ color: C.olive }}>{START_LEVELS[level].label}. </span>
+                    {cap(startLevelReason(i))}. Programs you generate start with {START_LEVELS[level].weeks} lighter weeks; you can change that when you generate.</div>
+                </div>
+              )}
+              {flags.length > 0 && (
+                <div className="flex items-start gap-2.5 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                  <HeartPulse size={15} className="shrink-0 mt-0.5" style={{ color: C.amber }} />
+                  <div><span className="font-semibold" style={{ color: C.amber }}>{i.parqCleared ? "Health screen: cleared by a doctor. " : "Health screen: needs a doctor's clearance. "}</span>
+                    Said yes to: {flags.map(f => f.label.charAt(0).toLowerCase() + f.label.slice(1)).join("; ")}.</div>
+                </div>
+              )}
+              {limits.length > 0 && (
+                <div className="flex items-start gap-2.5 text-[12.5px] leading-relaxed" style={{ color: C.sub }}>
+                  <Activity size={15} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
+                  <div><span className="font-semibold" style={{ color: C.blue }}>Movement check. </span>
+                    {limits.map(m => `${m.short}: ${word[m.result]}`).join(" · ")}</div>
+                </div>
+              )}
             </div>
           );
         })()}

@@ -108,7 +108,7 @@ test("the athlete is told why it's lighter, and the coach sees the flag", () => 
   assert.match(n.text, /about 50% of the sets/);
   assert.equal(H.startRampNotice("foundation", 5), null);
   assert.ok((src.match(/startRampNotice\(programStartRamp\(myProgram\)/g) || []).length >= 2);
-  assert.ok(/const level = startLevelOf\(athlete\.intake\);/.test(src), "the coach sees nothing");
+  assert.ok(/const level = startLevelOf\(i\);/.test(src) && /const i = athlete\.intake \|\| \{\};/.test(src), "the coach sees nothing");
 });
 
 for (const [name, fn] of tests) {

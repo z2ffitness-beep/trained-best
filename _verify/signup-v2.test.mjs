@@ -55,7 +55,8 @@ const {
   { name: "SIGNUP_V2_STEPS", kind: "const" },
   { name: "SIGNUP_V2_SECTIONS", kind: "const" },
   { name: "SIGNUP_V2", kind: "const" },
-  "stepComplete",
+  "stepComplete", "parqAnswered", "parqFlags", "movementAnswered",
+  { name: "PARQ_QUESTIONS", kind: "const" }, { name: "MOVE_CHECKS", kind: "const" }, { name: "MOVE_RESULTS", kind: "const" },
 ]);
 
 let passed = 0;
@@ -145,8 +146,8 @@ test("every screen in the flow has a body behind it", () => {
 // from the solo athlete still passed, because the coached path happened to
 // keep it.
 const BLOCKS_FOR = {
-  athlete: ["account", "about", "goal", "week", "injuries"],
-  athlete_coached: ["account", "about", "goal", "week", "injuries", "coached"],
+  athlete: ["account", "about", "goal", "week", "health", "injuries"],
+  athlete_coached: ["account", "about", "goal", "week", "health", "injuries", "coached"],
   coach: ["account", "coach"],
 };
 
@@ -232,7 +233,7 @@ test("the week split is asked on the Your Week screen, with the suggestion pre-p
   // It was taken out on the grounds that the days decide it. People have a
   // preference, so it is a question again; the days still decide the default.
   assert.ok(leavesOf("📅 Your Week", {}).includes("🧩 Session Style"), "the split is not asked");
-  assert.ok(stepComplete("📅 Your Week", { trainingDays: ["Monday"], equipment: ["Full gym access"] }, "athlete"),
+  assert.ok(stepComplete("📅 Your Week", { trainingDays: ["Monday"], equipment: ["Full gym access"], otherTraining: "0", sleep: "7-8" }, "athlete"),
     "not touching the split blocks the screen");
   assert.ok(SIGNUP_KEYS.week.includes("splitStyle"));
 });
@@ -353,8 +354,10 @@ const athlete = {
   name: "Alex Reid", email: "a@b.com", password: "abcdefgh", confirmPassword: "abcdefgh",
   sex: "Male", birthday: "1990-01-01", heightCm: 178, weightLb: 175,
   goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)", recentDaysPerWeek: "3+", lastConsistent: "now",
-  trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"],
+  trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"], otherTraining: "1-2", sleep: "7-8",
   injuries: ["None currently"],
+  parq: { heart: false, chestPain: false, dizzy: false, chronic: false, meds: false, boneJoint: false, supervised: false },
+  move: { sitStand: "easy", toeTouch: "hard", overhead: "easy", balance: "easy", pushup: "easy" },
 };
 
 test("a fully answered screen can be left", () => {
