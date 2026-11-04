@@ -15,6 +15,12 @@ const H = await load(APP, [
   { name: "START_LEVELS", kind: "const" }, { name: "SESSION_BLOCKS", kind: "const" },
   "parqFlags", "needsClearance", "parqAnswered", "movementAnswered", "movementLimits", "screeningPromptBlock",
   "conditioningRestFloor", "parseRestSeconds", "blockForPhase",
+  "intakeSheetSections", "parseDateParts", "ageFromBirthday", "startLevelOf", "startLevelReason", "injuryLines", "injuryDetailFor", { name: "toLocalISO", kind: "const" },
+  { name: "cmToFtIn", kind: "const" }, { name: "injuryKindLabel", kind: "const" }, { name: "injuryNeedsSide", kind: "const" },
+  { name: "injurySideLabel", kind: "const" }, { name: "INJURY_KINDS", kind: "const" }, { name: "INJURY_SIDES", kind: "const" },
+  { name: "INJURY_MIDLINE", kind: "const" },
+  { name: "WEEKDAY_ORDER", kind: "const" }, { name: "RECENT_TRAINING_OPTIONS", kind: "const" }, { name: "LAST_CONSISTENT_OPTIONS", kind: "const" },
+  { name: "SPLIT_STYLES", kind: "const" }, { name: "todayISO", kind: "const" },
 ]);
 
 let passed = 0;
@@ -99,6 +105,26 @@ test("the coach sees the health flag and the movement limits", () => {
   assert.ok(/needs a doctor's clearance/.test(src));
   assert.ok(/Movement check\. <\/span>/.test(src));
   assert.deepEqual(H.movementLimits({ move: { ...allEasy, overhead: "pain" } }).map(m => m.key), ["overhead"]);
+});
+
+test("the intake sheet has every answer, on one page, for the coach and for the person", () => {
+  const full = { sex: "Male", birthday: "1995-05-05", heightCm: 178, weightLb: 185, goals: ["Get stronger"], "🥊 Sport / Focus": "Soccer",
+    sportSeason: "In season", experience: "Intermediate (1-3 years)", recentDaysPerWeek: "0", lastConsistent: "3to12m",
+    trainingDays: ["Friday", "Monday"], sessionMinutes: 60, equipment: ["Full gym access"], otherTraining: "6+", sleep: "<6",
+    parq: { ...allNo, heart: true }, parqCleared: false, injuries: ["Knee"], injuryDetail: { Knee: { kind: "tendon", status: "now", side: "left" } },
+    move: { ...allEasy, overhead: "cant" } };
+  const secs = H.intakeSheetSections(full);
+  const text = JSON.stringify(secs);
+  for (const t of ["About", "Goals and sport", "Training lately", "Week", "Health questions", "Injuries and pain", "Movement check"]) {
+    assert.ok(secs.some(s => s.title === t), `no ${t} section`);
+  }
+  for (const v of ["Foundation", "3 to 12 months ago", "6 h or more a week", "Under 6 h a night", "Overhead reach", "Can't", "Not yet", "2: Mon, Fri"]) {
+    assert.ok(text.includes(v), `the sheet leaves out ${v}`);
+  }
+  assert.equal(secs.find(s => s.title === "Health questions").alert, true);
+  assert.deepEqual(H.intakeSheetSections({}), [], "an empty intake shows empty rows");
+  assert.ok(/<IntakeSheet open=\{sheetOpen\}[^\n]*intake=\{athlete\.intake\}/.test(src), "the coach cannot open it");
+  assert.equal((src.match(/<IntakeSheet open=\{sheetOpen\}[^\n]*intake=\{state\.me\?\.intake\} self/g) || []).length, 2, "the athlete or the coach's own profile cannot open theirs");
 });
 
 for (const [name, fn] of tests) {

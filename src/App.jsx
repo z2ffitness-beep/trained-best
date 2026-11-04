@@ -3171,6 +3171,82 @@ function screeningPromptBlock(intake) {
   return out.join("\n\n");
 }
 
+// The intake sheet (Isaiah, 4 Nov): every answer someone gave, on one page,
+// in the order a coach reads a screening. The coach opens it from the
+// client's page; anyone can open their own from Profile. Rows with no answer
+// are left out rather than shown as blanks.
+function intakeSheetSections(intake) {
+  const i = intake || {};
+  const ifv = (v) => (v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length) ? null : v);
+  const row = (label, value) => (ifv(value) ? { label, value: Array.isArray(value) ? value.join(", ") : String(value) } : null);
+  const age = ageFromBirthday(i.birthday);
+  const height = i.heightCm ? (() => { const { ft, inch } = cmToFtIn(i.heightCm); return `${ft}'${inch}" (${Math.round(i.heightCm)} cm)`; })() : null;
+  const level = startLevelOf(i);
+  const days = WEEKDAY_ORDER.filter(w => (i.trainingDays || []).includes(w));
+  const flags = parqFlags(i);
+  const parqDone = PARQ_QUESTIONS.some(q => typeof i.parq?.[q.key] === "boolean");
+  const word = { easy: "Easy", hard: "Hard", cant: "Can't", pain: "Hurts" };
+  const injuries = (i.injuries || []).filter(a => a && a !== "None currently");
+  const sections = [
+    { title: "About", rows: [row("Sex", i.sex), row("Age", age !== null && age !== undefined ? `${age}` : null), row("Height", height),
+      row("Weight", i.weightLb ? `${i.weightLb} lb` : null)] },
+    { title: "Goals and sport", rows: [row("Goals", i.goals), row("Focus", i["🥊 Sport / Focus"]),
+      row("Season", i.sportSeason ? `${i.sportSeason}${i.sportSeasonEnd ? `, ends ${i.sportSeasonEnd}` : ""}` : null),
+      row("Level", i.sportLevel), row("Position or event", i.sportPosition),
+      row("Practices / games a week", i.sportPractices !== undefined && i.sportPractices !== null ? `${i.sportPractices} / ${i.sportGames ?? 0}` : null),
+      row("Fighter", i.isFighter === true ? `Competing${i.discipline ? `, ${i.discipline}` : ""}` : null),
+      row("Competition date", i.fightDate), row("Training experience", i.experience)] },
+    { title: "Training lately", rows: [
+      row("Days a week, last 4 weeks", RECENT_TRAINING_OPTIONS.find(o => o.key === i.recentDaysPerWeek)?.label),
+      row("Last trained consistently", LAST_CONSISTENT_OPTIONS.find(o => o.key === i.lastConsistent)?.label),
+      row("Starting level", level ? `${START_LEVELS[level].label}${START_LEVELS[level].weeks ? ` (${START_LEVELS[level].weeks} lighter weeks)` : ""}` : null)] },
+    { title: "Week", rows: [row("Training days", days.length ? `${days.length}: ${days.map(d => d.slice(0, 3)).join(", ")}` : null),
+      row("Session length", i.sessionMinutes ? `About ${i.sessionMinutes} minutes` : null),
+      row("Week split", SPLIT_STYLES.find(x => x.key === i.splitStyle)?.label),
+      row("Equipment", i.equipment),
+      row("Other sport or training", OTHER_TRAINING_OPTIONS.find(o => o.key === i.otherTraining)?.label ? `${OTHER_TRAINING_OPTIONS.find(o => o.key === i.otherTraining).label} a week` : null),
+      row("Sleep", SLEEP_OPTIONS.find(o => o.key === i.sleep)?.label ? `${SLEEP_OPTIONS.find(o => o.key === i.sleep).label} a night` : null)] },
+    { title: "Health questions", alert: needsClearance(i), rows: parqDone
+      ? [row("Answered yes to", flags.length ? flags.map(f => f.label) : "None"),
+         ...(flags.length ? [row("Cleared by a doctor", i.parqCleared === true ? "Yes" : "Not yet")] : [])]
+      : [] },
+    { title: "Injuries and pain", rows: [row("Areas", injuries.length ? injuryLines(i) : (i.injuries || []).length ? "None" : null), row("Notes", i.injuryNotes)] },
+    { title: "Movement check", rows: MOVE_CHECKS.map(m => row(m.short, word[i.move?.[m.key]])) },
+  ];
+  return sections.map(sec => ({ ...sec, rows: sec.rows.filter(Boolean) })).filter(sec => sec.rows.length);
+}
+
+function IntakeSheet({ open, onClose, intake, name, self = false }) {
+  if (!open) return null;
+  const sections = intakeSheetSections(intake);
+  return (
+    <Modal open onClose={onClose} title={self ? "My intake" : `${name || "Client"}'s intake`} wide>
+      {sections.length === 0 ? (
+        <p className="text-[13px]" style={{ color: C.sub }}>{self ? "You haven't" : "They haven't"} answered the intake questions yet.</p>
+      ) : (
+        <div className="space-y-4">
+          {sections.map(sec => (
+            <div key={sec.title}>
+              <div className="text-[11.5px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: sec.alert ? C.amber : C.sub }}>
+                {sec.title}{sec.alert ? " · needs a doctor's clearance" : ""}
+              </div>
+              <div className="rounded-lg" style={{ background: C.bg, border: `1px solid ${sec.alert ? `${C.amber}66` : C.border}` }}>
+                {sec.rows.map((r, n) => (
+                  <div key={r.label} className="flex gap-3 px-3 py-2 text-[13px]" style={{ borderTop: n ? `1px solid ${C.border}` : "none" }}>
+                    <div className="shrink-0" style={{ width: 128, color: C.sub }}>{r.label}</div>
+                    <div className="min-w-0 flex-1" style={{ color: C.text, overflowWrap: "anywhere" }}>{r.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {!self && <p className="text-[12px]" style={{ color: C.faint }}>Edit goals, injuries, days and body numbers from Client details.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // NSCA and CSCCa return-to-training rule for conditioning (2019): rest at least
 // 4 times the work in week 1, 3 times in week 2, and at least 2 times after
 // that (kept for the rest of the Foundation ramp). Applied by the app for the
@@ -14035,6 +14111,7 @@ function CoachClientDetailsModal({ athlete, open, onClose, onSaved }) {
 }
 
 function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
+  const [sheetOpen, setSheetOpen] = useState(false);
   const athlete = state.athletes.find(a => a.id === athleteId);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -14448,6 +14525,9 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
             </div>
           );
         })()}
+
+        <Btn variant="secondary" className="w-full mb-5" icon={ClipboardList} onClick={() => setSheetOpen(true)}>Intake sheet: every answer on one page</Btn>
+        <IntakeSheet open={sheetOpen} onClose={() => setSheetOpen(false)} intake={athlete.intake} name={athlete.name} />
 
         <div className="grid grid-cols-3 gap-2.5 mb-5">
           {/* Guarded: an athlete who hasn't recorded these rendered "NaN lb"
@@ -17271,6 +17351,7 @@ function DeleteAccountModal({ open, onClose, isCoach, athleteCount, userId, onDe
 }
 
 function CoachProfile({ state, setState, nav }) {
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [settingError, setSettingError] = useState(null);
   // One-time move of the built-in exercise thumbnails out of the bundle and
@@ -17696,6 +17777,8 @@ function CoachProfile({ state, setState, nav }) {
           </div>
         )}
 
+        {state.me?.intake && <Btn variant="secondary" className="w-full mt-6" icon={ClipboardList} onClick={() => setSheetOpen(true)}>My training intake</Btn>}
+        <IntakeSheet open={sheetOpen} onClose={() => setSheetOpen(false)} intake={state.me?.intake} self />
         {nav.showTour && <Btn variant="secondary" className="w-full mt-6" icon={Sparkles} onClick={nav.showTour}>Show the app walkthrough</Btn>}
         <Btn variant="danger" className="w-full mt-3" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
@@ -25188,6 +25271,7 @@ function TimeTrainedPanel({ logs }) {
 }
 
 function AthleteProfile({ state, setState, nav }) {
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const m = state.me;
   const { ft, inch } = cmToFtIn(m.heightCm);
@@ -25369,6 +25453,8 @@ function AthleteProfile({ state, setState, nav }) {
             on the Week tab. */}
         {/* No Recent Sessions list here (Isaiah, 29 Oct): it took up space,
             and every session is on the Week tab's calendar. */}
+        {state.me?.intake && <Btn variant="secondary" className="w-full mt-6" icon={ClipboardList} onClick={() => setSheetOpen(true)}>My intake: every answer on one page</Btn>}
+        <IntakeSheet open={sheetOpen} onClose={() => setSheetOpen(false)} intake={state.me?.intake} self />
         {nav.showTour && <Btn variant="secondary" className="w-full mt-6" icon={Sparkles} onClick={nav.showTour}>Show the app walkthrough</Btn>}
         <Btn variant="danger" className="w-full mt-3" icon={LogOut} onClick={nav.logout}>Log Out</Btn>
 
