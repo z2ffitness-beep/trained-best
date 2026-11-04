@@ -454,10 +454,12 @@ test("the clipping is on the confetti layer, never on the column", () => {
   // cannot reach the button at the bottom of it.
   const at = screen.indexOf('<div className="min-h-screen');
   assert.ok(at > 0, "the rewards column is gone");
-  const openingTag = screen.slice(at, screen.indexOf(">", at));
+  const openingTag = screen.slice(at, screen.indexOf("}}>", at));
   assert.ok(!/overflow-hidden/.test(openingTag),
     `the rewards column clips its own overflow, so a tall session loses its button: ${openingTag}`);
-  assert.ok(/py-10/.test(openingTag), "the column has no breathing room top and bottom");
+  assert.ok(/pt-10/.test(openingTag), "the column has no breathing room at the top");
+  // 4 Nov: the bottom clears the tab bar, or Done sits under it.
+  assert.ok(/paddingBottom: "calc\(140px \+ env\(safe-area-inset-bottom/.test(openingTag), "Done can sit under the tab bar again");
 });
 
 test("there is always a way out, from the first frame", () => {

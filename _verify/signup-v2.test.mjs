@@ -248,6 +248,14 @@ test("the coached athlete sees the coach before the password", () => {
   assert.equal(steps[0], "🔑 Coach Invite Code");
 });
 
+test("every signup step opens at its top (Isaiah, 4 Nov)", () => {
+  const at = src.indexOf("function Onboarding(");
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10));
+  assert.ok(/useEffect\(\(\) => \{\s*try \{ window\.scrollTo\(0, 0\); \}[\s\S]{0,160}stepScrollRef\.current\.scrollTop = 0;\s*\}, \[step, role\]\);/.test(body),
+    "a step can open halfway down, where the last one was scrolled to");
+  assert.ok(/ref=\{stepScrollRef\}/.test(body));
+});
+
 test("no path is longer than six screens", () => {
   for (const [role, screens] of Object.entries(SIGNUP_V2_STEPS)) {
     assert.ok(screens.length <= 6, `${role} still has ${screens.length} screens`);

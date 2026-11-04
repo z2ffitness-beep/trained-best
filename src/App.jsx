@@ -7916,6 +7916,15 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
   });
   const set = (k, v) => setData(d => ({ ...d, [k]: v }));
 
+  // Every step opens at its top (Isaiah, 4 Nov). The page kept the scroll
+  // position of the step before, so a long screen like Your Week or Health
+  // Check opened halfway down.
+  const stepScrollRef = useRef(null);
+  useEffect(() => {
+    try { window.scrollTo(0, 0); } catch { /* nothing to scroll */ }
+    if (stepScrollRef.current) stepScrollRef.current.scrollTop = 0;
+  }, [step, role]);
+
   // Written on every change rather than on every step, so closing the app
   // mid-question keeps the answer that was mid-typing too.
   useEffect(() => {
@@ -8242,7 +8251,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         <div className="text-[12.5px] uppercase tracking-[.16em] mt-2" style={{ color: C.sub }}>Step {step + 1} of {steps.length}</div>
       </div>
 
-      <div className="flex-1 px-6 overflow-y-auto pb-4">
+      <div ref={stepScrollRef} className="flex-1 px-6 overflow-y-auto pb-4">
         <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: DISPLAY, color: C.text }}>{stepName}</h2>
         <OnboardingStepBody role={role} stepName={stepName} data={data} setData={setData} />
       </div>
@@ -20472,7 +20481,10 @@ function RewardsScreen({ points, level, levelUp, perfect, badges, bests, unit, o
   const barWidth = seen("level") ? Math.round((level?.progress ?? 0) * 100) : 0;
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10 relative" style={{ background: C.bg }}>
+    // Bottom padding clears the tab bar (Isaiah, 4 Nov): with py-10 alone the
+    // Done button sat under the bar and could not be scrolled up to.
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 pt-10 relative"
+      style={{ background: C.bg, paddingBottom: "calc(140px + env(safe-area-inset-bottom, 0px))" }}>
       {/* The confetti gets its own fixed layer, with the clipping on THAT
           rather than on the column. Clipping the column is the obvious way to
           write this and it silently breaks the screen: a session with three
