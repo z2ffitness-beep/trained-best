@@ -33,10 +33,14 @@ globalThis.CheckCircle2 = "CheckCircle2";
 globalThis.Calendar = "Calendar";
 globalThis.Bell = "Bell";
 globalThis.Sparkles = "Sparkles";
+for (const name of ["LayoutGrid", "Mic", "Plus", "MessageSquare", "Wand2", "User", "Users", "Copy", "MessageCircle"]) globalThis[name] = name;
 
 const H = await load(APP, [
   { name: "NAV_PARENT", kind: "const" },
   { name: "TOUR_SEEN_KEY", kind: "const" },
+  { name: "FEATURES", kind: "const" },
+  { name: "TOUR_SHOTS", kind: "const" },
+  "tourShot",
   "tourCards",
   "tourAlreadySeen",
   "markTourSeen",
@@ -104,9 +108,56 @@ test("the My Workout tab opens today's session, or says there is none", () => {
 
 // ---------- the cards ----------
 
-test("four cards, whether or not there is a coach", () => {
-  assert.equal(H.tourCards(true).length, 4);
-  assert.equal(H.tourCards(false).length, 4);
+test("a full walkthrough, not four cards (Isaiah, 1 Nov)", () => {
+  // Everything a new person needs: logging, Voice Log, the week, extra
+  // activities, the coach, Profile. Coaches get their own.
+  assert.ok(H.tourCards(true).length >= 8, "the client walkthrough is too short");
+  assert.ok(H.tourCards(false).length >= 8);
+  assert.ok(H.tourCards(false, "coach").length >= 8, "coaches have no walkthrough");
+  const all = JSON.stringify(H.tourCards(true));
+  for (const must of ["Voice Log", "Start Workout", "extra", "Calendar", "Profile"]) {
+    assert.ok(all.includes(must), `the client walkthrough never mentions ${must}`);
+  }
+  const coach = JSON.stringify(H.tourCards(false, "coach"));
+  for (const must of ["invite code", "Adjust with AI", "template", "Everyone", "logo"]) {
+    assert.ok(coach.includes(must), `the coach walkthrough never mentions ${must}`);
+  }
+  assert.ok(/showTour: \(\) => setTourOpen\(true\)/.test(src), "the walkthrough cannot be replayed");
+  assert.ok(/Show the app walkthrough/.test(src));
+});
+
+test("every walkthrough card shows a picture of the screen (Isaiah, 1 Nov)", async () => {
+  const fs = await import("node:fs");
+  const pub = path.join(here, "..", "public");
+  const seen = new Set();
+  for (const [hasCoach, role] of [[true, "athlete"], [false, "athlete"], [false, "coach"]]) {
+    for (const c of H.tourCards(hasCoach, role)) {
+      const shot = H.tourShot(role, c.key, hasCoach);
+      assert.ok(shot, `${role} card ${c.key} has no picture`);
+      assert.ok(fs.existsSync(path.join(pub, shot)), `${shot} is missing from public/`);
+      seen.add(shot);
+    }
+  }
+  // A no-coach athlete sees Adjust with AI, not the coach thread.
+  assert.equal(H.tourShot("athlete", "coach", false), "/tour/s-ai.jpg");
+  assert.equal(H.tourShot("athlete", "coach", true), "/tour/c-coach.jpg");
+  const at = src.indexOf("function FirstRunTour");
+  assert.ok(/<img key=\{card\.key\} src=\{tourShot\(role, card\.key, hasCoach\)\}/.test(src.slice(at)), "the picture is not drawn");
+  // 2 Nov: never cropped. A half-shown word or button looks broken.
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.ok(/objectFit: "contain"/.test(body) && !/objectFit: "cover"/.test(body), "the walkthrough picture can be cropped again");
+});
+
+test("cards name their tab and follow the bottom bar (Isaiah, 3 Nov)", () => {
+  const order = { athlete: ["Home", "My Workout", "Week", "Coach", "Profile"], coach: ["Home", "Clients", "Sessions", "Messages", "Profile"] };
+  for (const [hasCoach, role] of [[true, "athlete"], [false, "athlete"], [false, "coach"]]) {
+    const tabs = H.tourCards(hasCoach, role).slice(1).map(c => {
+      assert.ok(/^[A-Za-z ]+ tab( · \w+)?$/.test(c.where), `${c.key} says "${c.where}", not which tab`);
+      return order[role].indexOf(c.where.replace(/ tab.*$/, ""));
+    });
+    assert.ok(tabs.every(i => i >= 0), `${role}: a card names a tab that is not on the bar`);
+    assert.deepEqual(tabs, [...tabs].sort((x, y) => x - y), `${role} cards jump between tabs: ${tabs}`);
+  }
 });
 
 test("a self-guided athlete is never told to message a coach", () => {
@@ -129,15 +180,16 @@ test("every card has something to show and something to say", () => {
       assert.ok(c.key, "a card with no key makes React reuse the wrong node");
       assert.ok(c.icon, `${c.key} has no icon`);
       assert.ok(c.title && c.title.length > 3, `${c.key} has no title`);
-      assert.ok(c.body && c.body.length > 20, `${c.key} has no body`);
+      assert.ok(c.where, `${c.key} does not say where in the app it is`);
+      assert.ok(Array.isArray(c.points) && c.points.length > 0 && c.points.every(p => p.length > 20), `${c.key} has nothing to say`);
     }
   }
 });
 
 test("the cards point at Program, which is where training now lives", () => {
   const both = JSON.stringify(H.tourCards(true)) + JSON.stringify(H.tourCards(false));
-  assert.ok(/Program/.test(both), "the first card does not say where the training is");
-  assert.ok(!/Workout tab/i.test(both), "the cards still describe a tab that no longer exists");
+  assert.ok(/My Workout/.test(both), "the cards do not say where the training is");
+  assert.ok(!/(?<!My )Workout tab/i.test(both), "the cards still describe a tab that no longer exists");
 });
 
 // ---------- shown once ----------
@@ -210,9 +262,12 @@ test("the decision is taken once per session, not on every render", () => {
   assert.ok(/if \(tourDecided\.current\) return;/.test(src), "the latch is never read");
 });
 
-test("a coach is not shown the athlete's cards", () => {
-  assert.ok(/if \(!authed \|\| authed === "coach" \|\| !id\) return;/.test(src),
+test("a coach is shown the coach walkthrough, not the athlete's cards", () => {
+  assert.ok(/const tourRole = authed === "coach" && !trainingMode \? "coach" : "athlete";/.test(src),
     "a coach gets a tour about booking sessions with themselves");
+  assert.ok(/role=\{tourRole\}/.test(src));
+  assert.ok(/\(state\.athletes \|\| \[\]\)\.length === 0 && !tourAlreadySeen\(cid\)/.test(src),
+    "a coach with clients gets the intro again on a new phone");
 });
 
 test("someone already training is not treated as a beginner", () => {
@@ -224,7 +279,7 @@ test("skipping counts as finishing", () => {
   const at = src.indexOf("function FirstRunTour");
   const body = src.slice(at, src.indexOf("\n}\n", at));
   assert.ok(/onClick=\{onDone\}/.test(body), "Skip does not dismiss it for good");
-  assert.ok(/markTourSeen\(state\.me\?\.id\)/.test(src), "dismissing never records that it was seen");
+  assert.ok(/markTourSeen\(authed === "coach" \? state\.coachProfile\?\.id : state\.me\?\.id\)/.test(src), "dismissing never records that it was seen");
 });
 
 // ---------- the dashboard leads with the session ----------

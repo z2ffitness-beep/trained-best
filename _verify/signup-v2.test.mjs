@@ -55,7 +55,8 @@ const {
   { name: "SIGNUP_V2_STEPS", kind: "const" },
   { name: "SIGNUP_V2_SECTIONS", kind: "const" },
   { name: "SIGNUP_V2", kind: "const" },
-  "stepComplete",
+  "stepComplete", "parqAnswered", "parqFlags", "movementAnswered",
+  { name: "PARQ_QUESTIONS", kind: "const" }, { name: "MOVE_CHECKS", kind: "const" }, { name: "MOVE_RESULTS", kind: "const" },
 ]);
 
 let passed = 0;
@@ -145,8 +146,8 @@ test("every screen in the flow has a body behind it", () => {
 // from the solo athlete still passed, because the coached path happened to
 // keep it.
 const BLOCKS_FOR = {
-  athlete: ["account", "about", "goal", "week", "injuries"],
-  athlete_coached: ["account", "about", "goal", "week", "injuries", "coached"],
+  athlete: ["account", "about", "goal", "week", "health", "injuries"],
+  athlete_coached: ["account", "about", "goal", "week", "health", "injuries", "coached"],
   coach: ["account", "coach"],
 };
 
@@ -232,7 +233,7 @@ test("the week split is asked on the Your Week screen, with the suggestion pre-p
   // It was taken out on the grounds that the days decide it. People have a
   // preference, so it is a question again; the days still decide the default.
   assert.ok(leavesOf("📅 Your Week", {}).includes("🧩 Session Style"), "the split is not asked");
-  assert.ok(stepComplete("📅 Your Week", { trainingDays: ["Monday"], equipment: ["Full gym access"] }, "athlete"),
+  assert.ok(stepComplete("📅 Your Week", { trainingDays: ["Monday"], equipment: ["Full gym access"], otherTraining: "0", sleep: "7-8" }, "athlete"),
     "not touching the split blocks the screen");
   assert.ok(SIGNUP_KEYS.week.includes("splitStyle"));
 });
@@ -245,6 +246,14 @@ test("the coached athlete sees the coach before the password", () => {
   assert.ok(steps.indexOf("🔑 Coach Invite Code") < steps.indexOf("🔐 Create Account"),
     "the invite code is asked for after the account is created");
   assert.equal(steps[0], "🔑 Coach Invite Code");
+});
+
+test("every signup step opens at its top (Isaiah, 4 Nov)", () => {
+  const at = src.indexOf("function Onboarding(");
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10));
+  assert.ok(/useEffect\(\(\) => \{\s*try \{ window\.scrollTo\(0, 0\); \}[\s\S]{0,160}stepScrollRef\.current\.scrollTop = 0;\s*\}, \[step, role\]\);/.test(body),
+    "a step can open halfway down, where the last one was scrolled to");
+  assert.ok(/ref=\{stepScrollRef\}/.test(body));
 });
 
 test("no path is longer than six screens", () => {
@@ -352,9 +361,11 @@ test("a coach who changes their mind does not carry coaching answers across", ()
 const athlete = {
   name: "Alex Reid", email: "a@b.com", password: "abcdefgh", confirmPassword: "abcdefgh",
   sex: "Male", birthday: "1990-01-01", heightCm: 178, weightLb: 175,
-  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)",
-  trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"],
+  goals: ["Build muscle"], "🥊 Sport / Focus": "Powerlifting", sportSeason: "Off season", experience: "Advanced (3+ years)", recentDaysPerWeek: "3+", lastConsistent: "now",
+  trainingDays: ["Monday", "Wednesday", "Friday"], equipment: ["Full gym access"], otherTraining: "1-2", sleep: "7-8",
   injuries: ["None currently"],
+  parq: { heart: false, chestPain: false, dizzy: false, chronic: false, meds: false, boneJoint: false, supervised: false },
+  move: { sitStand: "easy", toeTouch: "hard", overhead: "easy", balance: "easy", pushup: "easy" },
 };
 
 test("a fully answered screen can be left", () => {

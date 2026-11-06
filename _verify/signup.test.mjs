@@ -211,7 +211,9 @@ test("the three paths are the three in the design", () => {
   for (const role of ["athlete", "athlete_coached", "coach"]) {
     assert.ok(new RegExp(`${role}: \\[`).test(steps), `the ${role} path has no screens`);
   }
-  assert.ok(/athlete: \["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩹 Injuries"\]/.test(steps),
+  // 4 Nov: Injuries moved onto the Health Check screen with the health
+  // questions and the movement check, so it is still five.
+  assert.ok(/athlete: \["🔐 Create Account", "👤 About You", "🎯 Your Goal", "📅 Your Week", "🩺 Health Check"\]/.test(steps),
     "the solo athlete path is not the five screens the design asks for");
 });
 

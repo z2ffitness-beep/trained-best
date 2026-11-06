@@ -153,24 +153,14 @@ test("who you are looking at stays visible on every tab", () => {
   }
 });
 
-test("the tab bar does not squeeze four labels into 320px", () => {
-  // Four labels across 320px minus the page gutters is 68px each, and
-  // "Overview" does not fit in 68px at a readable size. It scrolls sideways
-  // instead of shrinking.
+test("all four tabs are always in view, even on a 320px phone (1 Nov)", () => {
+  // With the larger text the scrolling row put Notes off the edge of a 360px
+  // phone. The row now wraps onto a second line instead, so nothing is ever
+  // hidden and no label shrinks or wraps inside its pill.
   const bar = src.slice(src.indexOf("function AthleteDetailTabs("), src.indexOf("function CoachAthleteDetail("));
-  assert.ok(/overflow-x-auto/.test(bar), "the tab row cannot scroll, so the labels have to shrink");
-  assert.ok(/shrink-0/.test(bar), "the tab buttons shrink instead of the row scrolling");
-  // Bleeds to the screen edge so a scrolled tab is not clipped by the gutter.
-  assert.ok(/-mx-5 px-5/.test(bar), "the scrolling row is clipped by the page gutter");
-  // A label that wraps makes one pill taller than the rest and the row ragged.
+  assert.ok(/flex flex-wrap gap-1\.5/.test(bar), "the tab row no longer wraps, so a tab can sit off the screen");
+  assert.ok(!/overflow-x-auto/.test(bar), "the tab row scrolls sideways again, hiding Notes on a small phone");
   assert.ok(/whitespace-nowrap/.test(bar), "a tab label can wrap onto two lines");
-  // The padding is load bearing, not taste. At the original px-4 the row was
-  // 433px wide and "Notes" sat entirely off a 320px screen with nothing
-  // showing that it was there. 11px brings the row to 384px, which leaves a
-  // 21px slice of the last pill visible at 320 and fits whole by 390.
-  assert.ok(/padding: "9px 11px"/.test(bar),
-    "the tab padding changed - re-measure at 320px before accepting this");
-  assert.ok(/text-\[12\.5px\]/.test(bar), "the label size changed - re-measure at 320px");
 });
 
 test("the selected tab is announced, not only coloured", () => {
