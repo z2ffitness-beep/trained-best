@@ -11832,6 +11832,9 @@ function isIOSDevice() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
+// How long of a pause ends listening by itself.
+const QUIET_STOP_MS = 10000;
+
 function useSpeechToText(text, setText) {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState(null);
@@ -11841,12 +11844,28 @@ function useSpeechToText(text, setText) {
   const heardRef = useRef(false);
   const quietTimer = useRef(null);
   const emptyRuns = useRef(0);
+  // 4 Nov: "it just stops in the middle". Three causes, each handled below:
+  // restarting the instant a phrase ended (iPhone often refuses, and every
+  // refusal counted as a silent attempt), small errors ending it outright,
+  // and stopping without saying so.
+  const lastHeardAt = useRef(0);
+  const hiccups = useRef(0);
+  const restartTimer = useRef(null);
   const supported = !!speechRecognitionCtor();
   const ios = isIOSDevice();
 
   const clearQuiet = () => { if (quietTimer.current) { clearTimeout(quietTimer.current); quietTimer.current = null; } };
+  // Stopped by itself, not by the person: say so, and keep what was heard.
+  const stoppedOnItsOwn = (why) => {
+    wantRef.current = false;
+    clearQuiet();
+    if (restartTimer.current) { clearTimeout(restartTimer.current); restartTimer.current = null; }
+    setListening(false);
+    setError(why);
+  };
   const stop = () => {
     wantRef.current = false;
+    if (restartTimer.current) { clearTimeout(restartTimer.current); restartTimer.current = null; }
     clearQuiet();
     try { recRef.current?.stop(); } catch { /* already stopped */ }
     setListening(false);
@@ -11867,6 +11886,8 @@ function useSpeechToText(text, setText) {
     let interim = "";
     rec.onresult = (e) => {
       heardRef.current = true;
+      lastHeardAt.current = Date.now();
+      hiccups.current = 0;
       clearQuiet();
       interim = "";
       finals = "";
@@ -11879,6 +11900,9 @@ function useSpeechToText(text, setText) {
     rec.onerror = (e) => {
       const code = e?.error;
       if (code === "no-speech" || code === "aborted") return; // a pause, not a failure
+      // A brief hiccup on the phone: let onend start the next phrase rather
+      // than ending everything. Five in a row is not a hiccup.
+      if ((code === "network" || code === "audio-capture") && ++hiccups.current < 5) return;
       wantRef.current = false;
       setError(code === "not-allowed"
         ? "The microphone is blocked for this site. Allow it in your phone's settings, or tap the box and use the mic on your keyboard."
@@ -11888,20 +11912,32 @@ function useSpeechToText(text, setText) {
     };
     rec.onend = () => {
       const heard = [finals.trim(), interim.trim()].filter(Boolean).join(" ");
-      if (heard) { keptRef.current = [keptRef.current, heard].filter(Boolean).join(" "); emptyRuns.current = 0; setText(keptRef.current); }
+      if (heard) { keptRef.current = [keptRef.current, heard].filter(Boolean).join(" "); emptyRuns.current = 0; lastHeardAt.current = Date.now(); setText(keptRef.current); }
       else emptyRuns.current += 1;
-      // A phone that ends every attempt without hearing anything is not going
-      // to start hearing on the twentieth try. Stop, and say what to do.
-      if (wantRef.current && emptyRuns.current >= 12) {
-        wantRef.current = false;
-        if (!heardRef.current) setError("Not picking anything up. Tap the box and use the mic on your keyboard instead.");
+      if (!wantRef.current) { clearQuiet(); setListening(false); return; }
+      // Stop on real silence, measured in time, not on a count of attempts:
+      // a phone that refuses quick restarts burns through attempts in a
+      // second while someone is mid-sentence.
+      if (Date.now() - lastHeardAt.current > QUIET_STOP_MS) {
+        stoppedOnItsOwn(heardRef.current
+          ? "Stopped listening after a long pause. What you said is kept: tap the mic to keep going."
+          : "Not picking anything up. Tap the box and use the mic on your keyboard instead.");
+        return;
       }
-      if (wantRef.current) {
-        // Still meant to be listening: pick up the next phrase.
-        try { listenOnce(); return; } catch { /* fall through to stopped */ }
-      }
-      clearQuiet();
-      setListening(false);
+      // Still meant to be listening: pick up the next phrase, after a short
+      // breath so the phone accepts the restart, and once more if it refuses.
+      const again = (tries) => {
+        restartTimer.current = setTimeout(() => {
+          restartTimer.current = null;
+          if (!wantRef.current) return;
+          try { listenOnce(); }
+          catch {
+            if (tries > 0) again(tries - 1);
+            else stoppedOnItsOwn("Listening stopped. What you said is kept: tap the mic to keep going.");
+          }
+        }, ios ? 250 : 120);
+      };
+      again(2);
     };
     recRef.current = rec;
     rec.start();
@@ -11913,6 +11949,8 @@ function useSpeechToText(text, setText) {
     keptRef.current = (text || "").trim();
     heardRef.current = false;
     emptyRuns.current = 0;
+    hiccups.current = 0;
+    lastHeardAt.current = Date.now();
     wantRef.current = true;
     try {
       listenOnce();
@@ -11931,7 +11969,11 @@ function useSpeechToText(text, setText) {
     }, 6000);
   };
 
-  useEffect(() => () => { wantRef.current = false; clearQuiet(); try { recRef.current?.abort(); } catch { /* gone */ } }, []);
+  useEffect(() => () => {
+    wantRef.current = false; clearQuiet();
+    if (restartTimer.current) clearTimeout(restartTimer.current);
+    try { recRef.current?.abort(); } catch { /* gone */ }
+  }, []);
   return { supported, listening, error, start, stop };
 }
 
