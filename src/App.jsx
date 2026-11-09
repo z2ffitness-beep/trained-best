@@ -3202,7 +3202,9 @@ function intakeSheetSections(intake) {
       row("Starting level", level ? `${START_LEVELS[level].label}${START_LEVELS[level].weeks ? ` (${START_LEVELS[level].weeks} lighter weeks)` : ""}` : null)] },
     { title: "Week", rows: [row("Training days", days.length ? `${days.length}: ${days.map(d => d.slice(0, 3)).join(", ")}` : null),
       row("Session length", i.sessionMinutes ? `About ${i.sessionMinutes} minutes` : null),
-      row("Week split", SPLIT_STYLES.find(x => x.key === i.splitStyle)?.label),
+      row("Favorite way to train", i.splitStyle === SPLIT_AUTO
+        ? `You decide (${SPLIT_STYLES.find(x => x.key === splitStyleOf(i))?.label})`
+        : SPLIT_STYLES.find(x => x.key === i.splitStyle)?.label),
       row("Equipment", i.equipment),
       row("Other sport or training", OTHER_TRAINING_OPTIONS.find(o => o.key === i.otherTraining)?.label ? `${OTHER_TRAINING_OPTIONS.find(o => o.key === i.otherTraining).label} a week` : null),
       row("Sleep", SLEEP_OPTIONS.find(o => o.key === i.sleep)?.label ? `${SLEEP_OPTIONS.find(o => o.key === i.sleep).label} a night` : null)] },
@@ -3357,6 +3359,14 @@ const SPLIT_STYLES = [
     hint: "One pressing day, one pulling day, one lower-body day." },
 ];
 const DEFAULT_SPLIT = "full_body";
+// "What's your favorite way to train?" (Isaiah, 9 Nov). The three splits, plus
+// handing the choice to the app, which picks from the number of days.
+const SPLIT_AUTO = "auto";
+const SPLIT_CHOICES = [
+  ...SPLIT_STYLES,
+  { key: SPLIT_AUTO, label: "Not sure, you decide",
+    hint: "We pick the best fit for your days: full body for 4 or fewer, upper / lower for 5, push / pull / legs for 6 or 7." },
+];
 
 // Session style stopped being a question in the short signup. It was always a
 // worse way of asking "how many days a week do you train", because that is the
@@ -3404,7 +3414,7 @@ function planReadySummary(intake, splitStyle) {
   const days = (intake?.trainingDays || []).filter(Boolean);
   if (days.length) {
     rows.push({ label: "Days a week", value: `${days.length} — ${days.map(d => d.slice(0, 3)).join(", ")}` });
-    const key = splitStyle || deriveSplit(days);
+    const key = splitStyle === SPLIT_AUTO ? deriveSplit(days) : (splitStyle || deriveSplit(days));
     const style = SPLIT_STYLES.find(s => s.key === key);
     // "How the week splits" wrapped onto two lines in the 104px label column
     // at 320px, next to a value that was also wrapping. Measured.
@@ -3454,7 +3464,9 @@ function planReadyWeek(days, todayName) {
 function withDerivedSplit(data) {
   if (!data || data.splitStyle) return data;
   if (!Array.isArray(data.trainingDays) || data.trainingDays.length === 0) return data;
-  return { ...data, splitStyle: deriveSplit(data.trainingDays) };
+  // 9 Nov: not picking is "you decide", saved as that, so splitStyleOf works
+  // it out from the days whenever they change.
+  return { ...data, splitStyle: SPLIT_AUTO };
 }
 
 // Read the athlete's choice, defaulting to full body. An account that predates
@@ -3462,7 +3474,43 @@ function withDerivedSplit(data) {
 // whole point of the default being this one.
 function splitStyleOf(intake) {
   const key = intake?.splitStyle;
+  // "You decide" is worked out from the days every time, so changing the
+  // days later changes the split with them.
+  if (key === SPLIT_AUTO) return deriveSplit((intake?.trainingDays || []).filter(Boolean));
   return SPLIT_STYLES.some(s => s.key === key) ? key : DEFAULT_SPLIT;
+}
+
+// What each day is, in order, for the split someone chose (9 Nov). Full body
+// keeps its own slot plan (fullBodyPlanText); these two get the same kind of
+// exact assignment, so the program is the split they asked for.
+function splitDayTypes(split, n) {
+  const cycle = split === "upper_lower" ? ["Upper", "Lower"] : split === "push_pull_legs" ? ["Push", "Pull", "Legs"] : null;
+  if (!cycle) return [];
+  return Array.from({ length: Math.max(1, n) }, (_, i) => cycle[i % cycle.length]);
+}
+
+function splitPromptText(intake) {
+  const split = splitStyleOf(intake);
+  const n = (intake?.trainingDays || []).filter(Boolean).length || 4;
+  const label = SPLIT_STYLES.find(x => x.key === split)?.label;
+  const types = splitDayTypes(split, n);
+  const how = split === "upper_lower"
+    ? `- Upper days: a horizontal press, a horizontal pull, a vertical press and a vertical pull across the main lifts and accessories, then arms and upper back.
+- Lower days: a squat pattern and a hinge pattern as the main lifts, then single-leg work (split squats, lunges, step-ups), hamstrings, calves and core.`
+    : `- Push days: horizontal and vertical presses as the main lifts, then shoulders, chest and triceps accessories.
+- Pull days: rows and vertical pulls as the main lifts, plus a hip hinge (RDL or similar) is fine here, then upper back, rear delts and biceps.
+- Legs days: a squat pattern and a hinge pattern as the main lifts, then single-leg work, hamstrings, calves and core.`;
+  const once = types.length && types.length < (split === "upper_lower" ? 4 : 6);
+  return `HOW TO SPLIT THE WEEK — THE ATHLETE CHOSE ${label.toUpperCase()}. It is their favourite way to train, so build exactly that. A different split is a FAILED response, however good it is otherwise.
+
+Day types, in order (one per training day, matching the order of the days above):
+${types.map((t, i) => `Day ${i + 1}: ${t}`).join("\n")}
+
+Name every day with its type, e.g. "Day 1 — ${types[0]}".
+${how}
+- Warm-up, power, conditioning and cool-down stay in every session exactly as specified elsewhere in these instructions. The split decides the main lifts and accessories, not whether a session has a warm-up.
+- A lift that appears on more than one day must be a different variation each time (back squat one day, front squat the next).${once ? `
+- With ${types.length} days, each day type comes round about once a week, so give each session enough volume for that body part for the whole week.` : ""}`;
 }
 
 // The main-lift slots for each day of a full-body week, in order.
@@ -7793,7 +7841,7 @@ const SIGNUP_V2_SECTIONS = {
     // Back as a question (Isaiah, 31 Oct): people have a preference. The
     // suggestion for their number of days is picked for them, so tapping
     // nothing still gets the split this screen used to choose silently.
-    { step: "🧩 Session Style", label: "Week split" },
+    { step: "🧩 Session Style", label: "Your favorite way to train" },
     { step: "🏋️ Equipment", label: "What you can train with" },
     // 4 Nov: their load and recovery outside the program.
     { step: "🏃 Other Training", label: "Other sport or training" },
@@ -9199,10 +9247,13 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     case "🧩 Session Style": {
       const dayCount = (data.trainingDays || []).length;
       const suggested = dayCount ? deriveSplit(data.trainingDays) : DEFAULT_SPLIT;
-      const chosen = SPLIT_STYLES.some(s => s.key === data.splitStyle) ? data.splitStyle : suggested;
+      // Nothing tapped yet means "you decide": the app picks from the days.
+      const chosen = SPLIT_CHOICES.some(s => s.key === data.splitStyle) ? data.splitStyle : SPLIT_AUTO;
+      const fewDays = dayCount > 0 && ((chosen === "push_pull_legs" && dayCount < 6) || (chosen === "upper_lower" && dayCount < 4));
       return (
         <div className="grid grid-cols-1 gap-2.5">
-          {SPLIT_STYLES.map(opt => {
+          <p className="text-[13px] mb-0.5" style={{ color: C.sub }}>Pick how you like to train. Your program is built this way.</p>
+          {SPLIT_CHOICES.map(opt => {
             const active = chosen === opt.key;
             return (
               <button key={opt.key} onClick={() => set("splitStyle", opt.key)}
@@ -9220,8 +9271,13 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               </button>
             );
           })}
+          {fewDays && (
+            <p className="text-[12.5px] rounded-lg p-3" style={{ color: C.sub, background: `${C.olive}12`, border: `1px solid ${C.olive}55` }}>
+              With {dayCount} day{dayCount === 1 ? "" : "s"}, each {chosen === "push_pull_legs" ? "push, pull and legs day" : "upper and lower day"} comes round about once a week. That works, and you'll get it. Each session will carry more of the week's work.
+            </p>
+          )}
           <p className="text-[12.5px] mt-1" style={{ color: C.faint }}>
-            Pick the one you like training. You can change it on the next screen once your plan is built.
+            You can change it on the next screen once your plan is built.
           </p>
         </div>
       );
@@ -10267,7 +10323,7 @@ Rules:
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
 
-${splitStyleOf(intake) !== "full_body" ? `HOW TO SPLIT THE WEEK — the athlete asked for a ${SPLIT_STYLES.find(x => x.key === splitStyleOf(intake))?.label} split, so build that. Keep every session's structure (warm-up, power, main lifts, accessories, conditioning) exactly as specified elsewhere in these instructions.` : `HOW TO SPLIT THE WEEK — THIS IS NOT OPTIONAL AND IT IS THE INSTRUCTION MOST OFTEN GOT WRONG.
+${splitStyleOf(intake) !== "full_body" ? splitPromptText(intake) : `HOW TO SPLIT THE WEEK — THIS IS NOT OPTIONAL AND IT IS THE INSTRUCTION MOST OFTEN GOT WRONG.
 
 EVERY SESSION IS A FULL-BODY SESSION. There are no leg days, no upper days, no push days and no pull days. A day built around one half of the body is a FAILED response, however well it is otherwise put together.
 
