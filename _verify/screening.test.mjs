@@ -15,7 +15,7 @@ const H = await load(APP, [
   { name: "START_LEVELS", kind: "const" }, { name: "SESSION_BLOCKS", kind: "const" },
   "parqFlags", "needsClearance", "parqAnswered", "movementAnswered", "movementLimits", "screeningPromptBlock",
   "conditioningRestFloor", "parseRestSeconds", "blockForPhase",
-  "intakeSheetSections", "parseDateParts", "ageFromBirthday", "startLevelOf", "startLevelReason", "injuryLines", "injuryDetailFor", { name: "toLocalISO", kind: "const" },
+  "intakeSheetSections", { name: "SPLIT_AUTO", kind: "const" }, "splitStyleOf", "parseDateParts", "ageFromBirthday", "startLevelOf", "startLevelReason", "injuryLines", "injuryDetailFor", { name: "toLocalISO", kind: "const" },
   { name: "cmToFtIn", kind: "const" }, { name: "injuryKindLabel", kind: "const" }, { name: "injuryNeedsSide", kind: "const" },
   { name: "injurySideLabel", kind: "const" }, { name: "INJURY_KINDS", kind: "const" }, { name: "INJURY_SIDES", kind: "const" },
   { name: "INJURY_MIDLINE", kind: "const" },

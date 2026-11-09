@@ -50,7 +50,7 @@ const {
   "injuryDetailFor", "injurySidesMissing", "injurySidesAnswered",
   { name: "SPLIT_STYLES", kind: "const" },
   { name: "DEFAULT_SPLIT", kind: "const" },
-  "deriveSplit", "withDerivedSplit",
+  "deriveSplit", "withDerivedSplit", { name: "SPLIT_AUTO", kind: "const" },
   { name: "SIGNUP_KEYS", kind: "const" },
   { name: "SIGNUP_V2_STEPS", kind: "const" },
   { name: "SIGNUP_V2_SECTIONS", kind: "const" },
@@ -511,9 +511,11 @@ test("every split it can return is one the programme generator understands", () 
   }
 });
 
-test("the derived split is written in beside the other answers", () => {
-  assert.equal(withDerivedSplit({ trainingDays: ["a", "b", "c", "d", "e"] }).splitStyle, "upper_lower");
-  assert.equal(withDerivedSplit({ trainingDays: ["a", "b", "c"] }).splitStyle, "full_body");
+test("not choosing is saved as 'you decide' (9 Nov)", () => {
+  // Saved as the choice itself, not frozen to today's days: splitStyleOf
+  // works it out from the days whenever they change.
+  assert.equal(withDerivedSplit({ trainingDays: ["a", "b", "c", "d", "e"] }).splitStyle, "auto");
+  assert.equal(withDerivedSplit({ trainingDays: ["a", "b", "c"] }).splitStyle, "auto");
 });
 
 test("an answer that was actually given is never overwritten", () => {

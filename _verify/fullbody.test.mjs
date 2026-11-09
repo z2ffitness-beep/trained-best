@@ -18,7 +18,7 @@ const APP = path.join(here, "..", "src", "App.jsx");
 const src = readSource(APP);
 const H = await load(APP, [
   { name: "SPLIT_STYLES", kind: "const" }, { name: "DEFAULT_SPLIT", kind: "const" },
-  "splitStyleOf", "fullBodyPatternPlan", "fullBodyPlanText",
+  "splitStyleOf", "fullBodyPatternPlan", "fullBodyPlanText", { name: "SPLIT_AUTO", kind: "const" }, { name: "SPLIT_CHOICES", kind: "const" },
 ]);
 
 let passed = 0;
@@ -268,7 +268,8 @@ test("the step renders and cannot block anyone", () => {
   const at = src.indexOf('case "🧩 Session Style": {');
   assert.notEqual(at, -1, "a step with no body shows a blank screen");
   const body = src.slice(at, src.indexOf('case "🎂 Birthday": {', at));
-  assert.ok(/SPLIT_STYLES\.map/.test(body), "it must offer the real list, not a hardcoded copy");
+  // 9 Nov: the three splits plus "Not sure, you decide".
+  assert.ok(/SPLIT_CHOICES\.map/.test(body), "it must offer the real list, not a hardcoded copy");
   assert.ok(/set\("splitStyle", opt\.key\)/.test(body));
   // Isaiah, 31 Oct: the suggestion for their number of days is the one marked
   // and pre-picked, so tapping nothing still gets a sensible split.

@@ -25,7 +25,7 @@ const { planReadySummary, planReadyWeek, WEEKDAY_ORDER } = await load(APP, [
   { name: "DEFAULT_SPLIT", kind: "const" },
   "deriveSplit",
   { name: "WEEKDAY_ORDER", kind: "const" },
-  "planReadySummary", "planReadyWeek",
+  "planReadySummary", "planReadyWeek", { name: "SPLIT_AUTO", kind: "const" },
   "startLevelOf", { name: "START_LEVELS", kind: "const" }, "movementLimits", "needsClearance", "parqFlags",
   { name: "MOVE_CHECKS", kind: "const" }, { name: "PARQ_QUESTIONS", kind: "const" },
 ]);
