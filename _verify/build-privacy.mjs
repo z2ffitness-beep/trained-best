@@ -1,4 +1,5 @@
-// Regenerates public/privacy.html from the policy text in src/App.jsx.
+// Regenerates public/privacy.html, public/terms.html and public/waiver.html
+// from the text in src/App.jsx.
 //
 // The stores want a public URL they can link from the listing, and the app
 // wants the same words on a screen inside it. Keeping two copies is how a
@@ -15,11 +16,20 @@ const root = path.join(here, "..");
 const H = await load(path.join(root, "src", "App.jsx"), [
   { name: "PRIVACY_CONTACT", kind: "const" },
   { name: "PRIVACY_POLICY", kind: "const" },
+  { name: "TERMS_OF_USE", kind: "const" },
+  { name: "WAIVER", kind: "const" },
 ]);
+
+const DOCS = [
+  { file: "privacy.html", title: "Privacy and your data", desc: "What this app collects, who can see it, and how to delete it.", sections: H.PRIVACY_POLICY, updated: H.PRIVACY_CONTACT.updated },
+  { file: "terms.html", title: "Terms of use", desc: "The terms for using Trained.best.", sections: H.TERMS_OF_USE, updated: "November 11, 2026" },
+  { file: "waiver.html", title: "Waiver and release", desc: "The training waiver, release of liability and assumption of risk.", sections: H.WAIVER, updated: "November 11, 2026" },
+];
+for (const D of DOCS) {
 
 const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const sections = H.PRIVACY_POLICY.map(s => `
+const sections = D.sections.map(s => `
   <section>
     <h2>${esc(s.heading)}</h2>
     ${(s.paragraphs || []).map(t => `<p>${esc(t)}</p>`).join("\n    ")}
@@ -31,8 +41,8 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy and your data</title>
-<meta name="description" content="What this app collects, who can see it, and how to delete it.">
+<title>${esc(D.title)}</title>
+<meta name="description" content="${esc(D.desc)}">
 <style>
   *,*::before,*::after{box-sizing:border-box}
   :root{
@@ -60,8 +70,8 @@ const html = `<!doctype html>
 </head>
 <body>
 <main>
-  <h1>Privacy and your data</h1>
-  <p class="meta">${esc(H.PRIVACY_CONTACT.business)} &middot; Last updated ${esc(H.PRIVACY_CONTACT.updated)}</p>
+  <h1>${esc(D.title)}</h1>
+  <p class="meta">${esc(H.PRIVACY_CONTACT.business)} &middot; Last updated ${esc(D.updated)}</p>
 ${sections}
   <div class="contact">
     <p>Questions about any of this, or a request about your data:
@@ -73,7 +83,7 @@ ${sections}
 </html>
 `;
 
-const out = path.join(root, "public", "privacy.html");
+const out = path.join(root, "public", D.file);
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, html);
 console.log("wrote", path.relative(root, out), `(${html.length} bytes)`);
@@ -85,4 +95,5 @@ if (unfilled.length) {
   console.error("\n⚠  Still to fill in before submitting to any store:");
   for (const [k, v] of unfilled) console.error(`   ${k}: ${v}`);
   process.exitCode = 1;
+}
 }
