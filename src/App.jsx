@@ -8324,6 +8324,15 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
             </button>
           </div>
         )}
+        {/* The accept boxes sit at the end of the page, not in the sticky
+            footer: three boxes there covered half a phone screen. */}
+        {isLast && (
+          <div className="mt-6">
+            <div className="text-[12px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Terms and waiver</div>
+            <AgreementRow value={data.agreed || null} birthday={data.birthday}
+              onChange={(rec) => setData(d => ({ ...d, agreed: rec }))} />
+          </div>
+        )}
         {data.signupError && (
           <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
             <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
@@ -8348,11 +8357,8 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           it always did - and on a long one the way forward never leaves. */}
       <div className="px-6 pb-8 pt-4 shrink-0"
         style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
-        {isLast && (
-          <div className="mb-3">
-            <AgreementRow checked={agreedToTerms(data)}
-              onChange={(on) => setData(d => ({ ...d, agreed: on ? agreementRecord() : null }))} />
-          </div>
+        {isLast && !agreedToTerms(data) && stepComplete(stepName, data, role) && (
+          <p className="text-[12.5px] text-center mb-2.5" style={{ color: C.sub }}>Tick both boxes at the bottom of the page to finish.</p>
         )}
         <div className="flex gap-3">
         <Btn variant="secondary" disabled={submitting} onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
@@ -17002,7 +17008,7 @@ const TERMS_OF_USE = [
   {
     heading: "Who can use it",
     bullets: [
-      "You must be at least 16 to make an account. If you are under 18, a parent or guardian must agree to these terms and to the waiver for you.",
+      "If you are under 18, a parent or guardian must read and accept these terms and the waiver for you when you sign up, and give their name.",
       "Give true answers when you sign up, especially in the Health Check. Your program is built from them.",
       "One account per person. Keep your password to yourself; you are responsible for what happens under your account.",
     ],
@@ -17103,11 +17109,29 @@ const LEGAL_DOCS = {
 };
 
 // Has this person accepted the current terms and waiver?
-function agreedToTerms(intake) {
-  return intake?.agreed?.version === LEGAL_VERSION;
+// The age the waiver treats as an adult. Under it, a parent or guardian
+// accepts for them and gives their name. A lawyer's note (11 Nov): even then,
+// a court may not hold a minor to it; only an adults-only app removes that.
+const WAIVER_ADULT_AGE = 18;
+function needsGuardian(birthday) {
+  const age = ageFromBirthday(birthday);
+  return age !== null && age < WAIVER_ADULT_AGE;
 }
-function agreementRecord() {
-  return { version: LEGAL_VERSION, at: new Date().toISOString() };
+
+// Accepted means: this version, the terms ticked, the waiver ticked on its
+// own (11 Nov: a separate tick is far stronger than one box for three
+// documents), and a guardian's name when the athlete is under 18.
+function agreedToTerms(intake) {
+  const a = intake?.agreed;
+  if (!a || a.version !== LEGAL_VERSION || a.terms !== true || a.waiver !== true) return false;
+  if (needsGuardian(intake?.birthday) && !(a.guardian?.name || "").trim()) return false;
+  return true;
+}
+function agreementRecord({ guardianName } = {}) {
+  const rec = { version: LEGAL_VERSION, at: new Date().toISOString(), terms: true, waiver: true };
+  const name = (guardianName || "").trim();
+  if (name) rec.guardian = { name };
+  return rec;
 }
 
 // The words of one legal document, without the page around it. Shared by the
@@ -17239,26 +17263,59 @@ function ProfileFooterLinks({ nav, role }) {
   );
 }
 
-// The accept box: one tick for the terms, the waiver and the privacy policy,
-// each readable in a sheet without leaving the screen. Used on the last
-// signup step and on the one-time screen for accounts made before it existed.
-function AgreementRow({ checked, onChange }) {
+// The accept boxes. Two ticks, on purpose: one for the terms and privacy
+// policy, and one for the waiver alone, with what it gives up written right
+// beside the box instead of only behind a link. Under 18, a parent or
+// guardian accepts and types their name. Each document opens in a sheet
+// without leaving the screen. Used on the last signup step and on the
+// one-time screen for accounts made before this existed.
+//
+// value: the saved record or null. onChange gets a complete record once
+// everything needed is filled in, and null otherwise.
+function AgreementRow({ value, onChange, birthday }) {
+  const minor = needsGuardian(birthday);
+  const startDone = !!(value && value.terms && value.waiver);
+  const [terms, setTerms] = useState(startDone);
+  const [waiver, setWaiver] = useState(startDone);
+  const [guardianName, setGuardianName] = useState(value?.guardian?.name || "");
   const [open, setOpen] = useState(null);
+  useEffect(() => {
+    const done = terms && waiver && (!minor || guardianName.trim().length > 1);
+    onChange(done ? agreementRecord({ guardianName: minor ? guardianName : "" }) : null);
+  }, [terms, waiver, guardianName, minor]);
   const link = (key, label) => (
     <button type="button" onClick={(e) => { e.stopPropagation(); setOpen(key); }}
       className="font-semibold underline" style={{ color: C.blue }}>{label}</button>
   );
+  const box = (on, set, label) => (
+    <button type="button" role="checkbox" aria-checked={on} aria-label={label} onClick={() => set(!on)}
+      className="rounded-md flex items-center justify-center shrink-0"
+      style={{ width: 24, height: 24, marginTop: 1, background: on ? C.orange : "transparent", border: `2px solid ${on ? C.orange : C.faint}`, color: "#fff" }}>
+      {on && <Check size={16} />}
+    </button>
+  );
+  const row = (on) => ({ background: C.panel, border: `1px solid ${on ? C.orange : C.border}` });
   return (
-    <div>
-      <div className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={{ background: C.panel, border: `1px solid ${checked ? C.orange : C.border}` }}>
-        <button type="button" role="checkbox" aria-checked={checked} aria-label="I agree to the terms, waiver and privacy policy"
-          onClick={() => onChange(!checked)}
-          className="rounded-md flex items-center justify-center shrink-0"
-          style={{ width: 24, height: 24, marginTop: 1, background: checked ? C.orange : "transparent", border: `2px solid ${checked ? C.orange : C.faint}`, color: "#fff" }}>
-          {checked && <Check size={16} />}
-        </button>
+    <div className="space-y-2.5">
+      {minor && (
+        <div className="rounded-xl px-3.5 py-3" style={row(guardianName.trim().length > 1)}>
+          <div className="text-[13.5px] font-semibold mb-1" style={{ color: C.text }}>Under 18: a parent or guardian accepts</div>
+          <p className="text-[12.5px] mb-2" style={{ color: C.sub }}>Hand the phone to your parent or guardian for this part.</p>
+          <input value={guardianName} onChange={e => setGuardianName(e.target.value)} aria-label="Parent or guardian's full name"
+            placeholder="Parent or guardian's full name" style={inputStyle} />
+        </div>
+      )}
+      <div className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={row(terms)}>
+        {box(terms, setTerms, "I agree to the terms and privacy policy")}
         <p className="text-[13.5px] leading-snug" style={{ color: C.text }}>
-          I have read and agree to the {link("terms", "Terms")}, the {link("waiver", "Waiver and release")} and the {link("privacy", "Privacy policy")}. I understand training carries a risk of injury.
+          {minor ? "As their parent or guardian, I agree" : "I agree"} to the {link("terms", "Terms")} and the <span className="whitespace-nowrap">{link("privacy", "Privacy policy")}.</span>
+        </p>
+      </div>
+      <div className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={row(waiver)}>
+        {box(waiver, setWaiver, "I accept the waiver and release")}
+        <p className="text-[13.5px] leading-snug" style={{ color: C.text }}>
+          {minor ? "I have read the " : "I have read the "}{link("waiver", "Waiver and release")}{minor ? " and accept it for them. " : ". "}
+          <span className="font-semibold">{minor ? "I understand they and I are giving up the right to sue" : "I understand I am giving up the right to sue"} Trained.best for injuries from training, including injuries caused by its negligence.</span>
         </p>
       </div>
       <Modal open={!!open} onClose={() => setOpen(null)} title={open ? LEGAL_DOCS[open].title : ""}>
@@ -17272,13 +17329,14 @@ function AgreementRow({ checked, onChange }) {
 // Shown once to accounts that signed up before the accept box existed, and
 // again whenever LEGAL_VERSION moves. Nothing else in the app is reachable
 // until it is accepted, which is the point of a waiver.
-function TermsGate({ onAccepted, onLogout }) {
-  const [checked, setChecked] = useState(false);
+function TermsGate({ onAccepted, onLogout, birthday }) {
+  const [record, setRecord] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const accept = async () => {
     setSaving(true); setError(null);
-    const { error: err } = await supabase.rpc("set_profile_setting", { p_key: "agreed", p_value: agreementRecord() });
+    if (!record) return;
+    const { error: err } = await supabase.rpc("set_profile_setting", { p_key: "agreed", p_value: record });
     setSaving(false);
     if (err) { setError("Couldn't save that. Check your connection and try again."); return; }
     onAccepted();
@@ -17289,11 +17347,11 @@ function TermsGate({ onAccepted, onLogout }) {
         <div className="text-[12px] uppercase tracking-[.16em] mb-2" style={{ color: C.sub }}>One thing first</div>
         <h1 className="text-2xl font-bold leading-tight mb-3" style={{ fontFamily: DISPLAY, color: C.text }}>Terms and waiver</h1>
         <p className="text-[15px] leading-relaxed mb-5" style={{ color: C.sub }}>
-          Trained.best now has terms of use and a training waiver. Please read them and tick the box to keep going. Your program and history are untouched.
+          Trained.best now has terms of use and a training waiver. Please read them and tick both boxes to keep going. Your program and history are untouched.
         </p>
-        <AgreementRow checked={checked} onChange={setChecked} />
+        <AgreementRow value={record} onChange={setRecord} birthday={birthday} />
         {error && <p className="text-[13px] mt-3" style={{ color: C.red }}>{error}</p>}
-        <Btn className="w-full mt-5" disabled={!checked || saving} onClick={accept}>{saving ? "Saving..." : "Accept and continue"}</Btn>
+        <Btn className="w-full mt-5" disabled={!record || saving} onClick={accept}>{saving ? "Saving..." : "Accept and continue"}</Btn>
         <button type="button" onClick={onLogout} className="w-full text-center text-[13px] mt-4" style={{ color: C.sub }}>Log out</button>
       </div>
     </div>
@@ -31836,7 +31894,7 @@ function AppInner() {
     <NotificationContext.Provider value={notificationContext}>
       <WideContext.Provider value={wide}>
         {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} role={tourRole} onDone={closeTour} />}
-        {authed && !legalAgreed && <TermsGate onAccepted={() => setLegalAgreed(true)} onLogout={nav.logout} />}
+        {authed && !legalAgreed && <TermsGate onAccepted={() => setLegalAgreed(true)} onLogout={nav.logout} birthday={state.me?.intake?.birthday} />}
         {wide ? (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100dvh", display: "flex", alignItems: "flex-start" }}>
             <SideNav

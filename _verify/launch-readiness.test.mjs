@@ -30,7 +30,7 @@ const H = await load(APP, [
   { name: "PARQ_QUESTIONS", kind: "const" }, { name: "MOVE_CHECKS", kind: "const" }, { name: "MOVE_RESULTS", kind: "const" },
   { name: "PRIVACY_CONTACT", kind: "const" }, { name: "PRIVACY_POLICY", kind: "const" },
   { name: "LEGAL_VERSION", kind: "const" }, { name: "TERMS_OF_USE", kind: "const" }, { name: "WAIVER", kind: "const" },
-  { name: "LEGAL_DOCS", kind: "const" }, "agreedToTerms", "agreementRecord",
+  { name: "LEGAL_DOCS", kind: "const" }, { name: "WAIVER_ADULT_AGE", kind: "const" }, "needsGuardian", "agreedToTerms", "agreementRecord",
   { name: "HEALTH_CHECK_PARTS", kind: "const" }, "healthCheckMissing", "problemReportMailto",
 ]);
 let passed = 0; const tests = []; const test = (n, f) => tests.push([n, f]);
@@ -61,23 +61,43 @@ test("the waiver says plainly that it covers negligence and needs a parent under
   assert.match(w, /under 18/);
   assert.match(JSON.stringify(H.TERMS_OF_USE), /Ontario/);
 });
-test("accepted means accepted THIS version", () => {
+test("accepted means accepted THIS version, with both ticks", () => {
   assert.equal(H.agreedToTerms({}), false);
   assert.equal(H.agreedToTerms(null), false);
-  assert.equal(H.agreedToTerms({ agreed: { version: "2020-01-01" } }), false, "an old version asks again");
+  assert.equal(H.agreedToTerms({ agreed: { version: "2020-01-01", terms: true, waiver: true } }), false, "an old version asks again");
   const rec = H.agreementRecord();
   assert.equal(rec.version, H.LEGAL_VERSION);
   assert.ok(!Number.isNaN(Date.parse(rec.at)));
   assert.equal(H.agreedToTerms({ agreed: rec }), true);
+  assert.equal(H.agreedToTerms({ agreed: { ...rec, waiver: false } }), false, "the waiver needs its own tick");
+  assert.equal(H.agreedToTerms({ agreed: { ...rec, terms: undefined } }), false);
+});
+test("under 18 needs a parent or guardian's name; 18 and over does not", () => {
+  const y = new Date().getFullYear();
+  const kid = `${y - 15}-01-01`, adult = `${y - 30}-01-01`;
+  assert.equal(H.WAIVER_ADULT_AGE, 18);
+  assert.equal(H.needsGuardian(kid), true);
+  assert.equal(H.needsGuardian(adult), false);
+  assert.equal(H.needsGuardian(undefined), false, "coaches have no birthday on file");
+  assert.equal(H.agreedToTerms({ birthday: kid, agreed: H.agreementRecord() }), false);
+  assert.equal(H.agreedToTerms({ birthday: kid, agreed: H.agreementRecord({ guardianName: "Maria Lopez" }) }), true);
+  assert.equal(H.agreedToTerms({ birthday: adult, agreed: H.agreementRecord() }), true);
+  assert.equal(H.agreementRecord({ guardianName: "  " }).guardian, undefined);
+});
+test("the waiver box says what it gives up, on the screen itself", () => {
+  assert.ok(src.includes("giving up the right to sue"));
+  assert.ok(src.includes('box(waiver, setWaiver, "I accept the waiver and release")'), "the waiver has its own box");
+  assert.ok(src.includes('box(terms, setTerms, "I agree to the terms and privacy policy")'));
+  assert.ok(!/at least 16/.test(JSON.stringify(H.TERMS_OF_USE)), "no 16 minimum left over");
 });
 test("signup's last screen cannot finish without the tick", () => {
   assert.ok(/const canProceed = stepComplete\(stepName, data, role\) && \(!isLast \|\| agreedToTerms\(data\)\);/.test(src));
-  assert.ok(/\{isLast && \(\s*<div className="mb-3">\s*<AgreementRow/.test(src));
+  assert.ok(/\{isLast && \(\s*<div className="mt-6">[\s\S]{0,300}<AgreementRow value=\{data\.agreed \|\| null\} birthday=\{data\.birthday\}/.test(src));
 });
 test("everyone already signed up is asked once, and nothing else shows until they accept", () => {
   assert.ok(/setLegalAgreed\(agreedToTerms\(profile\.intake\)\);/.test(src));
   assert.ok(/\{authed && !legalAgreed && <TermsGate/.test(src));
-  assert.ok(/rpc\("set_profile_setting", \{ p_key: "agreed", p_value: agreementRecord\(\) \}\)/.test(src));
+  assert.ok(/rpc\("set_profile_setting", \{ p_key: "agreed", p_value: record \}\)/.test(src));
 });
 test("the public pages exist and match the app", () => {
   for (const [file, d] of [["terms.html", H.TERMS_OF_USE], ["waiver.html", H.WAIVER], ["privacy.html", H.PRIVACY_POLICY]]) {
