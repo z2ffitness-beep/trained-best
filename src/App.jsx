@@ -9,7 +9,7 @@ import {
   AlertCircle, Swords, HeartPulse, Ruler, Scale, ChevronsUpDown, Wand2, Loader2, Eye,
   MoreHorizontal, Copy, EyeOff, UserPlus, Bell, MapPin, Video, Inbox, Smartphone, Monitor,
   Moon, Leaf, Heart, Phone, Minus, Printer, MessageCircle,
-  Mic, MicOff, Hourglass, Sprout,
+  Mic, MicOff, Hourglass, Sprout, Bug,
 } from "lucide-react";
 // Auto-generated exercise image assets (base64 JPEG thumbnails, 480px wide)
 const EXERCISE_IMAGES = {
@@ -8099,7 +8099,8 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
 
   // One definition, at the top of the file, so the rules can be checked
   // against an object instead of only by tapping through fourteen screens.
-  const canProceed = stepComplete(stepName, data, role);
+  // The last screen also needs the terms and waiver ticked.
+  const canProceed = stepComplete(stepName, data, role) && (!isLast || agreedToTerms(data));
 
   const handleNext = () => {
     // Guard against a double tap or a double Enter on the final step. There was
@@ -8323,6 +8324,15 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
             </button>
           </div>
         )}
+        {/* The accept boxes sit at the end of the page, not in the sticky
+            footer: three boxes there covered half a phone screen. */}
+        {isLast && (
+          <div className="mt-6">
+            <div className="text-[12px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Terms and waiver</div>
+            <AgreementRow value={data.agreed || null} birthday={data.birthday}
+              onChange={(rec) => setData(d => ({ ...d, agreed: rec }))} />
+          </div>
+        )}
         {data.signupError && (
           <div className="rounded-xl px-4 py-3 mb-1" style={{ background: `${C.red}14`, border: `1px solid ${C.red}55` }}>
             <p className="text-[13px]" style={{ color: C.red }}>{data.signupError}</p>
@@ -8345,12 +8355,17 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
           wide, which put Continue 1,362px down a 760px-tall phone. Measured,
           not guessed. Sticky costs nothing on a short screen - it sits where
           it always did - and on a long one the way forward never leaves. */}
-      <div className="px-6 pb-8 pt-4 flex gap-3 shrink-0"
+      <div className="px-6 pb-8 pt-4 shrink-0"
         style={{ borderTop: `1px solid ${C.border}`, position: "sticky", bottom: 0, background: C.bg }}>
+        {isLast && !agreedToTerms(data) && stepComplete(stepName, data, role) && (
+          <p className="text-[12.5px] text-center mb-2.5" style={{ color: C.sub }}>Tick both boxes at the bottom of the page to finish.</p>
+        )}
+        <div className="flex gap-3">
         <Btn variant="secondary" disabled={submitting} onClick={() => advance(-1)} icon={ChevronLeft}>Back</Btn>
         <Btn className="flex-1" disabled={!canProceed || submitting} onClick={handleNext}>
           {submitting ? "Setting up…" : isLast ? "Finish Setup" : "Continue"}
         </Btn>
+        </div>
       </div>
     </div>
   );
@@ -11077,6 +11092,27 @@ async function resolveCoachInvite(code) {
   return row?.id || null;
 }
 
+// Put the signed-in athlete on a coach's roster, by that coach's invite code.
+//
+// Through join_coach_by_code (migration 018) so the database, not the app,
+// checks the code: after migration 019 a direct write of coach_id from the
+// app is refused, because it let anyone onto any roster without a code.
+// Until 018 is applied the function does not exist, and this falls back to
+// the old direct write so joining keeps working in between.
+// Returns { coachId } on success, or { error }.
+async function joinCoachByCode(code, userId, knownCoachId = null) {
+  const clean = (code || "").trim().toUpperCase();
+  const { data, error } = await supabase.rpc("join_coach_by_code", { p_code: clean });
+  if (!error) return data ? { coachId: data } : { error: "That code doesn't match a coach." };
+  const missing = error.code === "PGRST202" || error.code === "42883" || /join_coach_by_code/.test(error.message || "");
+  if (!missing) return { error: error.message || "Couldn't join" };
+  const coachId = knownCoachId || await resolveCoachInvite(clean);
+  if (!coachId || !userId) return { error: "That code doesn't match a coach." };
+  const { error: upErr } = await supabase.from("profiles")
+    .update({ coach_id: coachId, role: "athlete_coached" }).eq("id", userId);
+  return upErr ? { error: upErr.message } : { coachId };
+}
+
 // Returns the new program's id, or null if it couldn't be saved. Callers MUST
 // check for null: the failure used to be swallowed here and ignored at both
 // call sites, so on any insert failure (RLS rejection, dropped connection,
@@ -11749,6 +11785,96 @@ function ActivitySummary({ a, unit }) {
 }
 
 // On Home, under today's workout.
+// Health Check for clients who signed up before it existed (11 Nov: 9 of 11
+// had not done it). The same questions as the signup's Health Check, minus
+// injuries (already on their profile), plus the three about their training
+// lately, sleep and other training. Only the parts still missing are asked.
+const HEALTH_CHECK_PARTS = [
+  { step: "❤️ Health Questions", label: "Health questions", keys: ["parq", "parqCleared"] },
+  { step: "🧍 Movement Check", label: "Movement check", keys: ["move"] },
+  { step: "🔋 Training Lately", label: "Your training lately", keys: ["recentDaysPerWeek", "lastConsistent"] },
+  { step: "🏃 Other Training", label: "Other sport or training", keys: ["otherTraining"] },
+  { step: "🌙 Sleep", label: "Your sleep", keys: ["sleep"] },
+];
+function healthCheckMissing(intake) {
+  return HEALTH_CHECK_PARTS.filter(p => !stepComplete(p.step, intake || {}, "athlete"));
+}
+
+function HealthCheckSheet({ open, onClose, state, setState, parts }) {
+  const [data, setData] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!open) return;
+    setData({ ...(state.me?.intake || {}) });
+    setSaving(false); setError(null);
+  }, [open]);
+  const ready = parts.every(p => stepComplete(p.step, data, "athlete"));
+  const save = async () => {
+    setSaving(true); setError(null);
+    const keys = [...new Set(parts.flatMap(p => p.keys)), "healthCheckAt"];
+    const values = { ...data, healthCheckAt: new Date().toISOString() };
+    for (const k of keys) {
+      if (values[k] === undefined) continue;
+      const err = await saveProfileSetting(setState, state.me?.id, k, values[k]);
+      if (err) { setSaving(false); setError("Couldn't save. Check your connection and try again."); return; }
+    }
+    setSaving(false);
+    onClose(true);
+  };
+  return (
+    <Modal open={open} onClose={() => onClose(false)} title="Health Check" wide>
+      <p className="text-[14px] mb-4" style={{ color: C.sub }}>
+        The questions a coach asks before writing a program. Your answers decide where your exercises start and how fast they build.
+      </p>
+      {parts.map(p => (
+        <div key={p.step} className="mb-6">
+          <div className="text-[12px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>{p.label}</div>
+          <OnboardingStepBody role="athlete" stepName={p.step} data={data} setData={setData} />
+        </div>
+      ))}
+      {error && <p className="text-[13px] mb-3" style={{ color: C.red }}>{error}</p>}
+      <Btn className="w-full" icon={Check} disabled={!ready || saving} onClick={save}>{saving ? "Saving..." : "Save my Health Check"}</Btn>
+    </Modal>
+  );
+}
+
+function HealthCheckCard({ state, setState }) {
+  const [open, setOpen] = useState(false);
+  const [justDone, setJustDone] = useState(false);
+  const missing = healthCheckMissing(state.me?.intake);
+  if (justDone) {
+    return (
+      <div className="rounded-2xl p-4 mb-5 flex items-start gap-3" style={{ ...card(), border: `1px solid ${C.olive}` }}>
+        <CheckCircle2 size={20} style={{ color: C.olive }} className="shrink-0 mt-0.5" />
+        <div className="text-[14.5px]" style={{ color: C.text }}>
+          Health Check saved. {state.me?.hasCoach ? "Your coach can see it now, and" : ""} your next program will be built from it.
+        </div>
+      </div>
+    );
+  }
+  if (!state.me?.id || missing.length === 0) return null;
+  const allMissing = missing.length === HEALTH_CHECK_PARTS.length;
+  return (
+    <div className="rounded-2xl p-4 mb-5" style={{ ...card(), border: `1px solid ${C.orange}` }}>
+      <div className="flex items-start gap-3">
+        <div className="rounded-xl grid place-items-center shrink-0" style={{ width: 40, height: 40, background: `${C.orange}1f` }}>
+          <HeartPulse size={20} style={{ color: C.orange }} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[16px] font-bold" style={{ color: C.text }}>{allMissing ? "Do your Health Check" : "Finish your Health Check"}</div>
+          <p className="text-[14px] mt-0.5 leading-snug" style={{ color: C.sub }}>
+            {allMissing ? "About 3 minutes. It makes sure your program starts at the right level." : `${missing.length} part${missing.length === 1 ? "" : "s"} left.`}
+          </p>
+        </div>
+      </div>
+      <Btn className="w-full mt-3.5" onClick={() => setOpen(true)}>{allMissing ? "Start Health Check" : "Finish it"}</Btn>
+      <HealthCheckSheet open={open} parts={missing} state={state} setState={setState}
+        onClose={(saved) => { setOpen(false); if (saved) setJustDone(true); }} />
+    </div>
+  );
+}
+
 function ExtraActivityCard({ state, setState }) {
   const [open, setOpen] = useState(false);
   const unit = state.me?.unitPref === "kg" ? "kg" : "lb";
@@ -16776,7 +16902,7 @@ const PRIVACY_CONTACT = {
   app: "Trained.best",
   email: "z2ffitness@gmail.com",
   region: "Niagara, Ontario, Canada",
-  updated: "September 23, 2026",
+  updated: "November 11, 2026",
 };
 
 const PRIVACY_POLICY = [
@@ -16792,6 +16918,8 @@ const PRIVACY_POLICY = [
     bullets: [
       "Account details: your name, email address and password. Passwords are stored hashed by the authentication provider and are never visible to us.",
       "Health and fitness information: your workouts, the weights and reps you record, body weight and body-fat entries, injuries or limitations you tell us about, your sport, and how hard sessions felt.",
+      "Your Health Check: your answers to the health questions, whether a doctor has cleared you, your movement check results, your sleep, and your other training. These set where your program starts.",
+      "Photos and videos you choose to add: form check videos, progress photos, and pictures or videos sent in messages.",
       "Programs and scheduling: the training programs assigned to you, which days you train, and any sessions you book or cancel.",
       "Messages: what you and your coach send each other in the app.",
       "Basic technical information needed to run a website, such as your device type and approximate location derived from your network address, held by our hosting provider.",
@@ -16810,7 +16938,9 @@ const PRIVACY_POLICY = [
       "Your coach, if you have one. A coach can see the training, progress and messages of the athletes on their own roster, and nobody else's. If you leave a coach, they lose that access.",
       "Supabase, which hosts the database and handles sign-in.",
       "Vercel, which hosts the app itself.",
-      "Anthropic, when a training program is generated. The information you gave at sign-up - your goals, sport, experience, any injuries - is sent to their API to build the program. It is not used to train their models.",
+      "Anthropic, when a training program is generated. The information you gave at sign-up (your goals, sport, experience, schedule, injuries and Health Check answers) is sent to their API to build the program. It is not used to train their models.",
+      "Your phone's own speech service, only when you tap the microphone. Apple (on iPhone) or Google (in Chrome) turns your voice into text; the app receives the text, not a recording.",
+      "The push service of your phone or browser (Apple, Google or Mozilla), only if you turn on phone notifications. It carries the notification, such as \"Your coach replied\".",
       "Nobody else. No advertisers, no analytics brokers, no data resellers.",
     ],
   },
@@ -16858,53 +16988,386 @@ const PRIVACY_POLICY = [
   },
 ];
 
-// The policy screen. Plain, scrollable, and identical in substance to the page
-// served at /privacy.html.
-function PrivacyPolicyPage({ nav, onBack }) {
+// ---------- terms and waiver ----------
+//
+// Written 11 Nov 2026 as a plain-language draft for a lawyer to review before
+// paid launch. Same rules as the privacy policy: one source here, rendered in
+// the app and to public/terms.html and public/waiver.html by
+// _verify/build-privacy.mjs. Changing either in a way people must re-accept
+// means bumping LEGAL_VERSION, which shows the accept screen again.
+const LEGAL_VERSION = "2026-11-11";
+
+const TERMS_OF_USE = [
+  {
+    heading: "The short version",
+    paragraphs: [
+      "Trained.best gives you training programs, a place to log your workouts, and a way to work with a coach. Use it honestly, look after your own body, and treat the people you train with respectfully.",
+      "The programs are general fitness guidance, not medical advice. If something hurts in a way that feels wrong, stop and get it checked.",
+    ],
+  },
+  {
+    heading: "Who can use it",
+    bullets: [
+      "If you are under 18, a parent or guardian must read and accept these terms and the waiver for you when you sign up, and give their name.",
+      "Give true answers when you sign up, especially in the Health Check. Your program is built from them.",
+      "One account per person. Keep your password to yourself; you are responsible for what happens under your account.",
+    ],
+  },
+  {
+    heading: "Programs and AI",
+    paragraphs: [
+      "Programs are built by software, including an AI model, from the answers you give, and may be changed by your coach. Software can get things wrong. Read your program, use weights you can control, and adjust or skip anything that is not right for you.",
+      "Nothing in the app is a diagnosis or treatment of any condition. If you have a health condition, an injury, or answered yes to a health question, check with a doctor before training hard.",
+    ],
+  },
+  {
+    heading: "Coaches",
+    bullets: [
+      "Coaches on Trained.best run their own businesses. They are responsible for their coaching, their qualifications, their insurance, and any agreement or payment between them and their clients.",
+      "Trained.best provides the software. It is not a party to the arrangement between a coach and a client and does not employ or certify coaches.",
+      "A coach can see the training, Health Check, progress, photos and messages of the athletes on their own roster. Coaches must keep that information private and use it only to coach.",
+    ],
+  },
+  {
+    heading: "What you post",
+    paragraphs: [
+      "You own what you add: your logs, notes, photos, videos and messages. You allow Trained.best to store it and show it to you and, if you have one, your coach, so the app can work. It is not used for anything else.",
+      "Do not post anything unlawful, hateful, sexual, or that belongs to someone else, and do not harass anyone. Do not try to reach data that is not yours, break the app, or copy its code.",
+    ],
+  },
+  {
+    heading: "Price",
+    paragraphs: [
+      "Trained.best is free while it is in its pilot. If that changes, you will be told the price in the app before you are ever charged, and you can decide then.",
+    ],
+  },
+  {
+    heading: "Ending your account",
+    paragraphs: [
+      "You can delete your account from Profile at any time. Trained.best may suspend or close an account that breaks these terms, and will tell you why.",
+    ],
+  },
+  {
+    heading: "Limits",
+    paragraphs: [
+      "The app is provided as it is and may change, pause or have errors. To the fullest extent the law allows, Trained.best is not responsible for injury, loss or damage arising from your training or from using the app, and its total responsibility to you for anything else is limited to what you paid it in the last 12 months. Nothing here removes rights you have that the law says cannot be removed.",
+    ],
+  },
+  {
+    heading: "Changes and the law that applies",
+    paragraphs: [
+      "If these terms change in a way that matters, you will be asked to accept the new version in the app. These terms are governed by the laws of Ontario and of Canada that apply there.",
+    ],
+  },
+];
+
+const WAIVER = [
+  {
+    heading: "Please read this carefully",
+    paragraphs: [
+      "This is a release of liability, waiver of claims and assumption of risk. By accepting it you give up certain legal rights, including the right to sue for some injuries. If you are under 18, your parent or guardian must accept it for you.",
+    ],
+  },
+  {
+    heading: "The risks of training",
+    paragraphs: [
+      "Strength training, conditioning, running, jumping, mobility work and combat sports training carry real risks. They include muscle strains, sprains, joint and back injuries, broken bones, cuts and bruises, dizziness, fainting, heat illness, and in rare cases heart attack, stroke or death. Combat sports add the risks of contact, including head injury.",
+      "These risks exist even when training is planned well and done carefully, and some cannot be removed without changing the nature of the activity.",
+    ],
+  },
+  {
+    heading: "What you agree to",
+    bullets: [
+      "You take part voluntarily and you accept these risks.",
+      "Your Health Check answers are true and complete, and you will update them if your health changes.",
+      "If you answered yes to any health question, you will get a doctor's clearance before training hard.",
+      "You are responsible for training within your limits, warming up, using safe equipment and a safe space, and having a spotter where one is needed.",
+      "You will stop right away and get medical help if you feel chest pain, severe shortness of breath, dizziness, or pain that is sharp or getting worse.",
+    ],
+  },
+  {
+    heading: "Release",
+    paragraphs: [
+      "To the fullest extent the law allows, you release and agree not to sue Trainedbythebest, Trained.best, its owners, staff and contractors (the \"Released Parties\") for any injury, illness, death, loss or damage that arises from your training or from following a program in the app, INCLUDING ANY CAUSED BY THE NEGLIGENCE OF THE RELEASED PARTIES.",
+      "This release does not cover a coach's own services to you; your agreement with your coach covers those.",
+      "If any part of this waiver cannot be enforced, the rest still applies.",
+    ],
+  },
+  {
+    heading: "Your acceptance",
+    paragraphs: [
+      "Ticking the box in the app is your electronic signature. It records the date, time and the version you accepted, and you can read this waiver again any time from Profile.",
+    ],
+  },
+];
+
+// Which documents exist, for the screens and the public pages.
+const LEGAL_DOCS = {
+  privacy: { title: "Privacy and your data", sections: PRIVACY_POLICY },
+  terms: { title: "Terms of use", sections: TERMS_OF_USE },
+  waiver: { title: "Waiver and release", sections: WAIVER },
+};
+
+// Has this person accepted the current terms and waiver?
+// The age the waiver treats as an adult. Under it, a parent or guardian
+// accepts for them and gives their name. A lawyer's note (11 Nov): even then,
+// a court may not hold a minor to it; only an adults-only app removes that.
+const WAIVER_ADULT_AGE = 18;
+function needsGuardian(birthday) {
+  const age = ageFromBirthday(birthday);
+  return age !== null && age < WAIVER_ADULT_AGE;
+}
+
+// Accepted means: this version, the terms ticked, the waiver ticked on its
+// own (11 Nov: a separate tick is far stronger than one box for three
+// documents), and a guardian's name when the athlete is under 18.
+function agreedToTerms(intake) {
+  const a = intake?.agreed;
+  if (!a || a.version !== LEGAL_VERSION || a.terms !== true || a.waiver !== true) return false;
+  if (needsGuardian(intake?.birthday) && !(a.guardian?.name || "").trim()) return false;
+  return true;
+}
+function agreementRecord({ guardianName } = {}) {
+  const rec = { version: LEGAL_VERSION, at: new Date().toISOString(), terms: true, waiver: true };
+  const name = (guardianName || "").trim();
+  if (name) rec.guardian = { name };
+  return rec;
+}
+
+// The words of one legal document, without the page around it. Shared by the
+// full-screen page and the sheet that opens from the signup's accept box.
+function LegalDocBody({ docKey = "privacy" }) {
+  const doc = LEGAL_DOCS[docKey] || LEGAL_DOCS.privacy;
+  const updated = docKey === "privacy" ? PRIVACY_CONTACT.updated : "November 11, 2026";
+  return (
+    <div>
+      <p className="text-[12.5px]" style={{ color: C.faint }}>
+        {PRIVACY_CONTACT.business} {"\u00b7"} Last updated {updated}
+      </p>
+      {doc.sections.map(section => (
+        <section key={section.heading} className="mt-6">
+          <h2 className="text-[15px] font-bold mb-2" style={{ color: C.orange }}>{section.heading}</h2>
+          {(section.paragraphs || []).map((text, i) => (
+            <p key={i} className="text-[15px] leading-relaxed mb-2" style={{ color: C.sub }}>{text}</p>
+          ))}
+          {section.bullets && (
+            <ul className="space-y-1.5 mt-1">
+              {section.bullets.map((text, i) => (
+                <li key={i} className="text-[15px] leading-relaxed flex gap-2" style={{ color: C.sub }}>
+                  <span style={{ color: C.faint }}>{"\u2022"}</span>
+                  <span className="min-w-0">{text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
+      <div className="mt-8 rounded-xl p-4" style={card({ borderRadius: 16 })}>
+        <div className="text-[15px] font-bold mb-1" style={{ color: C.text }}>Contact</div>
+        <p className="text-[15px] leading-relaxed" style={{ color: C.sub }}>
+          Questions about any of this, or a request about your data:{" "}
+          <span className="font-semibold" style={{ color: C.text }}>{PRIVACY_CONTACT.email}</span>
+          {"."} {PRIVACY_CONTACT.business} is based in {PRIVACY_CONTACT.region}.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// The full-screen page for privacy, terms or the waiver. Identical in
+// substance to the pages served at /privacy.html, /terms.html, /waiver.html.
+function LegalDocPage({ nav, onBack, docKey = "privacy" }) {
+  const doc = LEGAL_DOCS[docKey] || LEGAL_DOCS.privacy;
   return (
     <div className="pb-28">
-      <TopBar title="Privacy" onLogout={nav?.logout} hideBell />
+      <TopBar title={docKey === "privacy" ? "Privacy" : docKey === "terms" ? "Terms" : "Waiver"} onLogout={nav?.logout} hideBell />
       <div className="px-5 pt-4">
         {onBack && (
           <button onClick={onBack} className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-4" style={{ color: C.sub }}>
             <ChevronLeft size={14} /> Back
           </button>
         )}
-        <h1 className="text-2xl font-bold leading-tight" style={{ fontFamily: DISPLAY, color: C.text }}>
-          Trained.best privacy and your data
+        <h1 className="text-2xl font-bold leading-tight mb-1.5" style={{ fontFamily: DISPLAY, color: C.text }}>
+          {docKey === "privacy" ? "Trained.best privacy and your data" : doc.title}
         </h1>
-        <p className="text-[12.5px] mt-1.5" style={{ color: C.faint }}>
-          {PRIVACY_CONTACT.business} {"\u00b7"} Last updated {PRIVACY_CONTACT.updated}
-        </p>
-
-        {PRIVACY_POLICY.map(section => (
-          <section key={section.heading} className="mt-6">
-            <h2 className="text-[15px] font-bold mb-2" style={{ color: C.orange }}>{section.heading}</h2>
-            {(section.paragraphs || []).map((text, i) => (
-              <p key={i} className="text-[15px] leading-relaxed mb-2" style={{ color: C.sub }}>{text}</p>
-            ))}
-            {section.bullets && (
-              <ul className="space-y-1.5 mt-1">
-                {section.bullets.map((text, i) => (
-                  <li key={i} className="text-[15px] leading-relaxed flex gap-2" style={{ color: C.sub }}>
-                    <span style={{ color: C.faint }}>{"\u2022"}</span>
-                    <span className="min-w-0">{text}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
-
-        <div className="mt-8 rounded-xl p-4" style={card({ borderRadius: 16 })}>
-          <div className="text-[15px] font-bold mb-1" style={{ color: C.text }}>Contact</div>
-          <p className="text-[15px] leading-relaxed" style={{ color: C.sub }}>
-            Questions about any of this, or a request about your data:{" "}
-            <span className="font-semibold" style={{ color: C.text }}>{PRIVACY_CONTACT.email}</span>
-            {"."} {PRIVACY_CONTACT.business} is based in {PRIVACY_CONTACT.region}.
-          </p>
-        </div>
+        <LegalDocBody docKey={docKey} />
       </div>
+    </div>
+  );
+}
+
+function PrivacyPolicyPage({ nav, onBack }) {
+  return <LegalDocPage nav={nav} onBack={onBack} docKey="privacy" />;
+}
+
+// Report a problem (11 Nov, for the pilot). Type it or say it, then it opens
+// an email to the support address with the details a fix needs already
+// filled in: the screen they came from, their account type and their phone.
+// Email rather than a table on purpose: it needs no database change, and the
+// report lands somewhere Isaiah already reads.
+function problemReportMailto({ text, role, screen }) {
+  const lines = [
+    (text || "").trim() || "(describe what happened)",
+    "",
+    "---",
+    `Account type: ${role || "unknown"}`,
+    `Screen: ${screen || "unknown"}`,
+    `When: ${new Date().toString()}`,
+    `Device: ${typeof navigator !== "undefined" ? navigator.userAgent : "unknown"}`,
+  ];
+  return `mailto:${PRIVACY_CONTACT.email}?subject=${encodeURIComponent("Trained.best problem report")}&body=${encodeURIComponent(lines.join("\n"))}`;
+}
+
+function ReportProblemModal({ open, onClose, role, screen }) {
+  const [text, setText] = useState("");
+  const speech = useSpeechToText(text, setText);
+  useEffect(() => { if (open) setText(""); }, [open]);
+  const send = () => {
+    speech.stop();
+    try { window.location.href = problemReportMailto({ text, role, screen }); } catch { /* no mail app */ }
+    onClose();
+  };
+  return (
+    <Modal open={open} onClose={() => { speech.stop(); onClose(); }} title="Report a problem">
+      <p className="text-[14px] mb-3" style={{ color: C.sub }}>What happened, and what did you expect? Type it or say it.</p>
+      <div className="flex items-start gap-3">
+        {speech.supported && (
+          <button type="button" onClick={speech.listening ? speech.stop : speech.start}
+            aria-label={speech.listening ? "Stop listening" : "Say what happened"}
+            className="rounded-full flex items-center justify-center shrink-0"
+            style={{ width: 48, height: 48, background: speech.listening ? C.red : C.orange, color: "#fff" }}>
+            {speech.listening ? <MicOff size={20} /> : <Mic size={20} />}
+          </button>
+        )}
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={4} aria-label="What happened"
+          placeholder="e.g. I tapped Done after my workout and nothing happened"
+          style={{ ...inputStyle, resize: "vertical", minHeight: 96 }} />
+      </div>
+      {speech.listening && <p className="text-[12px] mt-2" style={{ color: C.red }}>Listening... tap the mic to stop</p>}
+      {speech.error && <p className="text-[12px] mt-2" style={{ color: C.red }}>{speech.error}</p>}
+      <p className="text-[12px] mt-3" style={{ color: C.faint }}>This opens an email to {PRIVACY_CONTACT.email} with your phone type and the screen you were on. Add a screenshot if you can.</p>
+      <Btn className="w-full mt-4" icon={Send} disabled={!text.trim()} onClick={send}>Send report</Btn>
+    </Modal>
+  );
+}
+
+// The bottom of both Profile screens: report a problem, then the legal links.
+function ProfileFooterLinks({ nav, role }) {
+  const [reportOpen, setReportOpen] = useState(false);
+  return (
+    <div>
+      <Btn variant="secondary" className="w-full mb-4" icon={Bug} onClick={() => setReportOpen(true)}>Report a problem</Btn>
+      <LegalLinks nav={nav} />
+      <ReportProblemModal open={reportOpen} onClose={() => setReportOpen(false)} role={role} screen="Profile" />
+    </div>
+  );
+}
+
+// The accept boxes. Two ticks, on purpose: one for the terms and privacy
+// policy, and one for the waiver alone, with what it gives up written right
+// beside the box instead of only behind a link. Under 18, a parent or
+// guardian accepts and types their name. Each document opens in a sheet
+// without leaving the screen. Used on the last signup step and on the
+// one-time screen for accounts made before this existed.
+//
+// value: the saved record or null. onChange gets a complete record once
+// everything needed is filled in, and null otherwise.
+function AgreementRow({ value, onChange, birthday }) {
+  const minor = needsGuardian(birthday);
+  const startDone = !!(value && value.terms && value.waiver);
+  const [terms, setTerms] = useState(startDone);
+  const [waiver, setWaiver] = useState(startDone);
+  const [guardianName, setGuardianName] = useState(value?.guardian?.name || "");
+  const [open, setOpen] = useState(null);
+  useEffect(() => {
+    const done = terms && waiver && (!minor || guardianName.trim().length > 1);
+    onChange(done ? agreementRecord({ guardianName: minor ? guardianName : "" }) : null);
+  }, [terms, waiver, guardianName, minor]);
+  const link = (key, label) => (
+    <button type="button" onClick={(e) => { e.stopPropagation(); setOpen(key); }}
+      className="font-semibold underline" style={{ color: C.blue }}>{label}</button>
+  );
+  const box = (on, set, label) => (
+    <button type="button" role="checkbox" aria-checked={on} aria-label={label} onClick={() => set(!on)}
+      className="rounded-md flex items-center justify-center shrink-0"
+      style={{ width: 24, height: 24, marginTop: 1, background: on ? C.orange : "transparent", border: `2px solid ${on ? C.orange : C.faint}`, color: "#fff" }}>
+      {on && <Check size={16} />}
+    </button>
+  );
+  const row = (on) => ({ background: C.panel, border: `1px solid ${on ? C.orange : C.border}` });
+  return (
+    <div className="space-y-2.5">
+      {minor && (
+        <div className="rounded-xl px-3.5 py-3" style={row(guardianName.trim().length > 1)}>
+          <div className="text-[13.5px] font-semibold mb-1" style={{ color: C.text }}>Under 18: a parent or guardian accepts</div>
+          <p className="text-[12.5px] mb-2" style={{ color: C.sub }}>Hand the phone to your parent or guardian for this part.</p>
+          <input value={guardianName} onChange={e => setGuardianName(e.target.value)} aria-label="Parent or guardian's full name"
+            placeholder="Parent or guardian's full name" style={inputStyle} />
+        </div>
+      )}
+      <div className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={row(terms)}>
+        {box(terms, setTerms, "I agree to the terms and privacy policy")}
+        <p className="text-[13.5px] leading-snug" style={{ color: C.text }}>
+          {minor ? "As their parent or guardian, I agree" : "I agree"} to the {link("terms", "Terms")} and the <span className="whitespace-nowrap">{link("privacy", "Privacy policy")}.</span>
+        </p>
+      </div>
+      <div className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={row(waiver)}>
+        {box(waiver, setWaiver, "I accept the waiver and release")}
+        <p className="text-[13.5px] leading-snug" style={{ color: C.text }}>
+          {minor ? "I have read the " : "I have read the "}{link("waiver", "Waiver and release")}{minor ? " and accept it for them. " : ". "}
+          <span className="font-semibold">{minor ? "I understand they and I are giving up the right to sue" : "I understand I am giving up the right to sue"} Trained.best for injuries from training, including injuries caused by its negligence.</span>
+        </p>
+      </div>
+      <Modal open={!!open} onClose={() => setOpen(null)} title={open ? LEGAL_DOCS[open].title : ""}>
+        {open && <LegalDocBody docKey={open} />}
+        <Btn className="w-full mt-5" onClick={() => setOpen(null)}>Done reading</Btn>
+      </Modal>
+    </div>
+  );
+}
+
+// Shown once to accounts that signed up before the accept box existed, and
+// again whenever LEGAL_VERSION moves. Nothing else in the app is reachable
+// until it is accepted, which is the point of a waiver.
+function TermsGate({ onAccepted, onLogout, birthday }) {
+  const [record, setRecord] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const accept = async () => {
+    setSaving(true); setError(null);
+    if (!record) return;
+    const { error: err } = await supabase.rpc("set_profile_setting", { p_key: "agreed", p_value: record });
+    setSaving(false);
+    if (err) { setError("Couldn't save that. Check your connection and try again."); return; }
+    onAccepted();
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 90, background: C.bg, overflowY: "auto" }}>
+      <div className="px-6 mx-auto" style={{ maxWidth: 520, paddingTop: "calc(48px + env(safe-area-inset-top, 0px))", paddingBottom: 40 }}>
+        <div className="text-[12px] uppercase tracking-[.16em] mb-2" style={{ color: C.sub }}>One thing first</div>
+        <h1 className="text-2xl font-bold leading-tight mb-3" style={{ fontFamily: DISPLAY, color: C.text }}>Terms and waiver</h1>
+        <p className="text-[15px] leading-relaxed mb-5" style={{ color: C.sub }}>
+          Trained.best now has terms of use and a training waiver. Please read them and tick both boxes to keep going. Your program and history are untouched.
+        </p>
+        <AgreementRow value={record} onChange={setRecord} birthday={birthday} />
+        {error && <p className="text-[13px] mt-3" style={{ color: C.red }}>{error}</p>}
+        <Btn className="w-full mt-5" disabled={!record || saving} onClick={accept}>{saving ? "Saving..." : "Accept and continue"}</Btn>
+        <button type="button" onClick={onLogout} className="w-full text-center text-[13px] mt-4" style={{ color: C.sub }}>Log out</button>
+      </div>
+    </div>
+  );
+}
+
+// The three links, as one row. Used on both Profile screens.
+function LegalLinks({ nav }) {
+  const link = (key, label) => (
+    <button onClick={() => nav.go(key)} className="text-[13px] font-semibold underline" style={{ color: C.sub }}>{label}</button>
+  );
+  return (
+    <div className="flex items-center justify-center gap-4 flex-wrap">
+      {link("privacy", "Privacy")}
+      {link("terms", "Terms")}
+      {link("waiver", "Waiver")}
     </div>
   );
 }
@@ -17911,10 +18374,7 @@ function CoachProfile({ state, setState, nav }) {
             in and asking. Sits below Log Out, in its own block, so it reads as
             the end of the list rather than as another setting. */}
         <div className="mt-8 pt-5" style={{ borderTop: `1px solid ${C.border}` }}>
-          <button onClick={() => nav.go("privacy")}
-            className="w-full text-center text-[12.5px] font-semibold py-2 mb-1" style={{ color: C.sub }}>
-            Privacy and your data
-          </button>
+          <div className="mb-4"><ProfileFooterLinks nav={nav} role="coach" /></div>
           <button onClick={() => setDeleteOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
             Delete my account
@@ -18353,6 +18813,7 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
           </div>
         )}
 
+        {!isCoach && <HealthCheckCard state={state} setState={setState} />}
         {!isCoach && <ExtraActivityCard state={state} setState={setState} />}
         {!isCoach && <CoachReplyCard logs={state.workoutLogs} />}
         {/* Booked sessions with the coach, under today's workout. Clients only:
@@ -24366,10 +24827,7 @@ function JoinCoachModal({ open, onClose, athleteId, onJoined }) {
     // role has to move too. `hasCoach` is derived from role on every login, so
     // writing coach_id alone would link them on the server while the app kept
     // showing them the self-guided experience after the next refresh.
-    const { error } = await supabase
-      .from("profiles")
-      .update({ coach_id: coach.id, role: "athlete_coached" })
-      .eq("id", athleteId);
+    const { error } = await joinCoachByCode(code, athleteId, coach.id);
     setSaving(false);
     if (error) {
       setSaveError("Couldn't join that roster. Check your connection and try again.");
@@ -25590,10 +26048,7 @@ function AthleteProfile({ state, setState, nav }) {
             in and asking. Sits below Log Out, in its own block, so it reads as
             the end of the list rather than as another setting. */}
         <div className="mt-8 pt-5" style={{ borderTop: `1px solid ${C.border}` }}>
-          <button onClick={() => nav.go("privacy")}
-            className="w-full text-center text-[12.5px] font-semibold py-2 mb-1" style={{ color: C.sub }}>
-            Privacy and your data
-          </button>
+          <div className="mb-4"><ProfileFooterLinks nav={nav} role={state.me?.hasCoach ? "athlete with a coach" : "solo athlete"} /></div>
           <button onClick={() => setDeleteOpen(true)}
             className="w-full text-center text-[12.5px] font-semibold py-2" style={{ color: C.red }}>
             Delete my account
@@ -30295,6 +30750,9 @@ function AppInner() {
   // returns below — a hook placed after one of them runs on some renders and
   // not others, which is the "rendered fewer hooks than expected" crash.
   const [tourOpen, setTourOpen] = useState(false);
+  // Accepted the current terms and waiver? Starts true so nothing flashes
+  // before the profile arrives; hydrateFromProfile sets the real answer.
+  const [legalAgreed, setLegalAgreed] = useState(true);
   const tourDecided = useRef(false);
   const [authMode, setAuthMode] = useState("onboarding"); // 'onboarding' | 'login'
   const [pendingConfirmEmail, setPendingConfirmEmail] = useState(null);
@@ -30326,6 +30784,7 @@ function AppInner() {
   // Turn a DB profile row into the local `me` / `coachProfile` shape the rest of the app expects.
   const hydrateFromProfile = async (profile) => {
     setAuthUserId(profile.id);
+    setLegalAgreed(agreedToTerms(profile.intake));
     // User-added exercises. The built-in library lives in the code (it ships
     // with image assets keyed by name); only custom ones are stored, and RLS
     // decides what's visible — your own, plus your coach's or your athletes'.
@@ -30545,11 +31004,8 @@ function AppInner() {
       // the code is sitting in their intake blob, so resolve it once, on the
       // next login, rather than leaving them orphaned forever.
       if (profile.role === "athlete_coached" && !profile.coach_id && profile.intake?.inviteCode) {
-        const coachId = await resolveCoachInvite(profile.intake.inviteCode);
-        if (coachId) {
-          const { error } = await supabase.from("profiles").update({ coach_id: coachId }).eq("id", profile.id);
-          if (!error) profile = { ...profile, coach_id: coachId };
-        }
+        const { coachId } = await joinCoachByCode(profile.intake.inviteCode, profile.id);
+        if (coachId) profile = { ...profile, coach_id: coachId };
       }
 
       // Load the athlete's coach so their settings actually reach this device.
@@ -31034,11 +31490,8 @@ function AppInner() {
         // every athlete who signed up with a coach stayed unlinked and invisible
         // on that coach's roster. The RLS policies already expected this column.
         if (role === "athlete_coached") {
-          const coachId = data.inviteCoachId || await resolveCoachInvite(data.inviteCode);
-          if (coachId) {
-            await supabase.from("profiles").update({ coach_id: coachId }).eq("id", userId);
-            linkedCoachId = coachId;
-          }
+          const { coachId } = await joinCoachByCode(data.inviteCode, userId, data.inviteCoachId);
+          if (coachId) linkedCoachId = coachId;
         }
       }
 
@@ -31391,6 +31844,8 @@ function AppInner() {
     } : {}),
     "form-checks": <FormChecksPage state={state} nav={nav} isCoach={authed === "coach"} />,
     "privacy": <PrivacyPolicyPage nav={nav} onBack={() => nav.go(authed === "coach" ? "coach-profile" : "athlete-profile")} />,
+    "terms": <LegalDocPage docKey="terms" nav={nav} onBack={() => nav.go(authed === "coach" ? "coach-profile" : "athlete-profile")} />,
+    "waiver": <LegalDocPage docKey="waiver" nav={nav} onBack={() => nav.go(authed === "coach" ? "coach-profile" : "athlete-profile")} />,
     "notifications": <NotificationsPage
       state={state} setState={setState} nav={nav}
       notifications={notifications}
@@ -31439,6 +31894,7 @@ function AppInner() {
     <NotificationContext.Provider value={notificationContext}>
       <WideContext.Provider value={wide}>
         {tourOpen && <FirstRunTour hasCoach={!!state.me?.coachId} role={tourRole} onDone={closeTour} />}
+        {authed && !legalAgreed && <TermsGate onAccepted={() => setLegalAgreed(true)} onLogout={nav.logout} birthday={state.me?.intake?.birthday} />}
         {wide ? (
           <div style={{ fontFamily: font, background: C.bg, minHeight: "100dvh", display: "flex", alignItems: "flex-start" }}>
             <SideNav

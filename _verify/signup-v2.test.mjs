@@ -289,7 +289,9 @@ test("the way forward does not scroll off a combined screen", () => {
   // Measured at 320px: "👤 About You" is 1,174px of content, which put
   // Continue 1,362px down a 760px-tall phone. Four questions on one screen is
   // the whole point of the rebuild, so the footer sticks instead.
-  const at = src.indexOf('className="px-6 pb-8 pt-4 flex gap-3 shrink-0"');
+  // 11 Nov: the footer also holds the terms box on the last step, so the
+  // buttons moved into an inner row; the sticky wrapper is unchanged.
+  const at = src.indexOf('className="px-6 pb-8 pt-4 shrink-0"');
   assert.ok(at > 0, "the signup footer is not where this test expects it");
   const row = src.slice(at, at + 260);
   assert.ok(/position: "sticky", bottom: 0/.test(row),
