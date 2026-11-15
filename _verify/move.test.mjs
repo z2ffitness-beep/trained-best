@@ -267,8 +267,10 @@ test("the generator is told a warm-up carries no working weight", () => {
   const at = src.indexOf("LOAD CEILING, both warm-up phases");
   assert.notEqual(at, -1, "a barbell glute bridge was landing in the warm-up");
   const near = src.slice(at, at + 500);
-  assert.ok(/No barbell, dumbbell, kettlebell or machine work loaded for effect/.test(near));
-  assert.ok(/empty bar/.test(near), "an unloaded rehearsal of the day's main lift is still allowed");
+  // 15 Nov (Isaiah): even the empty-bar rehearsal came out as "Back Squat 2x8".
+  // Now nothing but bodyweight, bands and a light med ball, and no main lift.
+  assert.ok(/Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift/.test(near));
+  assert.ok(/Ramp-up sets are not exercises/.test(near));
 });
 
 for (const [name, fn] of tests) {

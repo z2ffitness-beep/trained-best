@@ -10391,11 +10391,13 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - WARM-UP (required, every day, NOT counted in the main-work cap): ${exerciseBudget(intake.sessionMinutes).warmup} dynamic warm-up exercises (phase "warmup_general") followed by 2-${exerciseBudget(intake.sessionMinutes).primer} primer exercises (phase "warmup_specific"). Each is a single round — sets: 1 (primers may use 2) — with reps like "8/side", "5 each direction" or "30s", rpe 3-4 and rest "—". The whole warm-up should take about 8-12 minutes. Never send someone into a heavy lift after one stretch.
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
-WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
-- LOAD CEILING, both warm-up phases: bodyweight, bands, a light medicine ball or an empty bar ONLY. No barbell, dumbbell, kettlebell or machine work loaded for effect — a barbell glute bridge or a loaded squat is training, not preparation, and it belongs in the strength section. If a movement needs a working weight to make sense, it is not a warm-up.
-- A primer may use the day\'s first main lift as an unloaded or empty-bar rehearsal of that pattern. That is the only barbell allowed here, and it carries no plates.
-- Dynamic warm-up: raise temperature and take every joint the day's main lifts will load through its range — e.g. a lower-body day covers hips, knees, ankles and thoracic spine before a squat or deadlift; an upper-body day covers thoracic spine, shoulders, elbows and wrists.
-- Primers: activate the muscles the first main lift depends on (e.g. glutes before squats, scapular stabilisers before pressing).
+WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Potentiate), written for THIS athlete and THIS day's main lifts. For example, a warm-up of "Back Squat 2x8, Scapular Push Ups, Band External Rotation" before a squat day is a bad warm-up; every piece must have a reason on that day.
+- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, e.g. jump rope, bike, rower, skips, shadow boxing for a fighter. Reps like "3 min".
+- MOBILISE (the rest of "warmup_general"): dynamic, moving stretches through the ranges the day's main lifts use, not static holds. A squat day covers ankles, hips, knees and thoracic spine; a pressing day covers thoracic spine, shoulders and wrists; a hinge day covers hips and hamstrings.
+- ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift and power exercise depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
+- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, snap downs, A-skips or a light med ball chest pass.
+- LOAD CEILING, both warm-up phases: bodyweight, bands or a light medicine ball ONLY. Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift. Ramp-up sets are not exercises: do not list "Back Squat 2x8" or "Trap Bar Deadlift 2x8 at difficulty 3" anywhere. The athlete works up to the working weight inside that lift; say once in the rationale to build up over 2 or 3 lighter sets before the working sets of each main lift.
+- The same exercise never appears twice in one day.
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
   • Shoulder: Shoulder CARs, light-band External Rotation, Band Pull Aparts, Scapular Push Ups, Wall Slides.
   • Knee: Banded Terminal Knee Extension, Spanish Squat isometric hold, slow Step Downs, Knee CARs.
@@ -10442,6 +10444,8 @@ Rules:
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
 - If the athlete has injuries, follow the WARM-UP injury rule above and avoid contraindicated movements in the main work.
 - If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
+- POWER BLOCK (phase "explosive", after the warm-up and before the strength work): for anyone training for a sport or fighting, 2 exercises on every training day: one jump, bound or sprint, and one med ball throw (a chest pass, a rotational or overhead throw), 3 to 5 reps, full recovery, maximal intent. Choose them to match the day's main lifts (a jump before squats, a throw before pressing). For general fitness, 1 is enough. They count toward the main-work cap: if they push a day over it, drop an accessory, never the power.
+- Each day's main lifts should be the movements the warm-up prepared. A primer and a main lift that have nothing to do with each other is a sign the day was not planned as one session.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
 
@@ -12680,7 +12684,9 @@ Build the full program again with those changes made. Keep everything they did n
 // forSelf: someone building their own program from My Workout (a solo
 // client, or a coach training themselves), so the screen says "you", not
 // "your client" (3 Nov).
-function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, athleteId = null }) {
+// showPhotoGaps: the "needs a photo" notes are the coach's to-do list, not
+// something an athlete can act on (Isaiah, 15 Nov), so athletes don't see them.
+function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, athleteId = null, showPhotoGaps = true }) {
   // Which build this screen owns, so closing it mid-build and opening it
   // again picks the same build back up (15 Nov).
   const buildScope = !forSelf && athleteId ? `athlete:${athleteId}` : "self";
@@ -12804,7 +12810,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, ath
               so a long list here usually means the athlete's injuries or
               equipment pushed it off the library — which is the right call,
               and worth knowing about. */}
-          {(() => {
+          {showPhotoGaps && (() => {
             const missing = missingImageNames((result.days || []).flatMap(d => d.exercises || []));
             if (missing.length === 0) {
               return (
@@ -12840,7 +12846,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, ath
                     <div key={j} className="text-[12.5px] flex items-center justify-between gap-2" style={{ color: C.sub }}>
                       <span className="min-w-0 flex items-center gap-1.5">
                         <span className="truncate">{x.name}</span>
-                        <NoPhotoFlag name={x.name} size="xs" />
+                        {showPhotoGaps && <NoPhotoFlag name={x.name} size="xs" />}
                       </span>
                       <span className="tabular-nums shrink-0">{x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe}</span>
                     </div>
@@ -19872,7 +19878,7 @@ function DeleteSegmentModal({ open, onClose, blockLabel, dayName, itemCount, oth
   );
 }
 
-function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock, onAdd }) {
+function SessionBlock({ block, showPhotoGaps = false, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock, onAdd }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-2xl overflow-hidden" style={card()}>
@@ -19919,7 +19925,7 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
-                    <NoPhotoFlag name={ex?.name} size="xs" />
+                    {showPhotoGaps && <NoPhotoFlag name={ex?.name} size="xs" />}
                     <div className="text-[12.5px] tabular-nums mt-0.5" style={{ color: C.sub }}>
                       {x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe}{x.rest ? ` · ${x.rest} rest` : ""}
                     </div>
@@ -20956,6 +20962,7 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
                 <SessionBlock
                   key={b.key}
                   block={b}
+                  showPhotoGaps={!!state.coachProfile?.id && state.coachProfile.id === state.me?.id}
                   defaultOpen={false}
                   exById={exById}
                   onExerciseClick={setDetailExercise}
@@ -22801,6 +22808,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         <AIProgramGenerator
           intake={state.me.intake || {}}
           forSelf
+          showPhotoGaps={!!state.coachProfile?.id && state.coachProfile.id === state.me?.id}
           onClose={() => setShowGenerator(false)}
           onGenerated={async (result) => {
             const weeks = result.weeks || 6;
