@@ -3190,12 +3190,12 @@ function intakeSheetSections(intake) {
   const sections = [
     { title: "About", rows: [row("Sex", i.sex), row("Age", age !== null && age !== undefined ? `${age}` : null), row("Height", height),
       row("Weight", i.weightLb ? `${i.weightLb} lb` : null)] },
-    { title: "Goals and sport", rows: [row("Goals", i.goals), row("Focus", i["🥊 Sport / Focus"]),
-      row("Season", i.sportSeason ? `${i.sportSeason}${i.sportSeasonEnd ? `, ends ${i.sportSeasonEnd}` : ""}` : null),
+    { title: "Goals and sport", rows: [row("Goals", i.goals), row("Focus", sportNameOf(i)),
+      row("Season", i.sportSeason ? `${i.sportSeason}${i.sportSeasonEnd ? `, ends ${i.sportSeasonEnd}` : i.sportSeasonOpen ? ", no set end date" : ""}` : null),
       row("Level", i.sportLevel), row("Position or event", i.sportPosition),
       row("Practices / games a week", i.sportPractices !== undefined && i.sportPractices !== null ? `${i.sportPractices} / ${i.sportGames ?? 0}` : null),
       row("Fighter", i.isFighter === true ? `Competing${i.discipline ? `, ${i.discipline}` : ""}` : null),
-      row("Competition date", i.fightDate), row("Training experience", i.experience)] },
+      row("Competition date", i.fightDate || (i.isFighter === true && i.fightBooked === false ? "No fight booked yet" : null)), row("Training experience", i.experience)] },
     { title: "Training lately", rows: [
       row("Days a week, last 4 weeks", RECENT_TRAINING_OPTIONS.find(o => o.key === i.recentDaysPerWeek)?.label),
       row("Last trained consistently", LAST_CONSISTENT_OPTIONS.find(o => o.key === i.lastConsistent)?.label),
@@ -6540,6 +6540,7 @@ const SPORT_SEASONS = [
   { key: "Pre-season", sub: "Getting ready, the season starts soon" },
   { key: "In season", sub: "Competing right now" },
   { key: "Post-season", sub: "Season just ended, recovering" },
+  { key: "Year-round", sub: "No set season, I compete when events come up" },
   { key: "Not applicable", sub: "I play for fun, no sport-specific program" },
 ];
 const SPORT_LEVELS = ["Recreational", "High school", "College or university", "Semi-pro or pro"];
@@ -6568,11 +6569,54 @@ const SPORT_POSITION_HINT = {
   "Other": "Which sport, and your position or event",
 };
 
+// What the sport dropdown SHOWS. The stored value stays the plain name the
+// generator reads; only the label changes. Isaiah, 15 Nov: looking for
+// jiu-jitsu he didn't see it, picked another sport and got asked about a
+// season fighters don't have. Naming the disciplines puts them under Combat
+// Sports, where the fight questions are.
+const SPORT_LABELS = {
+  "Combat Sports": "Combat Sports (MMA, BJJ, boxing, Muay Thai, wrestling, judo)",
+};
+
+// "Other" asks for the sport by name (Isaiah, 15 Nov), and what they type is
+// what the generator is told, so it programs for THAT sport. A combat sport
+// typed there is moved to Combat Sports, where the fight questions are, and a
+// sport the list already has is picked from the list.
+const COMBAT_WORDS = [
+  "jiu jitsu", "jiu-jitsu", "jiujitsu", "jujitsu", "ju jitsu", "ju-jitsu", "bjj", "grappling", "no gi", "no-gi",
+  "mma", "mixed martial arts", "boxing", "kickboxing", "kick boxing", "muay thai", "thai boxing", "wrestling",
+  "judo", "karate", "taekwondo", "tae kwon do", "sambo", "kung fu", "sanda", "savate", "k-1", "lethwei", "submission",
+];
+const SPORT_ALIASES = {
+  "hockey": "Ice Hockey", "ice hockey": "Ice Hockey", "track": "Track and Field", "sprinting": "Track and Field",
+  "running": "Distance Running or Triathlon", "marathon": "Distance Running or Triathlon", "triathlon": "Distance Running or Triathlon",
+  "baseball": "Baseball or Softball", "softball": "Baseball or Softball", "ping pong": "Table Tennis",
+  "lifting": "Powerlifting", "bodybuilding": "Bodybuilding", "physique": "Bodybuilding",
+};
+// What a typed sport should become: { focus, discipline? } or null to keep it as "Other".
+function routeTypedSport(text) {
+  const t = (text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (t.length < 2) return null;
+  if (COMBAT_WORDS.some(w => t === w || t.includes(w))) return { focus: "Combat Sports", discipline: (text || "").trim() };
+  const listed = SPORTS.find(o => o !== "Other" && o !== "Combat Sports" && o.toLowerCase() === t);
+  if (listed) return { focus: listed };
+  if (SPORT_ALIASES[t]) return { focus: SPORT_ALIASES[t] };
+  return null;
+}
+// The sport's real name, for the generator and the coach: what they typed
+// when they picked "Other".
+function sportNameOf(intake) {
+  const v = intake?.["🥊 Sport / Focus"];
+  return v === "Other" && (intake?.sportOther || "").trim() ? intake.sportOther.trim() : v;
+}
+
 // A new sport starts its follow-up from blank.
-const NO_SPORT_PROFILE = { sportSeason: null, sportSeasonEnd: null, sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null };
+const NO_SPORT_PROFILE = { sportSeason: null, sportSeasonEnd: null, sportSeasonOpen: null, sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null };
 
 function sportProfileApplies(data) {
   const v = data?.["🥊 Sport / Focus"];
+  // "Other" asks its season questions once the sport has a name.
+  if (v === "Other" && (data?.sportOther || "").trim().length < 2) return false;
   return focusTypeOf(data) === "sport" && !!v && v !== "General Fitness" && !isCombatFocus(v);
 }
 
@@ -7765,7 +7809,7 @@ const SIGNUP_KEYS = {
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
   goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate",
-    "sportSeason", "sportSeasonEnd", "sportPosition", "sportLevel", "sportPractices", "sportGames",
+    "sportSeason", "sportSeasonEnd", "sportSeasonOpen", "sportPosition", "fightBooked", "sportOther", "sportLevel", "sportPractices", "sportGames",
     "recentDaysPerWeek", "lastConsistent"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
@@ -7879,7 +7923,9 @@ const SIGNUP_V2 = true;
 function focusComplete(data) {
   const v = data?.["🥊 Sport / Focus"];
   if (!v) return false;
-  return focusTypeOf(data) === "sport" ? (SPORTS.includes(v) || v === "MMA") : true;
+  if (focusTypeOf(data) !== "sport") return true;
+  if (v === "Other") return (data.sportOther || "").trim().length > 1;
+  return SPORTS.includes(v) || v === "MMA";
 }
 
 function stepComplete(stepName, data, role) {
@@ -8995,11 +9041,38 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               onChange={e => {
                 const v = e.target.value || null;
                 set("🥊 Sport / Focus", v);
-                setData(d => ({ ...d, ...NO_SPORT_PROFILE, ...(isCombatFocus(v) ? {} : { isFighter: undefined, fightDate: null }) }));
+                setData(d => ({ ...d, ...NO_SPORT_PROFILE, sportOther: null, sportRouted: null, ...(isCombatFocus(v) ? {} : { isFighter: undefined, fightDate: null }) }));
               }}>
               <option value="">Pick your sport</option>
-              {SPORTS.map(o => <option key={o} value={o}>{o}</option>)}
+              {SPORTS.map(o => <option key={o} value={o}>{SPORT_LABELS[o] || o}</option>)}
             </select>
+          )}
+          {type === "sport" && value === "Other" && (
+            <Field label="What's your sport?">
+              <input style={inputStyle} aria-label="What's your sport?" placeholder="e.g. Jiu-jitsu, ultimate frisbee, rowing"
+                value={data.sportOther || ""}
+                onChange={e => {
+                  const text = e.target.value;
+                  // A combat sport moves at once, so the season questions never
+                  // flash up for a fighter. A listed sport waits for them to
+                  // finish typing: "hockey" may be on its way to "field hockey".
+                  const r = routeTypedSport(text);
+                  if (r?.focus === "Combat Sports") {
+                    setData(d => ({ ...d, ...NO_SPORT_PROFILE, "🥊 Sport / Focus": r.focus, sportOther: null, sportRouted: text.trim(), discipline: d.discipline || r.discipline }));
+                  } else set("sportOther", text);
+                }}
+                onBlur={e => {
+                  const r = routeTypedSport(e.target.value);
+                  if (!r) return;
+                  setData(d => ({ ...d, ...NO_SPORT_PROFILE, "🥊 Sport / Focus": r.focus, sportOther: null, sportRouted: e.target.value.trim(),
+                    ...(r.discipline ? { discipline: d.discipline || r.discipline } : { isFighter: undefined, fightDate: null }) }));
+                }} />
+            </Field>
+          )}
+          {type === "sport" && value && value !== "Other" && data.sportRouted && (
+            <p className="text-[13px] mt-1" style={{ color: C.sub }}>
+              Got it: {data.sportRouted} goes under {value}{value === "Combat Sports" ? ", so the fight questions are below." : "."}
+            </p>
           )}
         </div>
       );
@@ -9017,7 +9090,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 <button key={o.key} type="button"
                   onClick={() => setData(d => ({ ...d, sportSeason: o.key,
                     ...(o.key === "Not applicable" ? { sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null } : {}),
-                    ...(o.key !== "In season" ? { sportSeasonEnd: null } : {}) }))}
+                    ...(o.key !== "In season" ? { sportSeasonEnd: null, sportSeasonOpen: null } : {}) }))}
                   className="text-left rounded-lg px-4 py-3 flex items-center justify-between gap-3" style={pill(season === o.key)}>
                   <span>
                     <span className="block text-[15px]" style={{ fontWeight: season === o.key ? 600 : 500 }}>{o.key}</span>
@@ -9028,16 +9101,28 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               ))}
             </div>
           </Field>
+          {/* A date picker alone gave no way to say "it doesn't end on a date",
+              and once a date was in, no way to take it out (Isaiah, 15 Nov). */}
           {season === "In season" && (
             <Field label="When does your season end? (optional)">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.sportSeasonEnd || ""} onChange={e => set("sportSeasonEnd", e.target.value || null)} />
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                  style={pill(data.sportSeasonOpen === false || !!data.sportSeasonEnd)}
+                  onClick={() => setData(d => ({ ...d, sportSeasonOpen: false }))}>On a date</button>
+                <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                  style={pill(data.sportSeasonOpen === true)}
+                  onClick={() => setData(d => ({ ...d, sportSeasonOpen: true, sportSeasonEnd: null }))}>No set end date</button>
+              </div>
+              {(data.sportSeasonOpen === false || !!data.sportSeasonEnd) && (
+                <input type="date" style={inputStyle} min={todayISO()} aria-label="Season end date"
+                  value={data.sportSeasonEnd || ""} onChange={e => set("sportSeasonEnd", e.target.value || null)} />
+              )}
             </Field>
           )}
           {season && season !== "Not applicable" && (
             <>
-              <Field label={sport === "Other" ? "Which sport, and your position or event" : "Position or event (optional)"}>
-                <input style={inputStyle} placeholder={SPORT_POSITION_HINT[sport] || "Your position or event"}
+              <Field label="Position or event (optional)">
+                <input style={inputStyle} placeholder={sport === "Other" ? `Your position or event in ${sportNameOf(data) || "your sport"}` : (SPORT_POSITION_HINT[sport] || "Your position or event")}
                   value={data.sportPosition || ""} onChange={e => set("sportPosition", e.target.value)} />
               </Field>
               <Field label="Level">
@@ -9075,7 +9160,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Are you a fighter (competing) or training for fitness/skill?">
             <div className="grid grid-cols-2 gap-3">
               {["Competing fighter", "Training only"].map(opt => (
-                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") set("fightDate", null); }}
+                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") setData(d => ({ ...d, fightDate: null, fightBooked: null })); }}
                   className="rounded-lg p-3.5 text-center text-[15px] font-medium"
                   style={{ background: data.isFighter === (opt === "Competing fighter") ? `${C.orange}18` : C.panel, border: `1px solid ${data.isFighter === (opt === "Competing fighter") ? C.orange : C.border}`, color: data.isFighter === (opt === "Competing fighter") ? C.orange : C.text }}>
                   {opt}
@@ -9089,10 +9174,27 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           {/* The one part of the old "what is in the way, and by when" screen
               that anything used: the fight date drives the camp taper.
               Isaiah, 30 Oct: the rest of that screen is gone. */}
+          {/* Fighters have fights, not seasons (Isaiah, 15 Nov): either one is
+              booked or it isn't, and "not yet" is an answer, not a blank. */}
           {data.isFighter === true && (
-            <Field label="Next fight date (optional)">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+            <Field label="Do you have a fight booked?">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                {[["Fight booked", true], ["No fight booked yet", false]].map(([label, on]) => {
+                  const picked = on ? (data.fightBooked === true || !!data.fightDate) : (data.fightBooked === false && !data.fightDate);
+                  return (
+                    <button key={label} type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                      style={{ background: picked ? `${C.orange}18` : C.panel, border: `1px solid ${picked ? C.orange : C.border}`, color: picked ? C.orange : C.text }}
+                      onClick={() => setData(d => ({ ...d, fightBooked: on, ...(on ? {} : { fightDate: null }) }))}>{label}</button>
+                  );
+                })}
+              </div>
+              {(data.fightBooked === true || !!data.fightDate) && (
+                <input type="date" style={inputStyle} min={todayISO()} aria-label="Fight date"
+                  value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+              )}
+              {data.fightBooked === false && !data.fightDate && (
+                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>Your program keeps you fight-ready. Add the date in Profile when you get the call, and it switches to a fight camp.</p>
+              )}
             </Field>
           )}
         </div>
@@ -10221,18 +10323,20 @@ function intakeIsUsable(intake) {
 // athlete is in their season.
 function sportPromptBlock(intake) {
   if (!sportProgramOn(intake)) return "";
-  const sport = intake["🥊 Sport / Focus"];
+  const sport = sportNameOf(intake);
   const season = intake.sportSeason;
   const guide = {
     "Off season": "OFF SEASON: the highest training volume of the year. Build general and maximal strength, add muscle where the sport rewards it, correct imbalances and old injuries, and introduce power work. Conditioning builds the aerobic base the sport sits on.",
     "Pre-season": "PRE-SEASON: convert strength into power and speed. Volume comes down and intensity goes up. Conditioning becomes sport-specific: match the work-to-rest pattern and energy systems of this sport and position.",
     "In season": "IN SEASON: maintain, do not build. Low volume, high quality: 2 to 3 main lifts per session, sets kept short, power work kept in. Nothing may leave the athlete sore or slow for practice or games. Keep sessions shorter than the time available if needed; the sport itself is the main stress.",
     "Post-season": "POST-SEASON: recovery and restoration. Low intensity, variety, mobility, and rehabilitating anything the season left behind. Light strength work to stop detraining, no maximal efforts.",
+    "Year-round": "YEAR-ROUND: no fixed season; competitions come up through the year. Train concurrently: build strength and power at moderate volume while keeping the athlete fresh enough to compete on short notice. Nothing that leaves them sore for days, and conditioning kept close to the demands of their events.",
   }[season] || "";
   return `SPORT PROGRAM — this outranks the generic advice elsewhere when they conflict.
 You are a high-level NSCA-certified strength and conditioning coach (CSCS) programming for a ${intake.sportLevel ? intake.sportLevel.toLowerCase() + " " : ""}${sport} athlete${intake.sportPosition ? ` (${intake.sportPosition})` : ""}.
-- ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}
-- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose exercises that transfer to the sport.
+- ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}${season === "In season" && !intake.sportSeasonEnd && intake.sportSeasonOpen ? " The season has no set end date, so plan for being in season for the whole program." : ""}
+${intake["🥊 Sport / Focus"] === "Other" ? `- The athlete typed "${sport}" as their sport. Use everything you know about it: its rules, how a match or event is scored and how long it lasts, the movements and energy systems it uses, and the injuries it causes.
+` : ""}- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose exercises that transfer to the sport.
 - Include prehab for the injuries this sport commonly causes (for example knees and ankles in court and field sports, shoulders and elbows in throwing and racket sports, hamstrings in sprinting sports, lower back in rotational sports).
 - They also have ${intake.sportPractices ?? "an unknown number of"} practices and ${intake.sportGames ?? "an unknown number of"} games a week. Count that as training load: total stress across the week must leave them fresh for games.
 - Say in the rationale how the program fits their sport and their season.`;
@@ -10253,12 +10357,12 @@ function startLevelPromptBlock(intake) {
 }
 
 function buildAIPrompt(intake) {
-  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${intake["🥊 Sport / Focus"]}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
+  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${sportNameOf(intake)}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
 Athlete intake:
 - Sex: ${intake.sex || "unspecified"}
-- Sport/focus: ${sportProfileApplies(intake) && intake.sportSeason === "Not applicable" ? `General Fitness (plays ${intake["🥊 Sport / Focus"]} for fun; do NOT build a sport-specific program)` : (intake["🥊 Sport / Focus"] || "General Fitness")}${sportProgramOn(intake) ? `
-- Season: ${intake.sportSeason}${intake.sportSeasonEnd ? ` (ends ${intake.sportSeasonEnd})` : ""}
+- Sport/focus: ${sportProfileApplies(intake) && intake.sportSeason === "Not applicable" ? `General Fitness (plays ${sportNameOf(intake)} for fun; do NOT build a sport-specific program)` : (sportNameOf(intake) || "General Fitness")}${sportProgramOn(intake) ? `
+- Season: ${intake.sportSeason}${intake.sportSeasonEnd ? ` (ends ${intake.sportSeasonEnd})` : intake.sportSeasonOpen ? " (no set end date)" : ""}
 - Position or event: ${intake.sportPosition || "not given"}
 - Level: ${intake.sportLevel || "not given"}
 - Practices a week: ${intake.sportPractices ?? "not given"}; games a week: ${intake.sportGames ?? "not given"}` : ""}
@@ -10317,6 +10421,9 @@ BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 
 ${(() => {
   const stage = taperStageOn(intake.fightDate);
+  if ((!stage || stage.key === "base") && intake.isFighter && !intake.fightDate) {
+    return `BETWEEN FIGHTS — a competing fighter with no fight booked yet. Fighters do not have seasons; they get a call, often on short notice, and a camp is usually 6 to 10 weeks. So this program builds the base a camp sharpens: maximal strength, power, and a big aerobic engine, at a volume that leaves them fresh for skill training. Keep them within a few weeks of fight-ready at all times: no block so heavy that a short-notice fight would catch them sore or flat. Write the FINAL week as a test week on the main lifts. Say in the rationale that the program switches to a fight camp when they add a fight date.`;
+  }
   if (!stage || stage.key === "base") {
     return `NO EVENT TO TAPER TO — so the program peaks on its own schedule. Each block builds to its hardest week and then the app deloads it. Write the FINAL week as a TEST WEEK: the same main lifts, low reps, and an instruction in that week's notes to attempt a personal record on them. That is what the whole program was building toward, so say so in the rationale.`;
   }
