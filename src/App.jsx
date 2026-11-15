@@ -12392,11 +12392,13 @@ function WorkoutProgressBar({ finished, total }) {
 function useBuildProgress() {
   const [fraction, setFraction] = useState(0);
   const reset = () => setFraction(0);
+  // From the server's counts (callAIBackground). Never moves backwards.
+  const onFraction = (f) => setFraction(prev => (f > prev ? f : prev));
   const onText = (totalDays) => (text) => {
     const f = programBuildProgress(text, totalDays);
     setFraction(prev => (f > prev ? f : prev));
   };
-  return { fraction, setFraction, reset, onText };
+  return { fraction, setFraction, reset, onText, onFraction };
 }
 
 // Reads the server's SSE relay. Each frame is either a text chunk, an in-band
@@ -12521,6 +12523,135 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   return textBlock.text;
 }
 
+// ---------- program builds that survive leaving the app ----------
+//
+// Isaiah, 15 Nov: he started a build, switched apps, and came back to "the
+// request timed out". The build streamed straight to the phone, and iOS cuts
+// that stream the moment the app is in the background.
+//
+// Now /api/build-program builds it on the server and writes the result to a
+// program_builds row. This side starts it, then checks the row every few
+// seconds, and straight away whenever the app comes back to the front. The
+// build id is kept on the phone, so a screen that was closed, or an app that
+// was quit and reopened, picks up the same build instead of paying for a
+// second one.
+const BUILD_POLL_MS = 2500;
+const BUILD_STALE_MS = 7 * 60_000;
+
+function pendingBuildKey(scope) { return `tb_build_${scope}`; }
+function readPendingBuild(scope) {
+  try {
+    const v = JSON.parse(localStorage.getItem(pendingBuildKey(scope)) || "null");
+    if (!v?.id || !(Date.now() - v.at < BUILD_STALE_MS)) return null;
+    return v;
+  } catch { return null; }
+}
+function writePendingBuild(scope, id) {
+  try { localStorage.setItem(pendingBuildKey(scope), JSON.stringify({ id, at: Date.now() })); } catch { /* checked again by id below */ }
+}
+function clearPendingBuild(scope) {
+  try { localStorage.removeItem(pendingBuildKey(scope)); } catch { /* nothing to clear */ }
+}
+
+// The percentage from the counts the server writes (see programBuildProgress,
+// which does the same from the text itself).
+function progressFromCounts(counts, totalDays) {
+  const days = Math.max(1, Number(totalDays) || 1);
+  const d = Number(counts?.days) || 0;
+  if (d === 0) return Math.min(0.04, ((Number(counts?.chars) || 0) / 800) * 0.04);
+  const intoDay = Math.min((Number(counts?.phases) || 0) / EXERCISES_PER_DAY_GUESS, 0.95);
+  const done = Math.min(d - 1 + intoDay, days);
+  return Math.min(0.99, 0.05 + 0.94 * (done / days));
+}
+
+// Waits the poll gap, or less if the app comes back to the front.
+function waitForNextCheck(ms) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(t); document.removeEventListener("visibilitychange", onVis); resolve(); };
+    const onVis = () => { if (document.visibilityState === "visible") finish(); };
+    const t = setTimeout(finish, ms);
+    document.addEventListener("visibilitychange", onVis);
+  });
+}
+
+// Reads one build's row until it is done. Returns the model's text.
+async function waitForBuild(id, { totalDays, onFraction, scope }) {
+  const began = Date.now();
+  let misses = 0;
+  for (;;) {
+    const { data, error } = await supabase.from("program_builds")
+      .select("status, progress, result, error, stop_reason, created_at").eq("id", id).maybeSingle();
+    if (data) {
+      misses = 0;
+      if (data.progress && onFraction) { try { onFraction(progressFromCounts(data.progress, totalDays)); } catch { /* never break a build over a percentage */ } }
+      if (data.status === "done") {
+        clearPendingBuild(scope);
+        if (data.stop_reason === "max_tokens") throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+        if (!(data.result || "").trim()) throw new Error("The AI returned an empty response. Please try again.");
+        return data.result;
+      }
+      if (data.status === "failed") {
+        clearPendingBuild(scope);
+        throw new Error(data.error || "The build stopped partway through. Tap Try Again.");
+      }
+      if (Date.now() - Date.parse(data.created_at) > BUILD_STALE_MS) {
+        clearPendingBuild(scope);
+        throw new Error("The build stopped on the server. Tap Try Again — nothing was lost.");
+      }
+    } else if (!error && ++misses > 8 && Date.now() - began > 20_000) {
+      clearPendingBuild(scope);
+      throw new Error("That build couldn't be found. Tap Try Again.");
+    }
+    // A read that fails (no signal while the phone was away) just waits and
+    // reads again: the build itself is safe on the server.
+    await waitForNextCheck(BUILD_POLL_MS);
+  }
+}
+
+// The long builds: a whole program, or a pasted one converted. Same answer as
+// callAI, but the work happens on the server. scope names what the build is
+// for ("self", "first:<user id>", "athlete:<id>"), so a screen opened again
+// finds its own build. Falls back to callAI if the server can't do it this way
+// (an older deploy, or before the database table exists).
+async function callAIBackground({ messages, system, maxTokens = 32000, model = MODEL_PROGRAM, scope = "self", forAthleteId = null, totalDays = 4, onFraction, onText }) {
+  const resume = readPendingBuild(scope);
+  if (resume) return waitForBuild(resume.id, { totalDays, onFraction, scope });
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
+  const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID()
+    : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16); });
+
+  let response;
+  try {
+    response = await fetch(apiUrl("/api/build-program"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ id, model, max_tokens: maxTokens, messages, forAthleteId, ...(system ? { system } : {}) }),
+    });
+  } catch (err) {
+    throw aiNetworkError(0, false);
+  }
+
+  if (response.status === 404 || response.status === 503 || response.status === 405) {
+    return callAI({ messages, system, maxTokens, model, onText });
+  }
+  let data = null;
+  try { data = await response.json(); } catch { /* no JSON */ }
+  if (response.status === 409 && data?.id) {
+    writePendingBuild(scope, data.id);
+    return waitForBuild(data.id, { totalDays, onFraction, scope });
+  }
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Your session expired. Sign in again to use AI features.");
+    if (response.status === 429) throw new Error(data?.error || "The AI is rate limited right now. Wait a minute and try again.");
+    throw new Error(data?.error || `Couldn't start the build (${response.status}).`);
+  }
+  writePendingBuild(scope, id);
+  return waitForBuild(id, { totalDays, onFraction, scope });
+}
+
 // Regenerate with changes (Isaiah, 3 Nov): whoever is building the program,
 // a coach for a client or someone for themselves, can type or say what to
 // change before building it again. The model sees the version it built last
@@ -12549,7 +12680,10 @@ Build the full program again with those changes made. Keep everything they did n
 // forSelf: someone building their own program from My Workout (a solo
 // client, or a coach training themselves), so the screen says "you", not
 // "your client" (3 Nov).
-function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
+function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, athleteId = null }) {
+  // Which build this screen owns, so closing it mid-build and opening it
+  // again picks the same build back up (15 Nov).
+  const buildScope = !forSelf && athleteId ? `athlete:${athleteId}` : "self";
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
@@ -12569,15 +12703,25 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
     pending.current = { previous: changes.trim() ? result : null, asked: changes.trim() };
     generate();
   };
+  // A build started earlier from this screen is still going (or finished)
+  // on the server: show it, instead of the start screen.
+  useEffect(() => {
+    if (readPendingBuild(buildScope)) generate();
+  }, []);
 
   const generate = async () => {
     setStatus("loading"); setErrorMsg(""); progress.reset();
     const { previous, asked } = pending.current;
     try {
-      const text = await callAI({
+      const totalDays = (intake?.trainingDays || []).filter(Boolean).length || 4;
+      const text = await callAIBackground({
         messages: [{ role: "user", content: buildAIPrompt({ ...intake, startLevel: level }) + regenerationRequest(previous, asked) }],
         maxTokens: 32000,
-        onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
+        scope: buildScope,
+        forAthleteId: !forSelf && athleteId ? athleteId : null,
+        totalDays,
+        onFraction: progress.onFraction,
+        onText: progress.onText(totalDays),
       });
       progress.setFraction(1);
       const parsed = parseAIJson(text);
@@ -12629,7 +12773,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingEstimate label={forSelf ? "Building your program" : "Building the program"} tips={forSelf ? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH} detail="Usually two to four minutes." />
+          <LoadingEstimate label={forSelf ? "Building your program" : "Building the program"} tips={forSelf ? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH} detail="Usually two to four minutes. You can switch apps or close this screen: it keeps building, and it's here when you come back." />
         </div>
       )}
       {status === "error" && (
@@ -14132,6 +14276,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       {generateFor && (
         <AIProgramGenerator
           intake={intakeForAthlete(state.athletes.find(a => a.id === generateFor))}
+          athleteId={generateFor}
           onGenerated={(result) => assignGenerated(generateFor, result)}
           onClose={() => setGenerateFor(null)} />
       )}
@@ -15269,6 +15414,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       {generateOpen && (
         <AIProgramGenerator
           intake={athleteIntake}
+          athleteId={athleteId}
           onGenerated={buildFromAnswers}
           onClose={() => setGenerateOpen(false)} />
       )}
@@ -15496,9 +15642,13 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
     if (text.length < 40) { setError("Paste the whole program - that looks like a line or two."); setStatus("error"); return; }
     setStatus("converting"); setError(""); progress.reset();
     try {
-      const reply = await callAI({
+      const reply = await callAIBackground({
         messages: [{ role: "user", content: buildImportPrompt(text, athlete) }],
         maxTokens: 32000,
+        scope: `import:${athlete?.id || "self"}`,
+        forAthleteId: athlete?.id || null,
+        totalDays: countPastedDays(text),
+        onFraction: progress.onFraction,
         onText: progress.onText(countPastedDays(text)),
       });
       progress.setFraction(1);
@@ -16193,6 +16343,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
       {aiOpen && aiFor && (
         <AIProgramGenerator
           intake={intakeForAthlete(state.athletes.find(a => a.id === aiFor))}
+          athleteId={aiFor}
           onGenerated={applyAIProgram}
           onClose={() => { setAiOpen(false); setAiFor(null); }} />
       )}
@@ -31441,10 +31592,16 @@ function AppInner() {
   const buildFirstProgram = async (userId, data) => {
     signupProgress.reset();
     try {
-      const text = await callAI({
+      const totalDays = (data?.trainingDays || []).filter(Boolean).length || 4;
+      // Built on the server (15 Nov), so leaving the app mid-build no longer
+      // kills it. Coming back finds it by its id.
+      const text = await callAIBackground({
         messages: [{ role: "user", content: buildAIPrompt(data) }],
         maxTokens: 32000,
-        onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
+        scope: `first:${userId || "new"}`,
+        totalDays,
+        onFraction: signupProgress.onFraction,
+        onText: signupProgress.onText(totalDays),
       });
       const parsed = parseAIJson(text);
       parsed.days = tagStartRamp(attachWeekdays(parsed.days, data.trainingDays), startLevelOf(data));
@@ -31493,6 +31650,24 @@ function AppInner() {
     await buildFirstProgram(userId, data);
     setGeneratingProgram(false);
   };
+
+  // The first program was still building when the app was closed (15 Nov).
+  // It carried on on the server; opening the app again finishes it from the
+  // same build rather than starting, and paying for, another.
+  const resumedBuildFor = useRef(null);
+  useEffect(() => {
+    const id = state.me?.id;
+    if (!id || (authed !== "athlete" && authed !== "athlete_coached")) return;
+    if (state.me?.program || generatingProgram || resumedBuildFor.current === id) return;
+    if (!readPendingBuild(`first:${id}`)) return;
+    resumedBuildFor.current = id;
+    (async () => {
+      setGeneratingProgram(true);
+      await buildFirstProgram(id, state.me?.intake || {});
+      setGeneratingProgram(false);
+      setView("athlete-dashboard");
+    })();
+  }, [authed, state.me?.id, state.me?.program]);
 
   // Signup is two phases because email confirmation may sit between them:
   // create the auth account, then (once a session exists) write the profile.
@@ -31834,7 +32009,7 @@ function AppInner() {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
           <LoadingEstimate big label="Building your program" tips={BUILD_TIPS_CLIENT}
-            detail="Usually two to four minutes." />
+            detail="Usually two to four minutes. You can switch apps while you wait: it keeps building, and it's here when you come back." />
         </div>
       );
     }
