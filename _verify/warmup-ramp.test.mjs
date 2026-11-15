@@ -36,6 +36,17 @@ test("photo gaps show for coaches, not athletes", () => {
   assert.equal((src.match(/showPhotoGaps=\{!!state\.coachProfile\?\.id && state\.coachProfile\.id === state\.me\?\.id\}/g) || []).length, 2);
 });
 
+test("the weight room does not copy the sport (Isaiah, 15 Nov)", () => {
+  assert.match(prompt, /GENERAL PREPARATION, NOT THE SPORT/);
+  assert.match(prompt, /no shadow boxing, bag work, sprawls/);
+  assert.ok(!/snap downs/.test(src), "no snap downs anywhere");
+  assert.ok(!/shadow boxing for a fighter/.test(src));
+  assert.ok(!/include striking\/conditioning elements \(bag work/.test(src), "the old MMA rule is gone");
+});
+test("an athlete's Coach tab is headed with their coach's name", () => {
+  assert.ok(src.includes('header={<TopBar title={hasCoach ? (state.coachProfile?.name || "Coach") : "Coach"} />} />;'));
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; } catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
 }

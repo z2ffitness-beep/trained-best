@@ -10336,7 +10336,7 @@ function sportPromptBlock(intake) {
 You are a high-level NSCA-certified strength and conditioning coach (CSCS) programming for a ${intake.sportLevel ? intake.sportLevel.toLowerCase() + " " : ""}${sport} athlete${intake.sportPosition ? ` (${intake.sportPosition})` : ""}.
 - ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}${season === "In season" && !intake.sportSeasonEnd && intake.sportSeasonOpen ? " The season has no set end date, so plan for being in season for the whole program." : ""}
 ${intake["🥊 Sport / Focus"] === "Other" ? `- The athlete typed "${sport}" as their sport. Use everything you know about it: its rules, how a match or event is scored and how long it lasts, the movements and energy systems it uses, and the injuries it causes.
-` : ""}- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose exercises that transfer to the sport.
+` : ""}- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose general exercises that build the qualities the sport needs; transfer comes from those qualities, not from copying the sport's movements in the weight room.
 - Include prehab for the injuries this sport commonly causes (for example knees and ankles in court and field sports, shoulders and elbows in throwing and racket sports, hamstrings in sprinting sports, lower back in rotational sports).
 - They also have ${intake.sportPractices ?? "an unknown number of"} practices and ${intake.sportGames ?? "an unknown number of"} games a week. Count that as training load: total stress across the week must leave them fresh for games.
 - Say in the rationale how the program fits their sport and their season.`;
@@ -10351,7 +10351,7 @@ function startLevelPromptBlock(intake) {
 - Choose exercises this person can do well now: stable, simpler variations over complex ones (goblet or box squat before a heavy back squat, trap bar before a conventional deadlift from the floor, no Olympic lifts as a main lift yet).
 - Build soft tissue capacity: include slow-tempo work or isometric holds for the knees, ankles, hips and shoulders in the main work, not only the warm-up.
 - Include an easy aerobic piece at a conversational pace in every session, and keep conditioning sub-maximal: no all-out sprints or repeat-sprint finishers.
-- Plyometrics stay low level (pogo jumps, snap downs, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
+- Plyometrics stay low level (pogo jumps, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
 - NSCA/CSCCa return-to-training (FIT) rules for the first two weeks, which the program must already respect at the set counts the app will use: each movement type (squat, hinge, push, pull, jumps) in no more than 3 sessions a week; jump foot contacts no more than about 70 a session (35 written, since the app halves week 1); keep main lifts at moderate reps (5 to 10), never singles, doubles or triples; conditioning as intervals with long rests (the app sets work to rest at 1:4 then 1:3).
 - Say in the rationale, plainly, that the first ${cfg.weeks} weeks are lighter on purpose and why: building tendons, cardio and the habit first lowers the injury risk and keeps them showing up.`;
 }
@@ -10392,10 +10392,10 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
 WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Potentiate), written for THIS athlete and THIS day's main lifts. For example, a warm-up of "Back Squat 2x8, Scapular Push Ups, Band External Rotation" before a squat day is a bad warm-up; every piece must have a reason on that day.
-- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, e.g. jump rope, bike, rower, skips, shadow boxing for a fighter. Reps like "3 min".
+- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, e.g. jump rope, bike, rower or skips. Reps like "3 min".
 - MOBILISE (the rest of "warmup_general"): dynamic, moving stretches through the ranges the day's main lifts use, not static holds. A squat day covers ankles, hips, knees and thoracic spine; a pressing day covers thoracic spine, shoulders and wrists; a hinge day covers hips and hamstrings.
 - ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift and power exercise depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
-- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, snap downs, A-skips or a light med ball chest pass.
+- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.
 - LOAD CEILING, both warm-up phases: bodyweight, bands or a light medicine ball ONLY. Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift. Ramp-up sets are not exercises: do not list "Back Squat 2x8" or "Trap Bar Deadlift 2x8 at difficulty 3" anywhere. The athlete works up to the working weight inside that lift; say once in the rationale to build up over 2 or 3 lighter sets before the working sets of each main lift.
 - The same exercise never appears twice in one day.
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
@@ -10443,7 +10443,7 @@ Rules:
 - If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
 - If the athlete has injuries, follow the WARM-UP injury rule above and avoid contraindicated movements in the main work.
-- If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
+- GENERAL PREPARATION, NOT THE SPORT. The weight room builds the qualities the sport runs on (strength, power, speed, an aerobic engine, robust joints) with general exercises. It does not copy the sport: no shadow boxing, bag work, sprawls, shots, grappling or wrestling drills, sport-skill circuits or anything that looks like practice. Athletes, and fighters most of all, get their specific work at their gym or practice; repeating it here only adds fatigue. Conditioning matches the sport's energy demands (how long and how hard the efforts are, and the rest between them) using general tools like a bike, rower, sled or running, not the sport's movements. In the last 2 weeks of a fight camp a small amount of more specific conditioning MAY appear if it adds something, never as the default.
 - POWER BLOCK (phase "explosive", after the warm-up and before the strength work): for anyone training for a sport or fighting, 2 exercises on every training day: one jump, bound or sprint, and one med ball throw (a chest pass, a rotational or overhead throw), 3 to 5 reps, full recovery, maximal intent. Choose them to match the day's main lifts (a jump before squats, a throw before pressing). For general fitness, 1 is enough. They count toward the main-work cap: if they push a day over it, drop an accessory, never the power.
 - Each day's main lifts should be the movements the warm-up prepared. A primer and a main lift that have nothing to do with each other is a sign the day was not planned as one session.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
@@ -25047,7 +25047,7 @@ function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
           upload, cost storage and then be ignored. */}
       <MessageComposer
         key={tab}
-        placeholder={tab === "coach" ? (hasCoach ? "Message your coach..." : "No coach linked yet") : "Ask the AI assistant..."}
+        placeholder={tab === "coach" ? (hasCoach ? `Message ${(state.coachProfile?.name || "").trim().split(/\s+/)[0] || "your coach"}...` : "No coach linked yet") : "Ask the AI assistant..."}
         disabled={tab === "coach" && !hasCoach}
         sending={tab === "coach" ? coachSending : aiLoading}
         allowMedia={tab === "coach" && hasCoach && messageMediaReady}
@@ -29800,7 +29800,8 @@ function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
 
   if (!hasCoach || !FEATURES.booking) {
     return <AthleteMessages state={state} setState={setState} nav={nav} myUserId={myUserId}
-      header={<TopBar title="Coach" />} />;
+      // The athlete's coach by name, not the word "Coach" (Isaiah, 15 Nov).
+      header={<TopBar title={hasCoach ? (state.coachProfile?.name || "Coach") : "Coach"} />} />;
   }
 
   const tabs = (
