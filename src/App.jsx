@@ -3190,12 +3190,12 @@ function intakeSheetSections(intake) {
   const sections = [
     { title: "About", rows: [row("Sex", i.sex), row("Age", age !== null && age !== undefined ? `${age}` : null), row("Height", height),
       row("Weight", i.weightLb ? `${i.weightLb} lb` : null)] },
-    { title: "Goals and sport", rows: [row("Goals", i.goals), row("Focus", i["🥊 Sport / Focus"]),
-      row("Season", i.sportSeason ? `${i.sportSeason}${i.sportSeasonEnd ? `, ends ${i.sportSeasonEnd}` : ""}` : null),
+    { title: "Goals and sport", rows: [row("Goals", i.goals), row("Focus", sportNameOf(i)),
+      row("Season", i.sportSeason ? `${i.sportSeason}${i.sportSeasonEnd ? `, ends ${i.sportSeasonEnd}` : i.sportSeasonOpen ? ", no set end date" : ""}` : null),
       row("Level", i.sportLevel), row("Position or event", i.sportPosition),
       row("Practices / games a week", i.sportPractices !== undefined && i.sportPractices !== null ? `${i.sportPractices} / ${i.sportGames ?? 0}` : null),
       row("Fighter", i.isFighter === true ? `Competing${i.discipline ? `, ${i.discipline}` : ""}` : null),
-      row("Competition date", i.fightDate), row("Training experience", i.experience)] },
+      row("Competition date", i.fightDate || (i.isFighter === true && i.fightBooked === false ? "No fight booked yet" : null)), row("Training experience", i.experience)] },
     { title: "Training lately", rows: [
       row("Days a week, last 4 weeks", RECENT_TRAINING_OPTIONS.find(o => o.key === i.recentDaysPerWeek)?.label),
       row("Last trained consistently", LAST_CONSISTENT_OPTIONS.find(o => o.key === i.lastConsistent)?.label),
@@ -6540,6 +6540,7 @@ const SPORT_SEASONS = [
   { key: "Pre-season", sub: "Getting ready, the season starts soon" },
   { key: "In season", sub: "Competing right now" },
   { key: "Post-season", sub: "Season just ended, recovering" },
+  { key: "Year-round", sub: "No set season, I compete when events come up" },
   { key: "Not applicable", sub: "I play for fun, no sport-specific program" },
 ];
 const SPORT_LEVELS = ["Recreational", "High school", "College or university", "Semi-pro or pro"];
@@ -6568,11 +6569,54 @@ const SPORT_POSITION_HINT = {
   "Other": "Which sport, and your position or event",
 };
 
+// What the sport dropdown SHOWS. The stored value stays the plain name the
+// generator reads; only the label changes. Isaiah, 15 Nov: looking for
+// jiu-jitsu he didn't see it, picked another sport and got asked about a
+// season fighters don't have. Naming the disciplines puts them under Combat
+// Sports, where the fight questions are.
+const SPORT_LABELS = {
+  "Combat Sports": "Combat Sports (MMA, BJJ, boxing, Muay Thai, wrestling, judo)",
+};
+
+// "Other" asks for the sport by name (Isaiah, 15 Nov), and what they type is
+// what the generator is told, so it programs for THAT sport. A combat sport
+// typed there is moved to Combat Sports, where the fight questions are, and a
+// sport the list already has is picked from the list.
+const COMBAT_WORDS = [
+  "jiu jitsu", "jiu-jitsu", "jiujitsu", "jujitsu", "ju jitsu", "ju-jitsu", "bjj", "grappling", "no gi", "no-gi",
+  "mma", "mixed martial arts", "boxing", "kickboxing", "kick boxing", "muay thai", "thai boxing", "wrestling",
+  "judo", "karate", "taekwondo", "tae kwon do", "sambo", "kung fu", "sanda", "savate", "k-1", "lethwei", "submission",
+];
+const SPORT_ALIASES = {
+  "hockey": "Ice Hockey", "ice hockey": "Ice Hockey", "track": "Track and Field", "sprinting": "Track and Field",
+  "running": "Distance Running or Triathlon", "marathon": "Distance Running or Triathlon", "triathlon": "Distance Running or Triathlon",
+  "baseball": "Baseball or Softball", "softball": "Baseball or Softball", "ping pong": "Table Tennis",
+  "lifting": "Powerlifting", "bodybuilding": "Bodybuilding", "physique": "Bodybuilding",
+};
+// What a typed sport should become: { focus, discipline? } or null to keep it as "Other".
+function routeTypedSport(text) {
+  const t = (text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (t.length < 2) return null;
+  if (COMBAT_WORDS.some(w => t === w || t.includes(w))) return { focus: "Combat Sports", discipline: (text || "").trim() };
+  const listed = SPORTS.find(o => o !== "Other" && o !== "Combat Sports" && o.toLowerCase() === t);
+  if (listed) return { focus: listed };
+  if (SPORT_ALIASES[t]) return { focus: SPORT_ALIASES[t] };
+  return null;
+}
+// The sport's real name, for the generator and the coach: what they typed
+// when they picked "Other".
+function sportNameOf(intake) {
+  const v = intake?.["🥊 Sport / Focus"];
+  return v === "Other" && (intake?.sportOther || "").trim() ? intake.sportOther.trim() : v;
+}
+
 // A new sport starts its follow-up from blank.
-const NO_SPORT_PROFILE = { sportSeason: null, sportSeasonEnd: null, sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null };
+const NO_SPORT_PROFILE = { sportSeason: null, sportSeasonEnd: null, sportSeasonOpen: null, sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null };
 
 function sportProfileApplies(data) {
   const v = data?.["🥊 Sport / Focus"];
+  // "Other" asks its season questions once the sport has a name.
+  if (v === "Other" && (data?.sportOther || "").trim().length < 2) return false;
   return focusTypeOf(data) === "sport" && !!v && v !== "General Fitness" && !isCombatFocus(v);
 }
 
@@ -7765,7 +7809,7 @@ const SIGNUP_KEYS = {
   // feeds the prompt, so it goes on the screen it is closest to rather than
   // being dropped - Isaiah's call, 15 Oct.
   goal: ["goals", "experience", "🥊 Sport / Focus", "focusType", "isFighter", "discipline", "fightDate",
-    "sportSeason", "sportSeasonEnd", "sportPosition", "sportLevel", "sportPractices", "sportGames",
+    "sportSeason", "sportSeasonEnd", "sportSeasonOpen", "sportPosition", "fightBooked", "sportOther", "sportLevel", "sportPractices", "sportGames",
     "recentDaysPerWeek", "lastConsistent"],
   // One screen, was three. Session style is gone as a question: the split is
   // worked out from how many days a week they train, which is what it was
@@ -7879,7 +7923,9 @@ const SIGNUP_V2 = true;
 function focusComplete(data) {
   const v = data?.["🥊 Sport / Focus"];
   if (!v) return false;
-  return focusTypeOf(data) === "sport" ? (SPORTS.includes(v) || v === "MMA") : true;
+  if (focusTypeOf(data) !== "sport") return true;
+  if (v === "Other") return (data.sportOther || "").trim().length > 1;
+  return SPORTS.includes(v) || v === "MMA";
 }
 
 function stepComplete(stepName, data, role) {
@@ -8995,11 +9041,38 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               onChange={e => {
                 const v = e.target.value || null;
                 set("🥊 Sport / Focus", v);
-                setData(d => ({ ...d, ...NO_SPORT_PROFILE, ...(isCombatFocus(v) ? {} : { isFighter: undefined, fightDate: null }) }));
+                setData(d => ({ ...d, ...NO_SPORT_PROFILE, sportOther: null, sportRouted: null, ...(isCombatFocus(v) ? {} : { isFighter: undefined, fightDate: null }) }));
               }}>
               <option value="">Pick your sport</option>
-              {SPORTS.map(o => <option key={o} value={o}>{o}</option>)}
+              {SPORTS.map(o => <option key={o} value={o}>{SPORT_LABELS[o] || o}</option>)}
             </select>
+          )}
+          {type === "sport" && value === "Other" && (
+            <Field label="What's your sport?">
+              <input style={inputStyle} aria-label="What's your sport?" placeholder="e.g. Jiu-jitsu, ultimate frisbee, rowing"
+                value={data.sportOther || ""}
+                onChange={e => {
+                  const text = e.target.value;
+                  // A combat sport moves at once, so the season questions never
+                  // flash up for a fighter. A listed sport waits for them to
+                  // finish typing: "hockey" may be on its way to "field hockey".
+                  const r = routeTypedSport(text);
+                  if (r?.focus === "Combat Sports") {
+                    setData(d => ({ ...d, ...NO_SPORT_PROFILE, "🥊 Sport / Focus": r.focus, sportOther: null, sportRouted: text.trim(), discipline: d.discipline || r.discipline }));
+                  } else set("sportOther", text);
+                }}
+                onBlur={e => {
+                  const r = routeTypedSport(e.target.value);
+                  if (!r) return;
+                  setData(d => ({ ...d, ...NO_SPORT_PROFILE, "🥊 Sport / Focus": r.focus, sportOther: null, sportRouted: e.target.value.trim(),
+                    ...(r.discipline ? { discipline: d.discipline || r.discipline } : { isFighter: undefined, fightDate: null }) }));
+                }} />
+            </Field>
+          )}
+          {type === "sport" && value && value !== "Other" && data.sportRouted && (
+            <p className="text-[13px] mt-1" style={{ color: C.sub }}>
+              Got it: {data.sportRouted} goes under {value}{value === "Combat Sports" ? ", so the fight questions are below." : "."}
+            </p>
           )}
         </div>
       );
@@ -9017,7 +9090,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 <button key={o.key} type="button"
                   onClick={() => setData(d => ({ ...d, sportSeason: o.key,
                     ...(o.key === "Not applicable" ? { sportPosition: null, sportLevel: null, sportPractices: null, sportGames: null } : {}),
-                    ...(o.key !== "In season" ? { sportSeasonEnd: null } : {}) }))}
+                    ...(o.key !== "In season" ? { sportSeasonEnd: null, sportSeasonOpen: null } : {}) }))}
                   className="text-left rounded-lg px-4 py-3 flex items-center justify-between gap-3" style={pill(season === o.key)}>
                   <span>
                     <span className="block text-[15px]" style={{ fontWeight: season === o.key ? 600 : 500 }}>{o.key}</span>
@@ -9028,16 +9101,28 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               ))}
             </div>
           </Field>
+          {/* A date picker alone gave no way to say "it doesn't end on a date",
+              and once a date was in, no way to take it out (Isaiah, 15 Nov). */}
           {season === "In season" && (
             <Field label="When does your season end? (optional)">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.sportSeasonEnd || ""} onChange={e => set("sportSeasonEnd", e.target.value || null)} />
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                  style={pill(data.sportSeasonOpen === false || !!data.sportSeasonEnd)}
+                  onClick={() => setData(d => ({ ...d, sportSeasonOpen: false }))}>On a date</button>
+                <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                  style={pill(data.sportSeasonOpen === true)}
+                  onClick={() => setData(d => ({ ...d, sportSeasonOpen: true, sportSeasonEnd: null }))}>No set end date</button>
+              </div>
+              {(data.sportSeasonOpen === false || !!data.sportSeasonEnd) && (
+                <input type="date" style={inputStyle} min={todayISO()} aria-label="Season end date"
+                  value={data.sportSeasonEnd || ""} onChange={e => set("sportSeasonEnd", e.target.value || null)} />
+              )}
             </Field>
           )}
           {season && season !== "Not applicable" && (
             <>
-              <Field label={sport === "Other" ? "Which sport, and your position or event" : "Position or event (optional)"}>
-                <input style={inputStyle} placeholder={SPORT_POSITION_HINT[sport] || "Your position or event"}
+              <Field label="Position or event (optional)">
+                <input style={inputStyle} placeholder={sport === "Other" ? `Your position or event in ${sportNameOf(data) || "your sport"}` : (SPORT_POSITION_HINT[sport] || "Your position or event")}
                   value={data.sportPosition || ""} onChange={e => set("sportPosition", e.target.value)} />
               </Field>
               <Field label="Level">
@@ -9075,7 +9160,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <Field label="Are you a fighter (competing) or training for fitness/skill?">
             <div className="grid grid-cols-2 gap-3">
               {["Competing fighter", "Training only"].map(opt => (
-                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") set("fightDate", null); }}
+                <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") setData(d => ({ ...d, fightDate: null, fightBooked: null })); }}
                   className="rounded-lg p-3.5 text-center text-[15px] font-medium"
                   style={{ background: data.isFighter === (opt === "Competing fighter") ? `${C.orange}18` : C.panel, border: `1px solid ${data.isFighter === (opt === "Competing fighter") ? C.orange : C.border}`, color: data.isFighter === (opt === "Competing fighter") ? C.orange : C.text }}>
                   {opt}
@@ -9089,10 +9174,27 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           {/* The one part of the old "what is in the way, and by when" screen
               that anything used: the fight date drives the camp taper.
               Isaiah, 30 Oct: the rest of that screen is gone. */}
+          {/* Fighters have fights, not seasons (Isaiah, 15 Nov): either one is
+              booked or it isn't, and "not yet" is an answer, not a blank. */}
           {data.isFighter === true && (
-            <Field label="Next fight date (optional)">
-              <input type="date" style={inputStyle} min={todayISO()}
-                value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+            <Field label="Do you have a fight booked?">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                {[["Fight booked", true], ["No fight booked yet", false]].map(([label, on]) => {
+                  const picked = on ? (data.fightBooked === true || !!data.fightDate) : (data.fightBooked === false && !data.fightDate);
+                  return (
+                    <button key={label} type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                      style={{ background: picked ? `${C.orange}18` : C.panel, border: `1px solid ${picked ? C.orange : C.border}`, color: picked ? C.orange : C.text }}
+                      onClick={() => setData(d => ({ ...d, fightBooked: on, ...(on ? {} : { fightDate: null }) }))}>{label}</button>
+                  );
+                })}
+              </div>
+              {(data.fightBooked === true || !!data.fightDate) && (
+                <input type="date" style={inputStyle} min={todayISO()} aria-label="Fight date"
+                  value={data.fightDate || ""} onChange={e => set("fightDate", e.target.value || null)} />
+              )}
+              {data.fightBooked === false && !data.fightDate && (
+                <p className="text-[12.5px] mt-1" style={{ color: C.sub }}>Your program keeps you fight-ready. Add the date in Profile when you get the call, and it switches to a fight camp.</p>
+              )}
             </Field>
           )}
         </div>
@@ -10221,18 +10323,20 @@ function intakeIsUsable(intake) {
 // athlete is in their season.
 function sportPromptBlock(intake) {
   if (!sportProgramOn(intake)) return "";
-  const sport = intake["🥊 Sport / Focus"];
+  const sport = sportNameOf(intake);
   const season = intake.sportSeason;
   const guide = {
     "Off season": "OFF SEASON: the highest training volume of the year. Build general and maximal strength, add muscle where the sport rewards it, correct imbalances and old injuries, and introduce power work. Conditioning builds the aerobic base the sport sits on.",
     "Pre-season": "PRE-SEASON: convert strength into power and speed. Volume comes down and intensity goes up. Conditioning becomes sport-specific: match the work-to-rest pattern and energy systems of this sport and position.",
     "In season": "IN SEASON: maintain, do not build. Low volume, high quality: 2 to 3 main lifts per session, sets kept short, power work kept in. Nothing may leave the athlete sore or slow for practice or games. Keep sessions shorter than the time available if needed; the sport itself is the main stress.",
     "Post-season": "POST-SEASON: recovery and restoration. Low intensity, variety, mobility, and rehabilitating anything the season left behind. Light strength work to stop detraining, no maximal efforts.",
+    "Year-round": "YEAR-ROUND: no fixed season; competitions come up through the year. Train concurrently: build strength and power at moderate volume while keeping the athlete fresh enough to compete on short notice. Nothing that leaves them sore for days, and conditioning kept close to the demands of their events.",
   }[season] || "";
   return `SPORT PROGRAM — this outranks the generic advice elsewhere when they conflict.
 You are a high-level NSCA-certified strength and conditioning coach (CSCS) programming for a ${intake.sportLevel ? intake.sportLevel.toLowerCase() + " " : ""}${sport} athlete${intake.sportPosition ? ` (${intake.sportPosition})` : ""}.
-- ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}
-- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose exercises that transfer to the sport.
+- ${guide}${season === "In season" && intake.sportSeasonEnd ? ` The season ends on ${intake.sportSeasonEnd}.` : ""}${season === "In season" && !intake.sportSeasonEnd && intake.sportSeasonOpen ? " The season has no set end date, so plan for being in season for the whole program." : ""}
+${intake["🥊 Sport / Focus"] === "Other" ? `- The athlete typed "${sport}" as their sport. Use everything you know about it: its rules, how a match or event is scored and how long it lasts, the movements and energy systems it uses, and the injuries it causes.
+` : ""}- Build around the demands of ${sport}${intake.sportPosition ? ` and of this position or event` : ""}: its movement patterns, planes of motion, speed and power needs, and energy systems. Choose general exercises that build the qualities the sport needs; transfer comes from those qualities, not from copying the sport's movements in the weight room.
 - Include prehab for the injuries this sport commonly causes (for example knees and ankles in court and field sports, shoulders and elbows in throwing and racket sports, hamstrings in sprinting sports, lower back in rotational sports).
 - They also have ${intake.sportPractices ?? "an unknown number of"} practices and ${intake.sportGames ?? "an unknown number of"} games a week. Count that as training load: total stress across the week must leave them fresh for games.
 - Say in the rationale how the program fits their sport and their season.`;
@@ -10247,18 +10351,18 @@ function startLevelPromptBlock(intake) {
 - Choose exercises this person can do well now: stable, simpler variations over complex ones (goblet or box squat before a heavy back squat, trap bar before a conventional deadlift from the floor, no Olympic lifts as a main lift yet).
 - Build soft tissue capacity: include slow-tempo work or isometric holds for the knees, ankles, hips and shoulders in the main work, not only the warm-up.
 - Include an easy aerobic piece at a conversational pace in every session, and keep conditioning sub-maximal: no all-out sprints or repeat-sprint finishers.
-- Plyometrics stay low level (pogo jumps, snap downs, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
+- Plyometrics stay low level (pogo jumps, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
 - NSCA/CSCCa return-to-training (FIT) rules for the first two weeks, which the program must already respect at the set counts the app will use: each movement type (squat, hinge, push, pull, jumps) in no more than 3 sessions a week; jump foot contacts no more than about 70 a session (35 written, since the app halves week 1); keep main lifts at moderate reps (5 to 10), never singles, doubles or triples; conditioning as intervals with long rests (the app sets work to rest at 1:4 then 1:3).
 - Say in the rationale, plainly, that the first ${cfg.weeks} weeks are lighter on purpose and why: building tendons, cardio and the habit first lowers the injury risk and keeps them showing up.`;
 }
 
 function buildAIPrompt(intake) {
-  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${intake["🥊 Sport / Focus"]}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
+  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${sportNameOf(intake)}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
 Athlete intake:
 - Sex: ${intake.sex || "unspecified"}
-- Sport/focus: ${sportProfileApplies(intake) && intake.sportSeason === "Not applicable" ? `General Fitness (plays ${intake["🥊 Sport / Focus"]} for fun; do NOT build a sport-specific program)` : (intake["🥊 Sport / Focus"] || "General Fitness")}${sportProgramOn(intake) ? `
-- Season: ${intake.sportSeason}${intake.sportSeasonEnd ? ` (ends ${intake.sportSeasonEnd})` : ""}
+- Sport/focus: ${sportProfileApplies(intake) && intake.sportSeason === "Not applicable" ? `General Fitness (plays ${sportNameOf(intake)} for fun; do NOT build a sport-specific program)` : (sportNameOf(intake) || "General Fitness")}${sportProgramOn(intake) ? `
+- Season: ${intake.sportSeason}${intake.sportSeasonEnd ? ` (ends ${intake.sportSeasonEnd})` : intake.sportSeasonOpen ? " (no set end date)" : ""}
 - Position or event: ${intake.sportPosition || "not given"}
 - Level: ${intake.sportLevel || "not given"}
 - Practices a week: ${intake.sportPractices ?? "not given"}; games a week: ${intake.sportGames ?? "not given"}` : ""}
@@ -10287,11 +10391,13 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - WARM-UP (required, every day, NOT counted in the main-work cap): ${exerciseBudget(intake.sessionMinutes).warmup} dynamic warm-up exercises (phase "warmup_general") followed by 2-${exerciseBudget(intake.sessionMinutes).primer} primer exercises (phase "warmup_specific"). Each is a single round — sets: 1 (primers may use 2) — with reps like "8/side", "5 each direction" or "30s", rpe 3-4 and rest "—". The whole warm-up should take about 8-12 minutes. Never send someone into a heavy lift after one stretch.
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
-WARM-UP CONTENT — make it thorough and specific to THIS athlete and THIS day:
-- LOAD CEILING, both warm-up phases: bodyweight, bands, a light medicine ball or an empty bar ONLY. No barbell, dumbbell, kettlebell or machine work loaded for effect — a barbell glute bridge or a loaded squat is training, not preparation, and it belongs in the strength section. If a movement needs a working weight to make sense, it is not a warm-up.
-- A primer may use the day\'s first main lift as an unloaded or empty-bar rehearsal of that pattern. That is the only barbell allowed here, and it carries no plates.
-- Dynamic warm-up: raise temperature and take every joint the day's main lifts will load through its range — e.g. a lower-body day covers hips, knees, ankles and thoracic spine before a squat or deadlift; an upper-body day covers thoracic spine, shoulders, elbows and wrists.
-- Primers: activate the muscles the first main lift depends on (e.g. glutes before squats, scapular stabilisers before pressing).
+WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Potentiate), written for THIS athlete and THIS day's main lifts. For example, a warm-up of "Back Squat 2x8, Scapular Push Ups, Band External Rotation" before a squat day is a bad warm-up; every piece must have a reason on that day.
+- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, e.g. jump rope, bike, rower or skips. Reps like "3 min".
+- MOBILISE (the rest of "warmup_general"): dynamic, moving stretches through the ranges the day's main lifts use, not static holds. A squat day covers ankles, hips, knees and thoracic spine; a pressing day covers thoracic spine, shoulders and wrists; a hinge day covers hips and hamstrings.
+- ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift and power exercise depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
+- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.
+- LOAD CEILING, both warm-up phases: bodyweight, bands or a light medicine ball ONLY. Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift. Ramp-up sets are not exercises: do not list "Back Squat 2x8" or "Trap Bar Deadlift 2x8 at difficulty 3" anywhere. The athlete works up to the working weight inside that lift; say once in the rationale to build up over 2 or 3 lighter sets before the working sets of each main lift.
+- The same exercise never appears twice in one day.
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
   • Shoulder: Shoulder CARs, light-band External Rotation, Band Pull Aparts, Scapular Push Ups, Wall Slides.
   • Knee: Banded Terminal Knee Extension, Spanish Squat isometric hold, slow Step Downs, Knee CARs.
@@ -10317,6 +10423,9 @@ BLOCK STRUCTURE — the app applies this itself, so write the program to fit it:
 
 ${(() => {
   const stage = taperStageOn(intake.fightDate);
+  if ((!stage || stage.key === "base") && intake.isFighter && !intake.fightDate) {
+    return `BETWEEN FIGHTS — a competing fighter with no fight booked yet. Fighters do not have seasons; they get a call, often on short notice, and a camp is usually 6 to 10 weeks. So this program builds the base a camp sharpens: maximal strength, power, and a big aerobic engine, at a volume that leaves them fresh for skill training. Keep them within a few weeks of fight-ready at all times: no block so heavy that a short-notice fight would catch them sore or flat. Write the FINAL week as a test week on the main lifts. Say in the rationale that the program switches to a fight camp when they add a fight date.`;
+  }
   if (!stage || stage.key === "base") {
     return `NO EVENT TO TAPER TO — so the program peaks on its own schedule. Each block builds to its hardest week and then the app deloads it. Write the FINAL week as a TEST WEEK: the same main lifts, low reps, and an instruction in that week's notes to attempt a personal record on them. That is what the whole program was building toward, so say so in the rationale.`;
   }
@@ -10334,7 +10443,9 @@ Rules:
 - If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
 - If the athlete has injuries, follow the WARM-UP injury rule above and avoid contraindicated movements in the main work.
-- If sport is MMA, include striking/conditioning elements (bag work, battle ropes) and explosive/rotational power work in the plyometrics/cardio slots.
+- GENERAL PREPARATION, NOT THE SPORT. The weight room builds the qualities the sport runs on (strength, power, speed, an aerobic engine, robust joints) with general exercises. It does not copy the sport: no shadow boxing, bag work, sprawls, shots, grappling or wrestling drills, sport-skill circuits or anything that looks like practice. Athletes, and fighters most of all, get their specific work at their gym or practice; repeating it here only adds fatigue. Conditioning matches the sport's energy demands (how long and how hard the efforts are, and the rest between them) using general tools like a bike, rower, sled or running, not the sport's movements. In the last 2 weeks of a fight camp a small amount of more specific conditioning MAY appear if it adds something, never as the default.
+- POWER BLOCK (phase "explosive", after the warm-up and before the strength work): for anyone training for a sport or fighting, 2 exercises on every training day: one jump, bound or sprint, and one med ball throw (a chest pass, a rotational or overhead throw), 3 to 5 reps, full recovery, maximal intent. Choose them to match the day's main lifts (a jump before squats, a throw before pressing). For general fitness, 1 is enough. They count toward the main-work cap: if they push a day over it, drop an accessory, never the power.
+- Each day's main lifts should be the movements the warm-up prepared. A primer and a main lift that have nothing to do with each other is a sign the day was not planned as one session.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
 
@@ -12285,11 +12396,13 @@ function WorkoutProgressBar({ finished, total }) {
 function useBuildProgress() {
   const [fraction, setFraction] = useState(0);
   const reset = () => setFraction(0);
+  // From the server's counts (callAIBackground). Never moves backwards.
+  const onFraction = (f) => setFraction(prev => (f > prev ? f : prev));
   const onText = (totalDays) => (text) => {
     const f = programBuildProgress(text, totalDays);
     setFraction(prev => (f > prev ? f : prev));
   };
-  return { fraction, setFraction, reset, onText };
+  return { fraction, setFraction, reset, onText, onFraction };
 }
 
 // Reads the server's SSE relay. Each frame is either a text chunk, an in-band
@@ -12414,6 +12527,135 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
   return textBlock.text;
 }
 
+// ---------- program builds that survive leaving the app ----------
+//
+// Isaiah, 15 Nov: he started a build, switched apps, and came back to "the
+// request timed out". The build streamed straight to the phone, and iOS cuts
+// that stream the moment the app is in the background.
+//
+// Now /api/build-program builds it on the server and writes the result to a
+// program_builds row. This side starts it, then checks the row every few
+// seconds, and straight away whenever the app comes back to the front. The
+// build id is kept on the phone, so a screen that was closed, or an app that
+// was quit and reopened, picks up the same build instead of paying for a
+// second one.
+const BUILD_POLL_MS = 2500;
+const BUILD_STALE_MS = 7 * 60_000;
+
+function pendingBuildKey(scope) { return `tb_build_${scope}`; }
+function readPendingBuild(scope) {
+  try {
+    const v = JSON.parse(localStorage.getItem(pendingBuildKey(scope)) || "null");
+    if (!v?.id || !(Date.now() - v.at < BUILD_STALE_MS)) return null;
+    return v;
+  } catch { return null; }
+}
+function writePendingBuild(scope, id) {
+  try { localStorage.setItem(pendingBuildKey(scope), JSON.stringify({ id, at: Date.now() })); } catch { /* checked again by id below */ }
+}
+function clearPendingBuild(scope) {
+  try { localStorage.removeItem(pendingBuildKey(scope)); } catch { /* nothing to clear */ }
+}
+
+// The percentage from the counts the server writes (see programBuildProgress,
+// which does the same from the text itself).
+function progressFromCounts(counts, totalDays) {
+  const days = Math.max(1, Number(totalDays) || 1);
+  const d = Number(counts?.days) || 0;
+  if (d === 0) return Math.min(0.04, ((Number(counts?.chars) || 0) / 800) * 0.04);
+  const intoDay = Math.min((Number(counts?.phases) || 0) / EXERCISES_PER_DAY_GUESS, 0.95);
+  const done = Math.min(d - 1 + intoDay, days);
+  return Math.min(0.99, 0.05 + 0.94 * (done / days));
+}
+
+// Waits the poll gap, or less if the app comes back to the front.
+function waitForNextCheck(ms) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(t); document.removeEventListener("visibilitychange", onVis); resolve(); };
+    const onVis = () => { if (document.visibilityState === "visible") finish(); };
+    const t = setTimeout(finish, ms);
+    document.addEventListener("visibilitychange", onVis);
+  });
+}
+
+// Reads one build's row until it is done. Returns the model's text.
+async function waitForBuild(id, { totalDays, onFraction, scope }) {
+  const began = Date.now();
+  let misses = 0;
+  for (;;) {
+    const { data, error } = await supabase.from("program_builds")
+      .select("status, progress, result, error, stop_reason, created_at").eq("id", id).maybeSingle();
+    if (data) {
+      misses = 0;
+      if (data.progress && onFraction) { try { onFraction(progressFromCounts(data.progress, totalDays)); } catch { /* never break a build over a percentage */ } }
+      if (data.status === "done") {
+        clearPendingBuild(scope);
+        if (data.stop_reason === "max_tokens") throw new Error("The program came back longer than the model had room for, so it was cut off. Tap Try Again — if it keeps happening, shorten the program length.");
+        if (!(data.result || "").trim()) throw new Error("The AI returned an empty response. Please try again.");
+        return data.result;
+      }
+      if (data.status === "failed") {
+        clearPendingBuild(scope);
+        throw new Error(data.error || "The build stopped partway through. Tap Try Again.");
+      }
+      if (Date.now() - Date.parse(data.created_at) > BUILD_STALE_MS) {
+        clearPendingBuild(scope);
+        throw new Error("The build stopped on the server. Tap Try Again — nothing was lost.");
+      }
+    } else if (!error && ++misses > 8 && Date.now() - began > 20_000) {
+      clearPendingBuild(scope);
+      throw new Error("That build couldn't be found. Tap Try Again.");
+    }
+    // A read that fails (no signal while the phone was away) just waits and
+    // reads again: the build itself is safe on the server.
+    await waitForNextCheck(BUILD_POLL_MS);
+  }
+}
+
+// The long builds: a whole program, or a pasted one converted. Same answer as
+// callAI, but the work happens on the server. scope names what the build is
+// for ("self", "first:<user id>", "athlete:<id>"), so a screen opened again
+// finds its own build. Falls back to callAI if the server can't do it this way
+// (an older deploy, or before the database table exists).
+async function callAIBackground({ messages, system, maxTokens = 32000, model = MODEL_PROGRAM, scope = "self", forAthleteId = null, totalDays = 4, onFraction, onText }) {
+  const resume = readPendingBuild(scope);
+  if (resume) return waitForBuild(resume.id, { totalDays, onFraction, scope });
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("You need to be signed in to use AI features.");
+  const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID()
+    : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16); });
+
+  let response;
+  try {
+    response = await fetch(apiUrl("/api/build-program"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ id, model, max_tokens: maxTokens, messages, forAthleteId, ...(system ? { system } : {}) }),
+    });
+  } catch (err) {
+    throw aiNetworkError(0, false);
+  }
+
+  if (response.status === 404 || response.status === 503 || response.status === 405) {
+    return callAI({ messages, system, maxTokens, model, onText });
+  }
+  let data = null;
+  try { data = await response.json(); } catch { /* no JSON */ }
+  if (response.status === 409 && data?.id) {
+    writePendingBuild(scope, data.id);
+    return waitForBuild(data.id, { totalDays, onFraction, scope });
+  }
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Your session expired. Sign in again to use AI features.");
+    if (response.status === 429) throw new Error(data?.error || "The AI is rate limited right now. Wait a minute and try again.");
+    throw new Error(data?.error || `Couldn't start the build (${response.status}).`);
+  }
+  writePendingBuild(scope, id);
+  return waitForBuild(id, { totalDays, onFraction, scope });
+}
+
 // Regenerate with changes (Isaiah, 3 Nov): whoever is building the program,
 // a coach for a client or someone for themselves, can type or say what to
 // change before building it again. The model sees the version it built last
@@ -12442,7 +12684,12 @@ Build the full program again with those changes made. Keep everything they did n
 // forSelf: someone building their own program from My Workout (a solo
 // client, or a coach training themselves), so the screen says "you", not
 // "your client" (3 Nov).
-function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
+// showPhotoGaps: the "needs a photo" notes are the coach's to-do list, not
+// something an athlete can act on (Isaiah, 15 Nov), so athletes don't see them.
+function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, athleteId = null, showPhotoGaps = true }) {
+  // Which build this screen owns, so closing it mid-build and opening it
+  // again picks the same build back up (15 Nov).
+  const buildScope = !forSelf && athleteId ? `athlete:${athleteId}` : "self";
   const [status, setStatus] = useState("idle"); // idle | loading | error | done
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
@@ -12462,15 +12709,25 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
     pending.current = { previous: changes.trim() ? result : null, asked: changes.trim() };
     generate();
   };
+  // A build started earlier from this screen is still going (or finished)
+  // on the server: show it, instead of the start screen.
+  useEffect(() => {
+    if (readPendingBuild(buildScope)) generate();
+  }, []);
 
   const generate = async () => {
     setStatus("loading"); setErrorMsg(""); progress.reset();
     const { previous, asked } = pending.current;
     try {
-      const text = await callAI({
+      const totalDays = (intake?.trainingDays || []).filter(Boolean).length || 4;
+      const text = await callAIBackground({
         messages: [{ role: "user", content: buildAIPrompt({ ...intake, startLevel: level }) + regenerationRequest(previous, asked) }],
         maxTokens: 32000,
-        onText: progress.onText((intake?.trainingDays || []).filter(Boolean).length || 4),
+        scope: buildScope,
+        forAthleteId: !forSelf && athleteId ? athleteId : null,
+        totalDays,
+        onFraction: progress.onFraction,
+        onText: progress.onText(totalDays),
       });
       progress.setFraction(1);
       const parsed = parseAIJson(text);
@@ -12522,7 +12779,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
       )}
       {status === "loading" && (
         <div className="text-center py-10">
-          <LoadingEstimate label={forSelf ? "Building your program" : "Building the program"} tips={forSelf ? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH} detail="Usually two to four minutes." />
+          <LoadingEstimate label={forSelf ? "Building your program" : "Building the program"} tips={forSelf ? BUILD_TIPS_CLIENT : BUILD_TIPS_COACH} detail="Usually two to four minutes. You can switch apps or close this screen: it keeps building, and it's here when you come back." />
         </div>
       )}
       {status === "error" && (
@@ -12553,7 +12810,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
               so a long list here usually means the athlete's injuries or
               equipment pushed it off the library — which is the right call,
               and worth knowing about. */}
-          {(() => {
+          {showPhotoGaps && (() => {
             const missing = missingImageNames((result.days || []).flatMap(d => d.exercises || []));
             if (missing.length === 0) {
               return (
@@ -12589,7 +12846,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false }) {
                     <div key={j} className="text-[12.5px] flex items-center justify-between gap-2" style={{ color: C.sub }}>
                       <span className="min-w-0 flex items-center gap-1.5">
                         <span className="truncate">{x.name}</span>
-                        <NoPhotoFlag name={x.name} size="xs" />
+                        {showPhotoGaps && <NoPhotoFlag name={x.name} size="xs" />}
                       </span>
                       <span className="tabular-nums shrink-0">{x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe}</span>
                     </div>
@@ -14025,6 +14282,7 @@ function CoachAthletes({ state, setState, nav, myUserId }) {
       {generateFor && (
         <AIProgramGenerator
           intake={intakeForAthlete(state.athletes.find(a => a.id === generateFor))}
+          athleteId={generateFor}
           onGenerated={(result) => assignGenerated(generateFor, result)}
           onClose={() => setGenerateFor(null)} />
       )}
@@ -15162,6 +15420,7 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
       {generateOpen && (
         <AIProgramGenerator
           intake={athleteIntake}
+          athleteId={athleteId}
           onGenerated={buildFromAnswers}
           onClose={() => setGenerateOpen(false)} />
       )}
@@ -15389,9 +15648,13 @@ function ImportProgramModal({ open, onClose, athlete, onImport, saving }) {
     if (text.length < 40) { setError("Paste the whole program - that looks like a line or two."); setStatus("error"); return; }
     setStatus("converting"); setError(""); progress.reset();
     try {
-      const reply = await callAI({
+      const reply = await callAIBackground({
         messages: [{ role: "user", content: buildImportPrompt(text, athlete) }],
         maxTokens: 32000,
+        scope: `import:${athlete?.id || "self"}`,
+        forAthleteId: athlete?.id || null,
+        totalDays: countPastedDays(text),
+        onFraction: progress.onFraction,
         onText: progress.onText(countPastedDays(text)),
       });
       progress.setFraction(1);
@@ -16086,6 +16349,7 @@ function CoachPrograms({ state, setState, nav, myUserId }) {
       {aiOpen && aiFor && (
         <AIProgramGenerator
           intake={intakeForAthlete(state.athletes.find(a => a.id === aiFor))}
+          athleteId={aiFor}
           onGenerated={applyAIProgram}
           onClose={() => { setAiOpen(false); setAiFor(null); }} />
       )}
@@ -19614,7 +19878,7 @@ function DeleteSegmentModal({ open, onClose, blockLabel, dayName, itemCount, oth
   );
 }
 
-function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock, onAdd }) {
+function SessionBlock({ block, showPhotoGaps = false, defaultOpen, exById, onExerciseClick, onSwap, onMove, canMoveUp, canMoveDown, groupOf, onToggleGroup, canGroupWithNext, onRemove, onRemoveBlock, onAdd }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-2xl overflow-hidden" style={card()}>
@@ -19661,7 +19925,7 @@ function SessionBlock({ block, defaultOpen, exById, onExerciseClick, onSwap, onM
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-[15px] font-medium truncate" style={{ color: C.text }}>{ex?.name}</div>
-                    <NoPhotoFlag name={ex?.name} size="xs" />
+                    {showPhotoGaps && <NoPhotoFlag name={ex?.name} size="xs" />}
                     <div className="text-[12.5px] tabular-nums mt-0.5" style={{ color: C.sub }}>
                       {x.sets}×{x.reps} · {DIFFICULTY_SHORT} {x.rpe}{x.rest ? ` · ${x.rest} rest` : ""}
                     </div>
@@ -20698,6 +20962,7 @@ function AthleteProgram({ state, setState, nav, initialDayId = null }) {
                 <SessionBlock
                   key={b.key}
                   block={b}
+                  showPhotoGaps={!!state.coachProfile?.id && state.coachProfile.id === state.me?.id}
                   defaultOpen={false}
                   exById={exById}
                   onExerciseClick={setDetailExercise}
@@ -22543,6 +22808,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         <AIProgramGenerator
           intake={state.me.intake || {}}
           forSelf
+          showPhotoGaps={!!state.coachProfile?.id && state.coachProfile.id === state.me?.id}
           onClose={() => setShowGenerator(false)}
           onGenerated={async (result) => {
             const weeks = result.weeks || 6;
@@ -24781,7 +25047,7 @@ function AthleteMessages({ state, setState, nav, myUserId, header = null }) {
           upload, cost storage and then be ignored. */}
       <MessageComposer
         key={tab}
-        placeholder={tab === "coach" ? (hasCoach ? "Message your coach..." : "No coach linked yet") : "Ask the AI assistant..."}
+        placeholder={tab === "coach" ? (hasCoach ? `Message ${(state.coachProfile?.name || "").trim().split(/\s+/)[0] || "your coach"}...` : "No coach linked yet") : "Ask the AI assistant..."}
         disabled={tab === "coach" && !hasCoach}
         sending={tab === "coach" ? coachSending : aiLoading}
         allowMedia={tab === "coach" && hasCoach && messageMediaReady}
@@ -29534,7 +29800,8 @@ function CoachTab({ state, setState, nav, myUserId, initialTab = "messages" }) {
 
   if (!hasCoach || !FEATURES.booking) {
     return <AthleteMessages state={state} setState={setState} nav={nav} myUserId={myUserId}
-      header={<TopBar title="Coach" />} />;
+      // The athlete's coach by name, not the word "Coach" (Isaiah, 15 Nov).
+      header={<TopBar title={hasCoach ? (state.coachProfile?.name || "Coach") : "Coach"} />} />;
   }
 
   const tabs = (
@@ -31334,10 +31601,16 @@ function AppInner() {
   const buildFirstProgram = async (userId, data) => {
     signupProgress.reset();
     try {
-      const text = await callAI({
+      const totalDays = (data?.trainingDays || []).filter(Boolean).length || 4;
+      // Built on the server (15 Nov), so leaving the app mid-build no longer
+      // kills it. Coming back finds it by its id.
+      const text = await callAIBackground({
         messages: [{ role: "user", content: buildAIPrompt(data) }],
         maxTokens: 32000,
-        onText: signupProgress.onText((data?.trainingDays || []).filter(Boolean).length || 4),
+        scope: `first:${userId || "new"}`,
+        totalDays,
+        onFraction: signupProgress.onFraction,
+        onText: signupProgress.onText(totalDays),
       });
       const parsed = parseAIJson(text);
       parsed.days = tagStartRamp(attachWeekdays(parsed.days, data.trainingDays), startLevelOf(data));
@@ -31386,6 +31659,24 @@ function AppInner() {
     await buildFirstProgram(userId, data);
     setGeneratingProgram(false);
   };
+
+  // The first program was still building when the app was closed (15 Nov).
+  // It carried on on the server; opening the app again finishes it from the
+  // same build rather than starting, and paying for, another.
+  const resumedBuildFor = useRef(null);
+  useEffect(() => {
+    const id = state.me?.id;
+    if (!id || (authed !== "athlete" && authed !== "athlete_coached")) return;
+    if (state.me?.program || generatingProgram || resumedBuildFor.current === id) return;
+    if (!readPendingBuild(`first:${id}`)) return;
+    resumedBuildFor.current = id;
+    (async () => {
+      setGeneratingProgram(true);
+      await buildFirstProgram(id, state.me?.intake || {});
+      setGeneratingProgram(false);
+      setView("athlete-dashboard");
+    })();
+  }, [authed, state.me?.id, state.me?.program]);
 
   // Signup is two phases because email confirmation may sit between them:
   // create the auth account, then (once a session exists) write the profile.
@@ -31727,7 +32018,7 @@ function AppInner() {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
           <LoadingEstimate big label="Building your program" tips={BUILD_TIPS_CLIENT}
-            detail="Usually two to four minutes." />
+            detail="Usually two to four minutes. You can switch apps while you wait: it keeps building, and it's here when you come back." />
         </div>
       );
     }

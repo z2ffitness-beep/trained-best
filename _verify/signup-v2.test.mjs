@@ -421,7 +421,8 @@ test("'What is in the way, and by when' is gone, and the fight date is not lost 
   assert.ok(!/What is in the way/.test(src), "the old label is still there");
   assert.ok(stepComplete("🎯 Your Goal", { ...athlete, "🥊 Sport / Focus": "MMA", isFighter: true }, "athlete"),
     "a fighter is held on the goal screen for a date they do not have yet");
-  assert.ok(/Next fight date \(optional\)/.test(src), "fighters can no longer give a fight date");
+  // 15 Nov: asked as "Do you have a fight booked?", with the date under "Fight booked".
+  assert.ok(/Do you have a fight booked\?/.test(src) && /aria-label="Fight date"/.test(src), "fighters can no longer give a fight date");
 });
 
 test("main focus: General Fitness or a Sport, and a sport has to be picked", () => {

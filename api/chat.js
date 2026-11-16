@@ -35,7 +35,7 @@ export const config = { maxDuration: 300 };
 // harmless and means this works without knowing which one is in play.
 export const maxDuration = 300;
 
-const ALLOWED_MODELS = new Set([
+export const ALLOWED_MODELS = new Set([
   // The app asks for this one by name for program generation. It was missing
   // from this list, so every program was silently built by the fallback model
   // instead of the one the prompt was written and tuned for.
@@ -43,7 +43,7 @@ const ALLOWED_MODELS = new Set([
   "claude-sonnet-4-6",
   "claude-haiku-4-5",
 ]);
-const DEFAULT_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
 // The one to fall back to when the model that was asked for does not exist.
 //
 // A model id that has been retired, or mistyped on the way in, comes back as
@@ -52,12 +52,12 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
 // every program generation in the app stops working and nobody can do
 // anything about it from their phone. One retry on a model we know exists
 // costs a second and turns a total outage into a slightly older program.
-const FALLBACK_MODEL = "claude-sonnet-4-6";
+export const FALLBACK_MODEL = "claude-sonnet-4-6";
 // A full program is a large JSON document. The old 8192 ceiling silently
 // truncated it mid-structure, which is why the client needed a
 // repair-truncated-JSON step at all — and why that step kept failing.
-const MAX_TOKENS_CEILING = 32000;
-const MAX_BODY_BYTES = 100_000;
+export const MAX_TOKENS_CEILING = 32000;
+export const MAX_BODY_BYTES = 100_000;
 
 // Per-user sliding window. Serverless instances get recycled, so this bounds
 // bursts rather than guaranteeing a global limit — the model and token caps
@@ -67,7 +67,7 @@ const WINDOW_MS = 60_000;
 const MAX_CALLS_PER_WINDOW = 8;
 const callLog = new Map(); // userId -> timestamps[]
 
-function rateLimited(userId) {
+export function rateLimited(userId) {
   const now = Date.now();
   const hits = (callLog.get(userId) || []).filter(t => now - t < WINDOW_MS);
   if (hits.length >= MAX_CALLS_PER_WINDOW) return true;
@@ -83,7 +83,7 @@ function rateLimited(userId) {
 
 // Validate the caller's Supabase access token by asking Supabase who it belongs
 // to. Avoids pulling in a JWT library, and honours revoked sessions for free.
-async function getUser(req) {
+export async function getUser(req) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   if (!token) return null;
@@ -124,7 +124,7 @@ const NATIVE_ORIGINS = new Set([
   "https://localhost",
 ]);
 
-function applyCors(req, res) {
+export function applyCors(req, res) {
   const origin = req.headers?.origin;
   if (origin && NATIVE_ORIGINS.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
