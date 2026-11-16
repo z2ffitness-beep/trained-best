@@ -92,7 +92,7 @@ test("the waiver box says what it gives up, on the screen itself", () => {
 });
 test("signup's last screen cannot finish without the tick", () => {
   assert.ok(/const canProceed = stepComplete\(stepName, data, role\) && \(!isLast \|\| agreedToTerms\(data\)\);/.test(src));
-  assert.ok(/\{isLast && \(\s*<div className="mt-6">[\s\S]{0,300}<AgreementRow value=\{data\.agreed \|\| null\} birthday=\{data\.birthday\}/.test(src));
+  assert.ok(/\{isLast && \(\s*<div className="mt-6" data-q="">[\s\S]{0,300}<AgreementRow value=\{data\.agreed \|\| null\} birthday=\{data\.birthday\}/.test(src));
 });
 test("everyone already signed up is asked once, and nothing else shows until they accept", () => {
   assert.ok(/setLegalAgreed\(agreedToTerms\(profile\.intake\)\);/.test(src));

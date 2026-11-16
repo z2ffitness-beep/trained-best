@@ -6407,7 +6407,7 @@ function Modal({ open, onClose, title, children, wide }) {
 
 function Field({ label, children }) {
   return (
-    <div className="mb-4">
+    <div className="mb-4" data-q="">
       <label className="block text-[12.5px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: C.sub }}>{label}</label>
       {children}
     </div>
@@ -8019,6 +8019,41 @@ function Onboarding({ onComplete, onSwitchToLogin, existingUser = null }) {
     if (stepScrollRef.current) stepScrollRef.current.scrollTop = 0;
   }, [step, role]);
 
+  // Auto-scroll (Isaiah, 15 Nov): answering a one-answer question moves the
+  // screen down to the next question, so nobody has to scroll to find it.
+  // Questions are marked data-q; the answers that should move things on are
+  // marked data-advance. Multi-pick questions (goals, days, equipment,
+  // injuries) and typing never move the screen.
+  const advanceFrom = (el, skipSection) => {
+    setTimeout(() => {
+      const root = stepScrollRef.current;
+      if (!root || !el || !el.isConnected) return;
+      const anchor = skipSection ? (el.closest("[data-q]") || el) : el;
+      const next = [...root.querySelectorAll("[data-q]")].find(q =>
+        q !== anchor && !anchor.contains(q) && !q.contains(anchor)
+        && (anchor.compareDocumentPosition(q) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && q.getClientRects().length > 0);
+      if (!next) return;
+      const inner = root.scrollHeight > root.clientHeight + 1 && getComputedStyle(root).overflowY !== "visible";
+      const viewTop = inner ? root.getBoundingClientRect().top : 0;
+      const delta = next.getBoundingClientRect().top - viewTop - 16;
+      if (delta <= 4) return;
+      let smooth = true;
+      try { smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { /* default smooth */ }
+      (inner ? root : window).scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
+    }, 180);
+  };
+  const onStepClick = (e) => {
+    const target = e.target.closest?.("[data-advance]");
+    if (!target || target.tagName === "SELECT" || !stepScrollRef.current?.contains(target)) return;
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    advanceFrom(target, btn.hasAttribute("data-skip-to-next-section"));
+  };
+  const onStepChange = (e) => {
+    if (e.target.tagName === "SELECT" && e.target.hasAttribute("data-advance")) advanceFrom(e.target, false);
+  };
+
   // Written on every change rather than on every step, so closing the app
   // mid-question keeps the answer that was mid-typing too.
   useEffect(() => {
@@ -8346,7 +8381,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         <div className="text-[12.5px] uppercase tracking-[.16em] mt-2" style={{ color: C.sub }}>Step {step + 1} of {steps.length}</div>
       </div>
 
-      <div ref={stepScrollRef} className="flex-1 px-6 overflow-y-auto pb-4">
+      <div ref={stepScrollRef} className="flex-1 px-6 overflow-y-auto pb-4" onClickCapture={onStepClick} onChangeCapture={onStepChange}>
         <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: DISPLAY, color: C.text }}>{stepName}</h2>
         <OnboardingStepBody role={role} stepName={stepName} data={data} setData={setData} />
       </div>
@@ -8373,7 +8408,7 @@ const ROLE_NEUTRAL_KEYS = ["name", "photoUrl", "email", "password", "weightUnit"
         {/* The accept boxes sit at the end of the page, not in the sticky
             footer: three boxes there covered half a phone screen. */}
         {isLast && (
-          <div className="mt-6">
+          <div className="mt-6" data-q="">
             <div className="text-[12px] uppercase tracking-[.16em] font-semibold mb-2" style={{ color: C.sub }}>Terms and waiver</div>
             <AgreementRow value={data.agreed || null} birthday={data.birthday}
               onChange={(rec) => setData(d => ({ ...d, agreed: rec }))} />
@@ -8635,7 +8670,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     return (
       <div>
         {showing.map((s, i) => (
-          <div key={s.step}
+          <div key={s.step} data-q=""
             // A rule and a gap between sections, nothing on the first. Four
             // question blocks run together read as one long form and people
             // answer the top of it and tap Continue.
@@ -8877,7 +8912,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
   // ATHLETE STEPS
   const choicePill = (on) => ({ background: on ? `${C.orange}18` : C.panel, border: `1px solid ${on ? C.orange : C.border}`, color: on ? C.orange : C.text, fontWeight: on ? 600 : 400 });
   const fourChoices = (value, options, pick) => (
-    <div className="grid grid-cols-4 gap-2">
+    <div className="grid grid-cols-4 gap-2" data-advance="">
       {options.map(o => (
         <button key={o.key} type="button" onClick={() => pick(o.key)} aria-pressed={value === o.key}
           className="rounded-lg px-1.5 py-3 text-[13.5px] text-center" style={choicePill(value === o.key)}>{o.label}</button>
@@ -8908,15 +8943,15 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       const allNo = PARQ_QUESTIONS.every(q => parq[q.key] === false);
       return (
         <div>
-          <button type="button" onClick={() => setData(d => ({ ...d, parq: Object.fromEntries(PARQ_QUESTIONS.map(q => [q.key, false])), parqCleared: null }))}
+          <button type="button" data-advance="" data-skip-to-next-section="" onClick={() => setData(d => ({ ...d, parq: Object.fromEntries(PARQ_QUESTIONS.map(q => [q.key, false])), parqCleared: null }))}
             className="w-full rounded-lg px-4 py-3 mb-3 text-[14px] flex items-center justify-between" style={choicePill(allNo)}>
             <span>None of these apply to me</span>{allNo && <Check size={16} />}
           </button>
           <div className="space-y-2">
             {PARQ_QUESTIONS.map(q => (
-              <div key={q.key} className="rounded-lg px-3 py-2.5 flex items-center gap-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+              <div key={q.key} data-q="" className="rounded-lg px-3 py-2.5 flex items-center gap-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
                 <div className="text-[13px] leading-snug flex-1 min-w-0" style={{ color: C.text }}>{q.label}</div>
-                <div className="flex gap-1.5 shrink-0">
+                <div className="flex gap-1.5 shrink-0" data-advance="">
                   {[["No", false], ["Yes", true]].map(([label, v]) => (
                     <button key={label} type="button" onClick={() => setQ(q.key, v)} aria-pressed={parq[q.key] === v}
                       className="rounded-lg py-2 text-[13px]" style={{ ...choicePill(parq[q.key] === v), width: 46 }}>{label}</button>
@@ -8926,9 +8961,9 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             ))}
           </div>
           {anyYes && (
-            <div className="rounded-lg p-3.5 mt-3" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
+            <div data-q="" className="rounded-lg p-3.5 mt-3" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}66` }}>
               <div className="text-[13.5px] mb-2" style={{ color: C.text }}>Has a doctor cleared you to exercise?</div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2" data-advance="">
                 {[["Yes", true], ["Not yet", false]].map(([label, v]) => (
                   <button key={label} type="button" onClick={() => set("parqCleared", v)} aria-pressed={data.parqCleared === v}
                     className="rounded-lg py-2 text-[13.5px]" style={choicePill(data.parqCleared === v)}>{label}</button>
@@ -8950,9 +8985,9 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           <p className="text-[13px] mb-3" style={{ color: C.sub }}>Try each one now, wherever you are. It decides where your exercises start.</p>
           <div className="space-y-2">
             {MOVE_CHECKS.map(m => (
-              <div key={m.key} className="rounded-lg px-3.5 py-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+              <div key={m.key} data-q="" className="rounded-lg px-3.5 py-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
                 <div className="text-[13.5px] mb-2" style={{ color: C.text }}>{m.label}</div>
-                <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-4 gap-1.5" data-advance="">
                   {MOVE_RESULTS.map(r => (
                     <button key={r.key} type="button" onClick={() => setM(m.key, r.key)} aria-pressed={move[m.key] === r.key}
                       className="rounded-lg py-2 text-[13px]" style={choicePill(move[m.key] === r.key)}>{r.label}</button>
@@ -8969,7 +9004,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       return (
         <div>
           <Field label="In the last 4 weeks, how many days a week did you actually train?">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-4 gap-2" data-advance="">
               {RECENT_TRAINING_OPTIONS.map(o => (
                 <button key={o.key} type="button" onClick={() => set("recentDaysPerWeek", o.key)}
                   className="rounded-lg px-2 py-3 text-[14px] text-center" style={pill(data.recentDaysPerWeek === o.key)}>{o.label}</button>
@@ -8977,7 +9012,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
             </div>
           </Field>
           <Field label="When did you last train consistently, at least twice a week for a month?">
-            <div className="grid grid-cols-1 gap-2">
+            <div className="grid grid-cols-1 gap-2" data-advance="">
               {LAST_CONSISTENT_OPTIONS.map(o => (
                 <button key={o.key} type="button" onClick={() => set("lastConsistent", o.key)}
                   className="text-left rounded-lg px-4 py-3 text-[14px] flex items-center justify-between" style={pill(data.lastConsistent === o.key)}>
@@ -8993,7 +9028,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     case "💪 Training Experience": {
       const list = ["New to training", "Beginner (under 1 year)", "Intermediate (1-3 years)", "Advanced (3+ years)"];
       return (
-        <div className="grid grid-cols-1 gap-2.5">
+        <div className="grid grid-cols-1 gap-2.5" data-advance="">
           {list.map(opt => (
             <button key={opt} onClick={() => set("experience", opt)} className="text-left rounded-lg px-4 py-3.5 flex items-center justify-between"
               style={{ background: data.experience === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data.experience === opt ? C.orange : C.border}` }}>
@@ -9006,7 +9041,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
     }
     case "🧬 Sex": {
       return (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3" data-advance="">
           {["Male", "Female"].map(opt => (
             <button key={opt} onClick={() => set("sex", opt)} className="rounded-xl p-5 text-center"
               style={{ background: data.sex === opt ? `${C.orange}18` : C.panel, border: `1px solid ${data.sex === opt ? C.orange : C.border}` }}>
@@ -9036,7 +9071,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           {choice("general", "General Fitness")}
           {choice("sport", "Sport")}
           {type === "sport" && (
-            <select aria-label="Your sport" style={inputStyle}
+            <select aria-label="Your sport" style={inputStyle} data-advance=""
               value={SPORTS.includes(value) ? value : value === "MMA" ? "Combat Sports" : ""}
               onChange={e => {
                 const v = e.target.value || null;
@@ -9085,7 +9120,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       return (
         <div>
           <Field label="Where are you in your season?">
-            <div className="grid grid-cols-1 gap-2">
+            <div className="grid grid-cols-1 gap-2" data-advance="">
               {SPORT_SEASONS.map(o => (
                 <button key={o.key} type="button"
                   onClick={() => setData(d => ({ ...d, sportSeason: o.key,
@@ -9109,7 +9144,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
                   style={pill(data.sportSeasonOpen === false || !!data.sportSeasonEnd)}
                   onClick={() => setData(d => ({ ...d, sportSeasonOpen: false }))}>On a date</button>
-                <button type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                <button type="button" data-advance="" className="rounded-lg px-3 py-3 text-[15px] text-center"
                   style={pill(data.sportSeasonOpen === true)}
                   onClick={() => setData(d => ({ ...d, sportSeasonOpen: true, sportSeasonEnd: null }))}>No set end date</button>
               </div>
@@ -9126,7 +9161,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                   value={data.sportPosition || ""} onChange={e => set("sportPosition", e.target.value)} />
               </Field>
               <Field label="Level">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-2" data-advance="">
                   {SPORT_LEVELS.map(l => (
                     <button key={l} type="button" onClick={() => set("sportLevel", l)}
                       className="rounded-lg px-3 py-3 text-[15px] text-center" style={pill(data.sportLevel === l)}>{l}</button>
@@ -9158,7 +9193,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
       return (
         <div>
           <Field label="Are you a fighter (competing) or training for fitness/skill?">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3" data-advance="">
               {["Competing fighter", "Training only"].map(opt => (
                 <button key={opt} onClick={() => { set("isFighter", opt === "Competing fighter"); if (opt !== "Competing fighter") setData(d => ({ ...d, fightDate: null, fightBooked: null })); }}
                   className="rounded-lg p-3.5 text-center text-[15px] font-medium"
@@ -9182,7 +9217,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
                 {[["Fight booked", true], ["No fight booked yet", false]].map(([label, on]) => {
                   const picked = on ? (data.fightBooked === true || !!data.fightDate) : (data.fightBooked === false && !data.fightDate);
                   return (
-                    <button key={label} type="button" className="rounded-lg px-3 py-3 text-[15px] text-center"
+                    <button key={label} type="button" data-advance={on ? undefined : ""} className="rounded-lg px-3 py-3 text-[15px] text-center"
                       style={{ background: picked ? `${C.orange}18` : C.panel, border: `1px solid ${picked ? C.orange : C.border}`, color: picked ? C.orange : C.text }}
                       onClick={() => setData(d => ({ ...d, fightBooked: on, ...(on ? {} : { fightDate: null }) }))}>{label}</button>
                   );
@@ -9313,7 +9348,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
               const isActive = current.includes(opt);
               return (
                 <React.Fragment key={opt}>
-                <button onClick={() => {
+                <button data-advance={opt === "None currently" ? "" : undefined} data-skip-to-next-section={opt === "None currently" ? "" : undefined} onClick={() => {
                   if (opt === "None currently") {
                     setData(d => ({ ...d, injuries: ["None currently"], injuryDetail: {} }));
                     return;
@@ -9373,7 +9408,7 @@ function OnboardingStepBodyRest({ role, stepName, data, setData, set }) {
           {SPLIT_CHOICES.map(opt => {
             const active = chosen === opt.key;
             return (
-              <button key={opt.key} onClick={() => set("splitStyle", opt.key)}
+              <button key={opt.key} data-advance="" onClick={() => set("splitStyle", opt.key)}
                 className="text-left rounded-xl p-4"
                 style={{ background: active ? `${C.orange}18` : C.panel, border: `1px solid ${active ? C.orange : C.border}` }}>
                 <div className="flex items-center gap-2">
