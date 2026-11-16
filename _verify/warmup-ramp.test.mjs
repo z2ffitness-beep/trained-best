@@ -47,6 +47,13 @@ test("an athlete's Coach tab is headed with their coach's name", () => {
   assert.ok(src.includes('header={<TopBar title={hasCoach ? (state.coachProfile?.name || "Coach") : "Coach"} />} />;'));
 });
 
+test("a brand-new athlete gets their coach's name straight after signup, not at the next login", () => {
+  const at = src.indexOf("const writeProfileAndContinue = async");
+  const body = src.slice(at, at + 9000);
+  assert.ok(/await supabase\.rpc\("coach_card", \{ p_id: coachId \}\)/.test(body));
+  assert.ok(/id: c\.id, name: c\.name/.test(body));
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; } catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
 }

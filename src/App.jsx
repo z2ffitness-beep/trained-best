@@ -31818,6 +31818,27 @@ function AppInner() {
         if (role === "athlete_coached") {
           const { coachId } = await joinCoachByCode(data.inviteCode, userId, data.inviteCoachId);
           if (coachId) linkedCoachId = coachId;
+          // The coach's card, now, not at the next login. Without it a new
+          // athlete's Coach tab said "Coach" instead of their coach's name for
+          // the whole first session (Isaiah, 15 Nov).
+          if (coachId) {
+            try {
+              const { data: card } = await supabase.rpc("coach_card", { p_id: coachId });
+              const c = Array.isArray(card) ? card[0] : card;
+              if (c) {
+                setState(s => ({
+                  ...s,
+                  coachProfile: {
+                    ...s.coachProfile,
+                    id: c.id, name: c.name, avatar: c.avatar, photoUrl: c.photo_url,
+                    accountabilityEnabled: c.accountability_enabled ?? true,
+                    cancellationHours: c.cancellation_hours ?? DEFAULT_CANCELLATION_HOURS,
+                    businessName: c.business_name || null, brandColor: c.brand_color || null, logoPath: c.logo_path || null,
+                  },
+                }));
+              }
+            } catch { /* the next login loads it */ }
+          }
         }
       }
 
