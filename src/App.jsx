@@ -10033,6 +10033,7 @@ function FirstRunTour({ hasCoach, role = "athlete", onDone }) {
 // workout had Home lit up underneath them.
 const NAV_PARENT = {
   "athlete-workout": "athlete-program",
+  "coach-session": "coach-athletes",
   "athlete-program-edit": "calendar",
   "athlete-booking": "athlete-ai",
 };
@@ -15070,6 +15071,25 @@ function CoachAthleteDetail({ state, setState, nav, athleteId, myUserId }) {
           );
         })()}
 
+        {/* In the room with them (17 Nov): run today's session on this phone. */}
+        {program && (() => {
+          const today = todayISO();
+          const todays = (program.days || []).find(d => isDayScheduledOn(d, today));
+          const done = todays ? loggedToday(athlete, todays.name, today) : null;
+          return (
+            <div className="mb-3">
+              <Btn className="w-full" icon={Play} onClick={() => nav.go("coach-session", athlete.id)}>
+                {todays ? `Run today's session: ${todays.name.split(/\s+[—-]\s+/)[0]}` : "Run a session with them"}
+              </Btn>
+              <p className="text-[12px] mt-1.5 leading-relaxed" style={{ color: done ? C.amber : C.faint }}>
+                {done
+                  ? `${done.loggedBy ? "You" : "They"} already logged ${todays.name.split(/\s+[—-]\s+/)[0]} today. Running it again saves a second session.`
+                  : "Tick their sets, weights and reps on your phone. It saves to their history and tells them."}
+              </p>
+            </div>
+          );
+        })()}
+
         <Btn variant="secondary" className="w-full mb-5" icon={ClipboardList} onClick={() => setSheetOpen(true)}>Intake sheet: every answer on one page</Btn>
         <IntakeSheet open={sheetOpen} onClose={() => setSheetOpen(false)} intake={athlete.intake} name={athlete.name} />
 
@@ -19416,6 +19436,10 @@ function SessionLogRow({ log, showNote = true, onCoachEdit = null }) {
       {/* The coach's side of it (Isaiah, 28 Oct): a reply, and a mark when
           the coach corrected a number, so neither side wonders why a weight
           changed. */}
+      {/* Run by the coach in person (17 Nov), so nobody wonders who ticked it. */}
+      {log.loggedBy && (
+        <div className="mt-2 text-[11px] font-semibold" style={{ color: C.blue }}>Logged by the coach during the session</div>
+      )}
       {(log.coachNote || log.coachEditedAt) && (
         <div className="mt-2.5 rounded-lg px-3 py-2 text-[12.5px] leading-relaxed" style={{ background: `${C.blue}12`, border: `1px solid ${C.blue}33`, color: C.text }}>
           {log.coachNote && <div><span className="font-semibold" style={{ color: C.blue }}>Coach: </span>{log.coachNote}</div>}
@@ -22488,7 +22512,105 @@ function MyWorkoutTab({ state, setState, nav }) {
   );
 }
 
-function Workout({ state, setState, nav, dayId, onExit = null }) {
+// ---- Running a client's session in person (Isaiah, 17 Nov) ----------------
+// The coach is in the room and the client's phone is in a locker. The coach
+// opens the client's workout for today on their own phone and ticks it off:
+// the same screen the client uses, pointed at the client's program and
+// history. Everything the workout screen reads about "me" is the client here,
+// and every change it makes to that view is written back onto the client in
+// the coach's roster.
+function clientWorkoutView(state, athlete) {
+  return {
+    ...state,
+    me: {
+      ...state.me,
+      id: athlete.id,
+      name: athlete.name,
+      program: athlete.program,
+      customProgram: null,
+      intake: athlete.intake || {},
+      trainingDays: athlete.intake?.trainingDays || [],
+      streak: athlete.streak || 0,
+      coachId: state.me?.id || null,
+      selfGuided: false,
+      // The coach's own unit, since the coach is the one typing.
+      unitPref: state.me?.unitPref,
+    },
+    workoutLogs: athlete.workoutLogs || [],
+    sessionMoves: athlete.sessionMoves || [],
+    coachProfile: null,
+  };
+}
+
+// Today's session for this client, already logged today (by them or the coach).
+function loggedToday(athlete, dayName, date) {
+  return (athlete?.workoutLogs || []).find(l => l.date === date && l.programDay === dayName) || null;
+}
+
+function CoachSessionBanner({ name, onExit }) {
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 rounded-lg px-3 py-2"
+      style={{ background: `${C.blue}14`, border: `1px solid ${C.blue}55` }}>
+      <span className="text-[12.5px] font-semibold truncate" style={{ color: C.blue }}>Logging for {name}</span>
+      {onExit && (
+        <button type="button" onClick={onExit} className="shrink-0 text-[12.5px] font-semibold" style={{ color: C.sub }}>
+          Back to {String(name || "").split(" ")[0] || "client"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CoachSession({ state, setState, nav, athleteId }) {
+  const athlete = (state.athletes || []).find(a => a.id === athleteId);
+  const view = useMemo(() => (athlete ? clientWorkoutView(state, athlete) : null), [state, athlete]);
+  const back = () => nav.go("coach-athlete-detail", athleteId);
+  const setView = React.useCallback((update) => {
+    setState(s => {
+      const a = (s.athletes || []).find(x => x.id === athleteId);
+      if (!a) return s;
+      const before = clientWorkoutView(s, a);
+      const after = typeof update === "function" ? update(before) : update;
+      return {
+        ...s,
+        exercises: after.exercises,
+        programs: after.programs,
+        athletes: s.athletes.map(x => x.id !== athleteId ? x : {
+          ...x,
+          workoutLogs: after.workoutLogs,
+          lastActive: after.workoutLogs?.[0]?.date || x.lastActive,
+        }),
+      };
+    });
+  }, [setState, athleteId]);
+
+  if (!athlete) {
+    return (
+      <div className="pb-28">
+        <TopBar title="Session" />
+        <div className="px-5 pt-10 text-center text-[15px]" style={{ color: C.sub }}>That client isn't on your roster.</div>
+      </div>
+    );
+  }
+  if (!state.programs.find(p => p.id === athlete.program)) {
+    return (
+      <div className="pb-28">
+        <TopBar title={athlete.name} />
+        <div className="px-5 pt-10 text-center">
+          <div className="text-[15px] font-semibold mb-1" style={{ color: C.text }}>No program yet</div>
+          <p className="text-[12.5px] mb-5" style={{ color: C.sub }}>Give {athlete.name} a program first, then you can run their sessions here.</p>
+          <Btn variant="secondary" onClick={back}>Back to {athlete.name}</Btn>
+        </div>
+      </div>
+    );
+  }
+  return <Workout state={view} setState={setView} nav={nav} dayId={null} onExit={back} coachFor={athlete} />;
+}
+
+// coachFor: the athlete, when a coach is running this session for them in
+// person (Isaiah, 17 Nov). The screen is the athlete's own; only the save goes
+// through coach_log_session, and nothing is written to the athlete's profile.
+function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }) {
   const wideWorkout = useIsWide();
   // Measured, not assumed — see useBarClearance.
   const [workoutBarRef, workoutBarPad] = useBarClearance();
@@ -22888,7 +23010,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
               ? "Add some from your program and this session is ready to run."
               : "Your coach hasn't filled this day in yet."}
           </p>
-          <Btn variant="secondary" icon={Dumbbell} onClick={() => nav.go("athlete-program")}>Open my program</Btn>
+          <Btn variant="secondary" icon={Dumbbell} onClick={() => (coachFor && onExit ? onExit() : nav.go("athlete-program"))}>{coachFor ? "Back to their page" : "Open my program"}</Btn>
         </div>
       </div>
     );
@@ -23025,7 +23147,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     // screen in the new unit for this session and reverts on reload, which is
     // the mild end of wrong: the numbers on screen are right either way,
     // because they were converted above.
-    await saveLiftUnit(setState, state.me.id, to);
+    if (!coachFor) await saveLiftUnit(setState, state.me.id, to);
   };
 
   const toggleSet = (setNum, item = x) => {
@@ -23274,7 +23396,13 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       // the athlete logged vanished on refresh.
       let error = null;
       try {
-        ({ error } = await supabase.from("workout_logs").insert(row));
+        if (coachFor) {
+          // The coach's phone, the athlete's record. One call writes the log,
+          // its sets and the athlete's notification, or none of them.
+          ({ error } = await supabase.rpc("coach_log_session", { p_athlete: coachFor.id, p_log: row, p_sets: setRows }));
+        } else {
+          ({ error } = await supabase.from("workout_logs").insert(row));
+        }
       } catch (thrown) {
         // A request that never left the phone rejects rather than resolving.
         error = thrown;
@@ -23285,7 +23413,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         // refusing the save would throw the session away. Keep it on the
         // device and send it when there is a connection; only a rejection
         // that will never succeed is worth stopping for.
-        if (isTransientError(error) && queuePendingLog({ row, meta: notice, setRows })) {
+        if (!coachFor && isTransientError(error) && queuePendingLog({ row, meta: notice, setRows })) {
           queued = true;
         } else {
           setSaving(false);
@@ -23294,7 +23422,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
         }
       }
 
-      if (!queued) {
+      if (!queued && !coachFor) {
         // The per-set rows, after the log they hang off. A failure here is
         // not worth stopping a saved session for: the same numbers are in the
         // log's own jsonb, so nothing is lost that cannot be rebuilt.
@@ -23333,6 +23461,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
       id: rowId, date: dateStr, programDay: day.name, duration: durationMin,
       timedSeconds, mood, setsCompleted, setsPrescribed, counts: row.counts,
       notes: notes.trim() || null, exercises: exerciseDetail, pendingSync: queued,
+      loggedBy: coachFor ? (state.me.coachId || "coach") : null,
     };
 
     // What this session earned. Worked out by asking the same functions the
@@ -23428,9 +23557,9 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
     // The paused record is keyed by the session rather than by a date, so it
     // follows the session home without being touched.
     const pulled = pullToUndo(state.sessionMoves, day.name, todayISO());
-    if (pulled) clearSessionMove(setState, state.me.id, pulled.programDay, pulled.fromDate);
+    if (pulled && !coachFor) clearSessionMove(setState, state.me.id, pulled.programDay, pulled.fromDate);
     setStopOpen(null);
-    nav.go("athlete-home");
+    if (coachFor && onExit) onExit(); else nav.go("athlete-home");
   };
 
   // Done for good. Logs what was actually ticked; the 50% rule in the save
@@ -23564,6 +23693,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           stepping. */}
       <TopBar title={day.name}
         below={<>
+          {coachFor && <CoachSessionBanner name={coachFor.name} onExit={onExit} />}
           {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
           {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
           {voiceScopeFor(progressItems).length > 1 && (
@@ -23644,7 +23774,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
                 <p className="text-[12.5px] mt-0.5 mb-3" style={{ color: C.sub }}>
                   Give it a day of the week and it'll show up on your calendar and on your home screen when it's due. You can train through it now, but it can't be logged until it's scheduled.
                 </p>
-                <Btn variant="secondary" icon={Calendar} onClick={() => nav.go("athlete-program")}>Set a day for it</Btn>
+                <Btn variant="secondary" icon={Calendar} onClick={() => (coachFor && onExit ? onExit() : nav.go("athlete-program"))}>Set a day for it</Btn>
               </div>
             </div>
           </div>
@@ -24211,7 +24341,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           {/* Filed from the session it happened in, so the clip arrives already
               labelled with the movement and the day rather than as an
               unexplained video. */}
-          {state.me.coachId && (
+          {state.me.coachId && !coachFor && (
             <div className="flex-1" style={{ minWidth: 150 }}>
               <Btn variant="ghost" className="w-full" size={wideWorkout ? "md" : "sm"}
                 icon={Video} onClick={() => setFormCheckOpen(true)}>
@@ -24307,7 +24437,7 @@ function Workout({ state, setState, nav, dayId, onExit = null }) {
           ))}
         </div>
 
-        <Field label="Notes for your coach (optional)">
+        <Field label={coachFor ? "Session notes (optional)" : "Notes for your coach (optional)"}>
           <textarea
             style={{ ...inputStyle, minHeight: 76, resize: "none", lineHeight: 1.45 }}
             placeholder="Anything they should know — an ache, a lift that felt off, a PR…"
@@ -31287,7 +31417,7 @@ function AppInner() {
             groupId: a.group_id || null,
             program: a.active_program_id || null,
             lastActive: (logsByAthlete[a.id] || [])[0]?.date || null,
-            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })),
+            workoutLogs: (logsByAthlete[a.id] || []).map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, loggedBy: l.logged_by || null, exercises: l.exercises || [] })),
             activityLogs: (activitiesByAthlete[a.id] || []).map(activityFromRow),
             checkins: checkinsByAthlete[a.id] || {},
             // Same shape as state.sessionMoves, so planForWeek and
@@ -31418,7 +31548,7 @@ function AppInner() {
         };
         if (logRows?.length) {
           const split = splitLogRows(logRows);
-          next = { ...next, activityLogs: split.activities.map(activityFromRow), workoutLogs: split.sessions.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, exercises: l.exercises || [] })) };
+          next = { ...next, activityLogs: split.activities.map(activityFromRow), workoutLogs: split.sessions.map(l => ({ id: l.id, date: l.date, programDay: l.program_day, duration: l.duration, timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed, setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, loggedBy: l.logged_by || null, exercises: l.exercises || [] })) };
         }
         if (progressRows?.length) {
           next = { ...next, progress: progressRows.map(mapCheckin) };
@@ -31584,7 +31714,7 @@ function AppInner() {
             id: l.id, date: l.date, programDay: l.program_day, duration: l.duration,
             timedSeconds: l.timed_seconds, mood: l.mood, setsCompleted: l.sets_completed,
             setsPrescribed: l.sets_prescribed, counts: logCounts(l), notes: l.notes, exercises: l.exercises || [],
-            coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null,
+            coachNote: l.coach_note || null, coachNoteAt: l.coach_note_at || null, coachEditedAt: l.coach_edited_at || null, loggedBy: l.logged_by || null,
           })),
         };
       }),
@@ -32173,6 +32303,7 @@ function AppInner() {
       onDone={() => nav.go("athlete-program")} onCancel={() => setTraining(false)} />,
     "coach-athletes": <CoachAthletes state={state} setState={setState} nav={nav} myUserId={authUserId} />,
     "coach-athlete-detail": <CoachAthleteDetail state={state} setState={setState} nav={nav} athleteId={navParam} myUserId={authUserId} />,
+    "coach-session": <CoachSession state={state} setState={setState} nav={nav} athleteId={navParam} />,
     "coach-messages": <CoachMessages state={state} setState={setState} nav={nav} myUserId={authUserId} />,
     "coach-profile": <CoachProfile state={state} setState={setState} nav={nav} />,
     "athlete-dashboard": <AthleteDashboard state={state} setState={setState} nav={nav}
