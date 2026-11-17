@@ -89,7 +89,7 @@ test("the AI is told, and told the app does the cutting", () => {
   assert.match(b, /do not shrink it yourself/);
   assert.match(b, /No depth jumps/);
   assert.equal(H.startLevelPromptBlock({ lastConsistent: "now", recentDaysPerWeek: "3+" }), "");
-  assert.ok(/\$\{startLevelPromptBlock\(\{ \.\.\.intake, noJumps: profile\.power === "none" \}\)\}/.test(src), "the block never reaches the prompt");
+  assert.ok(/\$\{startLevelPromptBlock\(\{ \.\.\.intake, noJumps: profile\.jumps === "none" \}\)\}/.test(src), "the block never reaches the prompt");
 });
 
 test("asked at signup, and in a coach's own training intake", () => {

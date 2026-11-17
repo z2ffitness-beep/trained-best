@@ -10419,7 +10419,44 @@ function currentInjuryAreas(intake) {
     .filter(a => (injuryDetailFor(intake, a) || {}).status !== "past");
 }
 
-// { shape, power: "full" | "low" | "none", lowImpact, reasons }
+// How much jumping this body can take (Isaiah, 17 Nov): not a yes or no.
+// About 190 lb can do a decent broad jump. Heavier, or older, or new to it,
+// and the jump stays in but shrinks to small forward hops, one at a time,
+// with a note saying so. Around 300 lb and up, no jumping at all.
+//   "full"  - jumps as written
+//   "small" - small, low hops with a note; nothing repeated or high level
+//   "none"  - no jumping anywhere
+const JUMP_HEAVY_LB = 250;
+const JUMP_NONE_LB = 300;
+function jumpTierOf(intake) {
+  const i = intake || {};
+  const lb = Number(i.weightLb) || null;
+  const bmi = bmiOf(i);
+  const age = ageFromBirthday(i.birthday);
+  const hurt = currentInjuryAreas(i);
+  const lowerHurt = hurt.some(a => /Knee|Ankle|Hip|Low back|Thigh/.test(a));
+  const move = i.move || {};
+  const moveLimit = ["sitStand", "balance"].some(k => ["hard", "cant", "pain"].includes(move[k]));
+  const none = [], small = [];
+  if (needsClearance(i)) none.push("not yet cleared by a doctor");
+  if (lb && lb >= JUMP_NONE_LB) none.push(`body weight (${Math.round(lb)} lb)`);
+  else if (bmi != null && bmi >= 40) none.push("body weight for their height");
+  if (age != null && age >= 65) none.push(`age ${age}`);
+  if ((i.goals || []).includes("Injury Recovery") && lowerHurt) none.push("recovering from a lower-body injury");
+  if (none.length) return { tier: "none", reasons: none };
+  if (lb && lb >= JUMP_HEAVY_LB) small.push(`body weight (${Math.round(lb)} lb)`);
+  else if (bmi != null && bmi >= 30) small.push("body weight for their height");
+  if (age != null && age >= 50) small.push(`age ${age}`);
+  if (startLevelOf(i) === "foundation") small.push("new to training or months out of it");
+  if ((i.experience || "Beginner") === "Beginner") small.push("beginner");
+  if (lowerHurt) small.push("a current lower-body injury");
+  if (moveLimit) small.push("the sit-to-stand or balance check was hard");
+  return { tier: small.length ? "small" : "full", reasons: small };
+}
+
+// { shape, power: "full" | "low" | "none", jumps, lowImpact, reasons }
+// power is the athlete's power block; jumps is what the body can take, for
+// everyone, warm-ups included.
 function trainingProfileOf(intake) {
   const i = intake || {};
   const goals = i.goals || [];
@@ -10430,86 +10467,81 @@ function trainingProfileOf(intake) {
     : goals.includes("Strength") ? "strength"
     : goals.includes("Conditioning / Endurance") ? "conditioning"
     : "general";
+  const { tier, reasons } = jumpTierOf(i);
+  const power = !athletic ? "none" : tier === "full" ? "full" : tier === "small" ? "low" : "none";
+  return { shape, power, jumps: tier, lowImpact: tier === "none", reasons };
+}
 
-  const age = ageFromBirthday(i.birthday);
-  const bmi = bmiOf(i);
-  const level = startLevelOf(i);
-  const hurt = currentInjuryAreas(i);
-  const lowerHurt = hurt.some(a => /Knee|Ankle|Hip|Low back|Thigh/.test(a));
-  const move = i.move || {};
-  const moveLimit = ["sitStand", "balance"].some(k => ["hard", "cant", "pain"].includes(move[k]));
-  const reasons = [];
-
-  let power = athletic ? "full" : "none";
-  if (power !== "none") {
-    if (needsClearance(i)) { power = "none"; reasons.push("not yet cleared by a doctor"); }
-    else if (age != null && age >= 65) { power = "none"; reasons.push(`age ${age}`); }
-    else if (bmi != null && bmi >= 35) { power = "none"; reasons.push("body weight"); }
-    else if (goals.includes("Injury Recovery") && hurt.length) { power = "none"; reasons.push("recovering from an injury"); }
-    else {
-      if (age != null && age >= 50) reasons.push(`age ${age}`);
-      if (bmi != null && bmi >= 30) reasons.push("body weight");
-      if (level === "foundation") reasons.push("new to training or months out of it");
-      if ((i.experience || "Beginner") === "Beginner") reasons.push("beginner");
-      if (lowerHurt) reasons.push("a current lower-body injury");
-      if (moveLimit) reasons.push("the sit-to-stand or balance check was hard");
-      if (reasons.length) power = "low";
-    }
-  }
-  const lowImpact = power === "none" && (shape === "fat_loss" || (bmi != null && bmi >= 30) || (age != null && age >= 55)
-    || level === "foundation" || lowerHurt || needsClearance(i));
-  return { shape, power, lowImpact, reasons };
+// What the generator is told about jumping for this body.
+function jumpRuleText(p) {
+  if (p.jumps === "none") return `NO JUMPING for this person (${p.reasons.join(", ")}): no jumps, hops, bounds, skips, jump rope, burpees, running or sprinting anywhere, warm-up included. Conditioning on a bike, rower, ski erg, sled or incline walk.`;
+  if (p.jumps === "small") return `JUMPS STAY SMALL for this person (${p.reasons.join(", ")}). A jump may appear, but only as a small, low version done one rep at a time: a broad jump is small forward hops at about half their normal distance, landing softly and sticking each one; vertical jumps are a few inches off the floor. NEVER repeated or continuous jumps (no back-to-back broad jumps, bounds, hurdle hops, depth or drop jumps, tuck jumps, single-leg hops or jumping lunges), at most 5 reps a set and about 30 foot contacts a session. Burpees are step-back burpees with no jump. Give every jump a "note" that says how to do the small version.`;
+  return "";
 }
 
 // The session's job, written for the shape. The athletic one is the old rule.
 function sessionShapeBlock(intake) {
   const p = trainingProfileOf(intake);
-  const noJumps = "No plyometrics anywhere in the program: no jumps, hops, bounds, skips, jumping lunges or box jumps, and no med ball power block. Leave the \"explosive\" phase EMPTY on every day.";
-  const impact = p.lowImpact ? " Keep everything low impact: no running, sprinting, jump rope or burpees; conditioning on a bike, rower, ski erg, sled or incline walk." : "";
+  const noBlock = "No power block: leave the \"explosive\" phase EMPTY on every day, and no jumps or plyometrics in the main work.";
   const offDays = "AEROBIC WORK ON THEIR OWN TIME: in paragraph 1 of the rationale, give them a plain weekly target for easy aerobic work on non-training days (for example 2 to 4 walks or easy bike rides of 30 to 45 minutes at a pace they can talk at, or a daily step goal), and how it builds across the phases. It is not a training day in the JSON.";
+  const jumps = jumpRuleText(p);
   const shapes = {
-    athletic: `SESSION SHAPE: ${PROFILE_SHAPES.athletic}. Warm-up, power block, strength, then conditioning, as set out below.${p.power === "low" ? ` Power work stays LOW LEVEL because of: ${p.reasons.join(", ")}. Jumps are pogo hops, low box jumps or squat jumps landing softly, and med ball throws; no depth jumps, bounds, hurdle hops, single-leg hops, tuck jumps or max-height jumps. Keep jump foot contacts under about 40 a session.` : ""}${p.power === "none" ? ` Because of ${p.reasons.join(", ")}, ${noJumps}` : ""}`,
+    athletic: `SESSION SHAPE: ${PROFILE_SHAPES.athletic}. Warm-up, power block, strength, then conditioning, as set out below.${p.power === "none" ? ` Because of ${p.reasons.join(", ")}, there is no power block: leave the "explosive" phase EMPTY and build power with fast, controlled strength work instead.` : ""}`,
     fat_loss: `SESSION SHAPE: ${PROFILE_SHAPES.fat_loss}. This is a personal-training client, not an athlete: train them the way a good trainer would.
 - Strength first: 2 to 3 compound lifts at 6 to 12 reps, so they keep muscle while they lose fat.
 - Then accessory and hypertrophy work in supersets or a short circuit with brief rests, to keep the heart rate up and the session dense.
-- Finish with ONE conditioning piece: intervals or a density circuit on low-impact equipment.
-- ${noJumps}${impact}
+- Finish with ONE conditioning piece: intervals or a density circuit, on low-impact equipment when their body weight is high.
+- ${noBlock}
 - ${offDays}
 - Say in the rationale, plainly, that fat loss is driven mostly by eating and daily movement, and that the lifting keeps the weight coming off as fat rather than muscle.`,
     muscle: `SESSION SHAPE: ${PROFILE_SHAPES.muscle}. Hypertrophy training:
 - 2 to 3 compound lifts at 6 to 12 reps, then accessories at 8 to 15 reps, most sets at 7 to 9 out of 10, accessories paired as supersets.
 - Every major muscle group trained at least twice a week; add sets across the phases.
 - Conditioning is optional: at most one short low-impact finisher.
-- ${noJumps}${impact}
+- ${noBlock}
 - ${offDays.replace("2 to 4", "1 to 3")}`,
     strength: `SESSION SHAPE: ${PROFILE_SHAPES.strength}. Strength training:
 - 2 to 3 main lifts at 3 to 6 reps with full rests (2 to 4 minutes), then accessories that support those lifts.
 - Little conditioning: at most one short low-impact piece.
-- ${noJumps}${impact}
+- ${noBlock}
 - ${offDays.replace("2 to 4", "1 to 3")}`,
     conditioning: `SESSION SHAPE: ${PROFILE_SHAPES.conditioning}. Fitness and work capacity:
 - 2 compound lifts at 8 to 12 reps, then accessories as a circuit, then a real conditioning piece (intervals, a circuit or a steady effort).
-- ${noJumps}${impact}
+- ${noBlock}
 - ${offDays}`,
     general: `SESSION SHAPE: ${PROFILE_SHAPES.general}. This is a personal-training client, not an athlete:
 - 2 to 3 compound lifts at 6 to 12 reps, accessories in supersets, then one conditioning piece.
-- ${noJumps}${impact}
+- ${noBlock}
 - ${offDays}`,
   };
   const extra = [];
+  if (jumps) extra.push(`- ${jumps}`);
   if ((intake?.goals || []).includes("Flexibility")) extra.push("- They want flexibility: put a 5 minute mobility block for the hips, hamstrings and upper back in the cooldown of every day.");
   if ((intake?.goals || []).includes("Injury Recovery")) extra.push("- They are coming back from an injury: slow tempo and pain-free range on anything that loads the injured area.");
   return `${shapes[p.shape]}${extra.length ? `\n${extra.join("\n")}` : ""}`;
 }
 
 // The prompt says all of the above, and the model mostly listens. This makes
-// sure. Runs on a freshly built program before anyone sees it: jumps that the
-// profile does not allow are taken out of the main work, swapped for a safe
-// drill in the warm-up, and high-level plyos become pogo jumps when power is
-// kept low.
+// sure, on a freshly built program before anyone sees it:
+// - no power block for someone who is not training for a sport or a fight
+// - "none": jumping comes out; warm-up jumps become a bike or a box squat
+// - "small": jumps stay, shrunk to a small version with a note on how;
+//   repeated and high-level ones become one small jump at a time
 const JUMP_RE = /\b(jumps?|jumping|hops?|hopping|bounds?|bounding|pogo|plyo\w*|skips?|skipping|leaps?|skaters?|burpees?|tuck)\b/i;
-const HIGH_PLYO_RE = /\b(depth|drop|hurdle|single[- ]leg (hop|bound|jump)|bounds?|bounding|tuck|max(imum)? height|jumping split|split jump)\b/i;
+const HIGH_PLYO_RE = /\b(depth|drop|hurdle|single[- ]leg (hop|bound|jump)|bounds?|bounding|tuck|max(imum)? height|jumping split|split jump|repeated|continuous|consecutive)\b/i;
 const IMPACT_RE = /\b(jump rope|skipping rope|sprints?|running|run|burpees?)\b/i;
+
+function smallJumpNote(name) {
+  if (/burpee/i.test(name)) return "Step back and step in. No jump at the top.";
+  if (/rope|skip/i.test(name)) return "Low, easy bounces just off the floor. March in place instead if it bothers your knees or ankles.";
+  if (/pogo|hop/i.test(name)) return "Small, quick hops a few centimetres off the floor. Stop if your knees or ankles complain.";
+  if (/broad|forward|long/i.test(name)) return "Small forward hops, about half your normal distance. Land softly on both feet, stick it, then walk back and reset. One at a time, never back to back.";
+  return "Small jump, a few inches off the floor. Land softly and stick it before the next rep. One at a time.";
+}
+const capReps = (reps, max) => {
+  const n = parseInt(reps, 10);
+  return isFinite(n) && n > max ? String(max) : reps;
+};
 
 function fitProgramToPerson(days, intake) {
   const p = trainingProfileOf(intake);
@@ -10519,22 +10551,29 @@ function fitProgramToPerson(days, intake) {
     let out = [];
     for (const x of d.exercises || []) {
       const name = x.name || "";
-      const jumpy = JUMP_RE.test(name) && !/jumping jacks?/i.test(name) ? true : false;
-      const impact = IMPACT_RE.test(name);
-      if (p.power === "none") {
-        if (x.phase === "explosive") continue;
-        if (warm(x.phase) && (jumpy || (p.lowImpact && (impact || /jumping jacks?/i.test(name))))) {
-          const swap = x.phase === "warmup_general" && /rope|run|jog|jack/i.test(name) ? "Easy Bike or Brisk Walk" : "Bodyweight Box Squat";
+      const jumpy = JUMP_RE.test(name) && !/jumping jacks?/i.test(name);
+      const impact = IMPACT_RE.test(name) || /jumping jacks?/i.test(name);
+      if (p.power === "none" && x.phase === "explosive" && (p.shape !== "athletic" || jumpy)) continue;
+      if (p.shape !== "athletic" && !warm(x.phase) && jumpy && !/burpee/i.test(name)) continue;
+      if (p.jumps === "none" && (jumpy || impact)) {
+        if (!warm(x.phase)) continue;
+        const swap = x.phase === "warmup_general" && /rope|run|jog|jack|skip/i.test(name) ? "Easy Bike or Brisk Walk" : "Bodyweight Box Squat";
+        if (names.has(swap.toLowerCase())) continue;
+        names.add(swap.toLowerCase());
+        out.push({ ...x, name: swap, reps: swap.startsWith("Easy") ? "3 min" : "8", sets: 1 });
+        continue;
+      }
+      if (p.jumps === "small" && (jumpy || /jump rope|skipping rope/i.test(name))) {
+        let row = x;
+        if (HIGH_PLYO_RE.test(name)) {
+          const swap = /broad|bound|forward|long/i.test(name) ? "Broad Jump" : "Pogo Jumps";
           if (names.has(swap.toLowerCase())) continue;
           names.add(swap.toLowerCase());
-          out.push({ ...x, name: swap, reps: swap.startsWith("Easy") ? "3 min" : "8", sets: 1 });
-          continue;
+          row = { ...x, name: swap };
         }
-        if (!warm(x.phase) && (jumpy || (p.lowImpact && impact))) continue;
-      } else if (p.power === "low" && HIGH_PLYO_RE.test(name)) {
-        if (names.has("pogo jumps")) continue;
-        names.add("pogo jumps");
-        out.push({ ...x, name: "Pogo Jumps", reps: "10", sets: Math.min(Number(x.sets) || 3, 3) });
+        const capped = warm(row.phase) || /pogo|rope|skip|burpee/i.test(row.name) ? row.reps : capReps(row.reps, 5);
+        const sets = /burpee/i.test(row.name) ? row.sets : Math.min(Number(row.sets) || 1, 3);
+        out.push({ ...row, reps: capped, sets, note: row.note || smallJumpNote(row.name) });
         continue;
       }
       out.push(x);
@@ -10584,10 +10623,10 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
 WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Potentiate), written for THIS athlete and THIS day's main lifts. For example, a warm-up of "Back Squat 2x8, Scapular Push Ups, Band External Rotation" before a squat day is a bad warm-up; every piece must have a reason on that day.
-- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, ${profile.lowImpact ? "low impact: bike, rower, ski erg, brisk or incline walk, or marching. No jump rope, skips or jogging" : profile.power === "none" ? "e.g. bike, rower, brisk walk or jump rope" : "e.g. jump rope, bike, rower or skips"}. Reps like "3 min".
+- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, ${profile.jumps === "none" ? "low impact: bike, rower, ski erg, brisk or incline walk, or marching. No jump rope, skips or jogging" : profile.jumps === "small" ? "e.g. bike, rower, brisk walk, or easy low jump rope" : "e.g. jump rope, bike, rower or skips"}. Reps like "3 min".
 - MOBILISE (the rest of "warmup_general"): dynamic, moving stretches through the ranges the day's main lifts use, not static holds. A squat day covers ankles, hips, knees and thoracic spine; a pressing day covers thoracic spine, shoulders and wrists; a hinge day covers hips and hamstrings.
 - ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift${profile.power === "none" ? "" : " and power exercise"} depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
-${profile.power === "none" ? `- POTENTIATE (the last primer): there is no power block, so this is a bodyweight or band rehearsal of the day's first main lift at a controlled speed (e.g. bodyweight box squats before squats, a dowel hinge before deadlifts, band rows before rows). No jumps, hops or skips.` : `- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.`}
+${profile.power === "none" ? `- POTENTIATE (the last primer): there is no power block, so this is a bodyweight or band rehearsal of the day's first main lift at a controlled speed (e.g. bodyweight box squats before squats, a dowel hinge before deadlifts, band rows before rows).${profile.jumps === "full" ? " A few easy pogo hops are fine too." : profile.jumps === "small" ? " If you use hops, they are small ones with a note saying so." : " No jumps, hops or skips."}` : `- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.`}
 - LOAD CEILING, both warm-up phases: bodyweight, bands or a light medicine ball ONLY. Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift. Ramp-up sets are not exercises: do not list "Back Squat 2x8" or "Trap Bar Deadlift 2x8 at difficulty 3" anywhere. The athlete works up to the working weight inside that lift; say once in the rationale to build up over 2 or 3 lighter sets before the working sets of each main lift.
 - The same exercise never appears twice in one day.
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
@@ -10606,7 +10645,7 @@ ${sessionShapeBlock(intake)}
 
 ${sportPromptBlock(intake)}
 
-${startLevelPromptBlock({ ...intake, noJumps: profile.power === "none" })}
+${startLevelPromptBlock({ ...intake, noJumps: profile.jumps === "none" })}
 
 ${screeningPromptBlock(intake)}
 
@@ -10680,6 +10719,8 @@ Explanation requirements — this is the first thing the athlete reads, and it i
   * Define any technical term the moment you use it, in the same sentence. No hype, no restating their intake back at them, no "as an elite coach". If you would not say it out loud to the person in front of you, don't write it.
 - Each day's "why": ONE sentence on what that specific session is for and why it sits where it does in the week.
 
+- "note" on an exercise: ONE short cue the athlete reads during the workout, only when it changes how they do it (for example how to do a scaled-down version of a jump). Leave it null otherwise.
+
 - Movements done together: give CONSECUTIVE exercises the same "groupId" (any short string, unique within the day) to make them a superset or circuit. Two movements is a superset, three or more is a circuit. The number of rounds is each movement's "sets", so give every movement in a group the same sets. Put the rest that follows the round on the LAST movement of the group and leave the others' rest short. Use this where it genuinely serves the session - accessory pairs, conditioning circuits - and leave heavy compound work as straight sets. Omit groupId entirely for anything done on its own.
 
 Return JSON in this exact shape:
@@ -10692,7 +10733,7 @@ Return JSON in this exact shape:
       "name": "Day 1 — <focus>",
       "why": "one sentence on this session's purpose and placement",
       "exercises": [
-        { "phase": "warmup_general|warmup_specific|explosive|compound|hypertrophy|lactic|aerobic|cooldown", "name": "string", "sets": number, "reps": "string", "rpe": number, "rest": "string", "groupId": "string or null", "groupKind": "superset|circuit or null" }
+        { "phase": "warmup_general|warmup_specific|explosive|compound|hypertrophy|lactic|aerobic|cooldown", "name": "string", "sets": number, "reps": "string", "rpe": number, "rest": "string", "groupId": "string or null", "groupKind": "superset|circuit or null", "note": "short coaching cue, or null" }
       ]
     }
   ]

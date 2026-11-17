@@ -17,7 +17,8 @@ const H = await load(APP, [
   { name: "START_LEVELS", kind: "const" }, "startLevelOf",
   { name: "PARQ_QUESTIONS", kind: "const" }, "parqFlags", "needsClearance",
   "injuryDetailFor", { name: "PROFILE_SHAPES", kind: "const" }, "bmiOf", "currentInjuryAreas",
-  "trainingProfileOf", "sessionShapeBlock",
+  { name: "JUMP_HEAVY_LB", kind: "const" }, { name: "JUMP_NONE_LB", kind: "const" }, "jumpTierOf",
+  "trainingProfileOf", "jumpRuleText", "sessionShapeBlock", "smallJumpNote", { name: "capReps", kind: "const" },
   { name: "JUMP_RE", kind: "const" }, { name: "HIGH_PLYO_RE", kind: "const" }, { name: "IMPACT_RE", kind: "const" },
   "fitProgramToPerson",
 ]);
@@ -42,48 +43,74 @@ test("a weight-loss session is lift, superset, conditioning, with aerobic work o
   const block = H.sessionShapeBlock(weightLoss);
   assert.match(block, /Strength first/);
   assert.match(block, /supersets or a short circuit/);
-  assert.match(block, /No plyometrics anywhere/);
+  assert.match(block, /No power block/);
   assert.match(block, /AEROBIC WORK ON THEIR OWN TIME/);
-  assert.match(block, /low impact/i);
 });
 
 test("fighters keep the jump and the throw", () => {
   const p = H.trainingProfileOf(fighter);
   assert.equal(p.shape, "athletic");
   assert.equal(p.power, "full");
+  assert.equal(p.jumps, "full");
 });
 
-test("a heavy, older or brand-new athlete gets low-level jumps only, or none", () => {
-  assert.equal(H.trainingProfileOf({ ...fighter, weightLb: 235 }).power, "low");   // BMI 33.6
-  assert.equal(H.trainingProfileOf({ ...fighter, weightLb: 225 }).power, "low");   // BMI 32
-  assert.equal(H.trainingProfileOf({ ...fighter, weightLb: 260 }).power, "none");  // BMI 37
-  assert.equal(H.trainingProfileOf({ ...fighter, birthday: "1970-01-01" }).power, "low");
-  assert.equal(H.trainingProfileOf({ ...fighter, birthday: "1955-01-01" }).power, "none");
-  assert.equal(H.trainingProfileOf({ ...fighter, experience: "Beginner" }).power, "low");
-  assert.equal(H.trainingProfileOf({ ...fighter, injuries: ["Knee"], injuryDetail: { Knee: { status: "now" } } }).power, "low");
-  assert.equal(H.trainingProfileOf({ ...fighter, injuries: ["Knee"], injuryDetail: { Knee: { status: "past" } } }).power, "full");
+test("jumping scales with body weight: about 190 lb jumps, 250 lb hops small, 300 lb does not jump", () => {
+  assert.equal(H.jumpTierOf({ ...fighter, weightLb: 192 }).tier, "full");
+  assert.equal(H.jumpTierOf({ ...weightLoss, weightLb: 192 }).tier, "full");
+  assert.equal(H.jumpTierOf({ ...fighter, weightLb: 260 }).tier, "small");
+  assert.equal(H.jumpTierOf({ ...fighter, heightCm: 165, weightLb: 200 }).tier, "small", "BMI 33");
+  assert.equal(H.jumpTierOf({ ...fighter, weightLb: 305 }).tier, "none");
+  assert.equal(H.jumpTierOf({ ...fighter, heightCm: 160, weightLb: 230 }).tier, "none", "BMI 40");
+  assert.match(H.jumpRuleText(H.trainingProfileOf({ ...fighter, weightLb: 260 })), /small forward hops at about half their normal distance/);
+  assert.match(H.jumpRuleText(H.trainingProfileOf({ ...fighter, weightLb: 260 })), /NEVER repeated or continuous jumps/);
 });
 
-test("the guard strips jumps the profile does not allow", () => {
+test("age, experience, injury and a doctor's clearance also shrink or stop the jumps", () => {
+  assert.equal(H.jumpTierOf({ ...fighter, birthday: "1970-01-01" }).tier, "small");
+  assert.equal(H.jumpTierOf({ ...fighter, birthday: "1955-01-01" }).tier, "none");
+  assert.equal(H.jumpTierOf({ ...fighter, experience: "Beginner" }).tier, "small");
+  assert.equal(H.jumpTierOf({ ...fighter, injuries: ["Knee"], injuryDetail: { Knee: { status: "now" } } }).tier, "small");
+  assert.equal(H.jumpTierOf({ ...fighter, injuries: ["Knee"], injuryDetail: { Knee: { status: "past" } } }).tier, "full");
+  assert.equal(H.jumpTierOf({ ...fighter, parq: { heart: true }, parqCleared: false }).tier, "none");
+});
+
+test("weight loss: no power block or jumps in the main work, but warm-up hops stay at a normal weight", () => {
   const out = H.fitProgramToPerson(day(
     ["warmup_general", "Jump Rope"], ["warmup_specific", "Pogo Jumps"],
     ["explosive", "Broad Jump"], ["explosive", "Med Ball Chest Pass"],
     ["compound", "Goblet Squat"], ["hypertrophy", "Jump Squat", "a"], ["hypertrophy", "Dumbbell Row", "a"],
-    ["lactic", "Burpees"], ["lactic", "Rower Intervals"],
+    ["lactic", "Rower Intervals"],
   ), weightLoss)[0].exercises;
   const names = out.map(x => x.name);
-  assert.ok(!names.some(n => /jump|burpee|pogo/i.test(n) && !/Easy Bike/.test(n)), names.join(", "));
-  assert.ok(!out.some(x => x.phase === "explosive"));
-  assert.ok(names.includes("Easy Bike or Brisk Walk"));
-  assert.ok(names.includes("Goblet Squat") && names.includes("Rower Intervals"));
+  assert.deepEqual(names, ["Jump Rope", "Pogo Jumps", "Goblet Squat", "Dumbbell Row", "Rower Intervals"]);
   assert.equal(out.find(x => x.name === "Dumbbell Row").groupId, null, "a superset that lost its partner is a straight set");
 });
 
-test("the guard leaves a fighter's power alone and tones it down when power is low", () => {
+test("a heavy athlete keeps the broad jump as small hops with a note, and nothing repeated", () => {
+  const heavy = { ...fighter, weightLb: 265 };
+  const out = H.fitProgramToPerson(day(
+    ["warmup_specific", "Pogo Jumps"], ["explosive", "Broad Jump"], ["explosive", "Repeated Broad Jumps"],
+    ["explosive", "Depth Jump"], ["explosive", "Ground Chest Pass"], ["lactic", "Burpees"],
+  ), heavy)[0].exercises;
+  assert.deepEqual(out.map(x => x.name), ["Pogo Jumps", "Broad Jump", "Ground Chest Pass", "Burpees"]);
+  assert.match(out[1].note, /Small forward hops, about half your normal distance/);
+  assert.match(out[0].note, /Small, quick hops/);
+  assert.match(out[3].note, /Step back and step in/);
+  assert.equal(out.find(x => x.name === "Ground Chest Pass").note, undefined, "throws are left alone");
+});
+
+test("at 300 lb nothing jumps, and the warm-up swaps to the bike", () => {
+  const out = H.fitProgramToPerson(day(
+    ["warmup_general", "Jump Rope"], ["warmup_specific", "Pogo Jumps"], ["explosive", "Broad Jump"],
+    ["explosive", "Ground Chest Pass"], ["compound", "Trap Bar Deadlift"], ["lactic", "Burpees"],
+  ), { ...fighter, weightLb: 310 })[0].exercises;
+  assert.deepEqual(out.map(x => x.name), ["Easy Bike or Brisk Walk", "Bodyweight Box Squat", "Ground Chest Pass", "Trap Bar Deadlift"]);
+});
+
+test("a fighter at a normal weight keeps everything as written", () => {
   const full = H.fitProgramToPerson(day(["explosive", "Single Leg Bounds"], ["explosive", "Broad Jump"]), fighter)[0].exercises;
   assert.deepEqual(full.map(x => x.name), ["Single Leg Bounds", "Broad Jump"]);
-  const low = H.fitProgramToPerson(day(["explosive", "Single Leg Bounds"], ["explosive", "Depth Jump"], ["explosive", "Ground Chest Pass"]), { ...fighter, experience: "Beginner" })[0].exercises;
-  assert.deepEqual(low.map(x => x.name), ["Pogo Jumps", "Ground Chest Pass"]);
+  assert.ok(full.every(x => !x.note));
 });
 
 test("the prompt follows the profile", () => {
@@ -92,6 +119,7 @@ test("the prompt follows the profile", () => {
   assert.ok(prompt.includes("NO POWER BLOCK for this person"));
   assert.ok(!prompt.includes("For general fitness, 1 is enough."), "the general-fitness jump is gone");
   assert.ok(prompt.includes("there is no power block, so this is a bodyweight or band rehearsal"));
+  assert.ok(prompt.includes('"note": "short coaching cue, or null"'), "the AI can write a cue");
 });
 
 test("both builds run the guard", () => {
