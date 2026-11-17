@@ -10386,13 +10386,170 @@ function startLevelPromptBlock(intake) {
 - Choose exercises this person can do well now: stable, simpler variations over complex ones (goblet or box squat before a heavy back squat, trap bar before a conventional deadlift from the floor, no Olympic lifts as a main lift yet).
 - Build soft tissue capacity: include slow-tempo work or isometric holds for the knees, ankles, hips and shoulders in the main work, not only the warm-up.
 - Include an easy aerobic piece at a conversational pace in every session, and keep conditioning sub-maximal: no all-out sprints or repeat-sprint finishers.
-- Plyometrics stay low level (pogo jumps, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops.
+- ${intake?.noJumps ? "No plyometrics or jumping at all." : "Plyometrics stay low level (pogo jumps, low box jumps, med ball throws). No depth jumps, bounds or hurdle hops."}
 - NSCA/CSCCa return-to-training (FIT) rules for the first two weeks, which the program must already respect at the set counts the app will use: each movement type (squat, hinge, push, pull, jumps) in no more than 3 sessions a week; jump foot contacts no more than about 70 a session (35 written, since the app halves week 1); keep main lifts at moderate reps (5 to 10), never singles, doubles or triples; conditioning as intervals with long rests (the app sets work to rest at 1:4 then 1:3).
 - Say in the rationale, plainly, that the first ${cfg.weeks} weeks are lighter on purpose and why: building tendons, cardio and the habit first lowers the injury risk and keeps them showing up.`;
 }
 
+// ---- What a session is built from (Isaiah, 17 Nov) -----------------------
+// A mock client who picked general fitness and weight loss got broad jumps.
+// Every program used to follow one athlete template: warm-up, plyos and
+// ballistics, lifts, conditioning. A trainer does not train a weight-loss
+// client like a fighter: they lift, maybe do circuits, and do aerobic work on
+// their own time, and they do not jump. So the goal decides the shape of the
+// session, and jumping has to be earned by the goal AND by the body doing it.
+const PROFILE_SHAPES = {
+  athletic: "athletic performance",
+  fat_loss: "fat loss",
+  muscle: "building muscle",
+  strength: "getting stronger",
+  conditioning: "conditioning and endurance",
+  general: "general fitness and health",
+};
+
+function bmiOf(intake) {
+  const cm = Number(intake?.heightCm), lb = Number(intake?.weightLb);
+  if (!(cm > 100) || !(lb > 50)) return null;
+  const m = cm / 100;
+  return (lb * 0.45359237) / (m * m);
+}
+
+function currentInjuryAreas(intake) {
+  return (intake?.injuries || []).filter(a => a && a !== "None currently")
+    .filter(a => (injuryDetailFor(intake, a) || {}).status !== "past");
+}
+
+// { shape, power: "full" | "low" | "none", lowImpact, reasons }
+function trainingProfileOf(intake) {
+  const i = intake || {};
+  const goals = i.goals || [];
+  const athletic = sportProgramOn(i) || !!i.isFighter || isCombatFocus(i["🥊 Sport / Focus"]) || goals.includes("Explosive Training");
+  const shape = athletic ? "athletic"
+    : goals.includes("Weight Loss") ? "fat_loss"
+    : goals.includes("Build Muscle") ? "muscle"
+    : goals.includes("Strength") ? "strength"
+    : goals.includes("Conditioning / Endurance") ? "conditioning"
+    : "general";
+
+  const age = ageFromBirthday(i.birthday);
+  const bmi = bmiOf(i);
+  const level = startLevelOf(i);
+  const hurt = currentInjuryAreas(i);
+  const lowerHurt = hurt.some(a => /Knee|Ankle|Hip|Low back|Thigh/.test(a));
+  const move = i.move || {};
+  const moveLimit = ["sitStand", "balance"].some(k => ["hard", "cant", "pain"].includes(move[k]));
+  const reasons = [];
+
+  let power = athletic ? "full" : "none";
+  if (power !== "none") {
+    if (needsClearance(i)) { power = "none"; reasons.push("not yet cleared by a doctor"); }
+    else if (age != null && age >= 65) { power = "none"; reasons.push(`age ${age}`); }
+    else if (bmi != null && bmi >= 35) { power = "none"; reasons.push("body weight"); }
+    else if (goals.includes("Injury Recovery") && hurt.length) { power = "none"; reasons.push("recovering from an injury"); }
+    else {
+      if (age != null && age >= 50) reasons.push(`age ${age}`);
+      if (bmi != null && bmi >= 30) reasons.push("body weight");
+      if (level === "foundation") reasons.push("new to training or months out of it");
+      if ((i.experience || "Beginner") === "Beginner") reasons.push("beginner");
+      if (lowerHurt) reasons.push("a current lower-body injury");
+      if (moveLimit) reasons.push("the sit-to-stand or balance check was hard");
+      if (reasons.length) power = "low";
+    }
+  }
+  const lowImpact = power === "none" && (shape === "fat_loss" || (bmi != null && bmi >= 30) || (age != null && age >= 55)
+    || level === "foundation" || lowerHurt || needsClearance(i));
+  return { shape, power, lowImpact, reasons };
+}
+
+// The session's job, written for the shape. The athletic one is the old rule.
+function sessionShapeBlock(intake) {
+  const p = trainingProfileOf(intake);
+  const noJumps = "No plyometrics anywhere in the program: no jumps, hops, bounds, skips, jumping lunges or box jumps, and no med ball power block. Leave the \"explosive\" phase EMPTY on every day.";
+  const impact = p.lowImpact ? " Keep everything low impact: no running, sprinting, jump rope or burpees; conditioning on a bike, rower, ski erg, sled or incline walk." : "";
+  const offDays = "AEROBIC WORK ON THEIR OWN TIME: in paragraph 1 of the rationale, give them a plain weekly target for easy aerobic work on non-training days (for example 2 to 4 walks or easy bike rides of 30 to 45 minutes at a pace they can talk at, or a daily step goal), and how it builds across the phases. It is not a training day in the JSON.";
+  const shapes = {
+    athletic: `SESSION SHAPE: ${PROFILE_SHAPES.athletic}. Warm-up, power block, strength, then conditioning, as set out below.${p.power === "low" ? ` Power work stays LOW LEVEL because of: ${p.reasons.join(", ")}. Jumps are pogo hops, low box jumps or squat jumps landing softly, and med ball throws; no depth jumps, bounds, hurdle hops, single-leg hops, tuck jumps or max-height jumps. Keep jump foot contacts under about 40 a session.` : ""}${p.power === "none" ? ` Because of ${p.reasons.join(", ")}, ${noJumps}` : ""}`,
+    fat_loss: `SESSION SHAPE: ${PROFILE_SHAPES.fat_loss}. This is a personal-training client, not an athlete: train them the way a good trainer would.
+- Strength first: 2 to 3 compound lifts at 6 to 12 reps, so they keep muscle while they lose fat.
+- Then accessory and hypertrophy work in supersets or a short circuit with brief rests, to keep the heart rate up and the session dense.
+- Finish with ONE conditioning piece: intervals or a density circuit on low-impact equipment.
+- ${noJumps}${impact}
+- ${offDays}
+- Say in the rationale, plainly, that fat loss is driven mostly by eating and daily movement, and that the lifting keeps the weight coming off as fat rather than muscle.`,
+    muscle: `SESSION SHAPE: ${PROFILE_SHAPES.muscle}. Hypertrophy training:
+- 2 to 3 compound lifts at 6 to 12 reps, then accessories at 8 to 15 reps, most sets at 7 to 9 out of 10, accessories paired as supersets.
+- Every major muscle group trained at least twice a week; add sets across the phases.
+- Conditioning is optional: at most one short low-impact finisher.
+- ${noJumps}${impact}
+- ${offDays.replace("2 to 4", "1 to 3")}`,
+    strength: `SESSION SHAPE: ${PROFILE_SHAPES.strength}. Strength training:
+- 2 to 3 main lifts at 3 to 6 reps with full rests (2 to 4 minutes), then accessories that support those lifts.
+- Little conditioning: at most one short low-impact piece.
+- ${noJumps}${impact}
+- ${offDays.replace("2 to 4", "1 to 3")}`,
+    conditioning: `SESSION SHAPE: ${PROFILE_SHAPES.conditioning}. Fitness and work capacity:
+- 2 compound lifts at 8 to 12 reps, then accessories as a circuit, then a real conditioning piece (intervals, a circuit or a steady effort).
+- ${noJumps}${impact}
+- ${offDays}`,
+    general: `SESSION SHAPE: ${PROFILE_SHAPES.general}. This is a personal-training client, not an athlete:
+- 2 to 3 compound lifts at 6 to 12 reps, accessories in supersets, then one conditioning piece.
+- ${noJumps}${impact}
+- ${offDays}`,
+  };
+  const extra = [];
+  if ((intake?.goals || []).includes("Flexibility")) extra.push("- They want flexibility: put a 5 minute mobility block for the hips, hamstrings and upper back in the cooldown of every day.");
+  if ((intake?.goals || []).includes("Injury Recovery")) extra.push("- They are coming back from an injury: slow tempo and pain-free range on anything that loads the injured area.");
+  return `${shapes[p.shape]}${extra.length ? `\n${extra.join("\n")}` : ""}`;
+}
+
+// The prompt says all of the above, and the model mostly listens. This makes
+// sure. Runs on a freshly built program before anyone sees it: jumps that the
+// profile does not allow are taken out of the main work, swapped for a safe
+// drill in the warm-up, and high-level plyos become pogo jumps when power is
+// kept low.
+const JUMP_RE = /\b(jumps?|jumping|hops?|hopping|bounds?|bounding|pogo|plyo\w*|skips?|skipping|leaps?|skaters?|burpees?|tuck)\b/i;
+const HIGH_PLYO_RE = /\b(depth|drop|hurdle|single[- ]leg (hop|bound|jump)|bounds?|bounding|tuck|max(imum)? height|jumping split|split jump)\b/i;
+const IMPACT_RE = /\b(jump rope|skipping rope|sprints?|running|run|burpees?)\b/i;
+
+function fitProgramToPerson(days, intake) {
+  const p = trainingProfileOf(intake);
+  const warm = ph => ph === "warmup_general" || ph === "warmup_specific";
+  return (days || []).map(d => {
+    const names = new Set((d.exercises || []).map(x => (x.name || "").toLowerCase()));
+    let out = [];
+    for (const x of d.exercises || []) {
+      const name = x.name || "";
+      const jumpy = JUMP_RE.test(name) && !/jumping jacks?/i.test(name) ? true : false;
+      const impact = IMPACT_RE.test(name);
+      if (p.power === "none") {
+        if (x.phase === "explosive") continue;
+        if (warm(x.phase) && (jumpy || (p.lowImpact && (impact || /jumping jacks?/i.test(name))))) {
+          const swap = x.phase === "warmup_general" && /rope|run|jog|jack/i.test(name) ? "Easy Bike or Brisk Walk" : "Bodyweight Box Squat";
+          if (names.has(swap.toLowerCase())) continue;
+          names.add(swap.toLowerCase());
+          out.push({ ...x, name: swap, reps: swap.startsWith("Easy") ? "3 min" : "8", sets: 1 });
+          continue;
+        }
+        if (!warm(x.phase) && (jumpy || (p.lowImpact && impact))) continue;
+      } else if (p.power === "low" && HIGH_PLYO_RE.test(name)) {
+        if (names.has("pogo jumps")) continue;
+        names.add("pogo jumps");
+        out.push({ ...x, name: "Pogo Jumps", reps: "10", sets: Math.min(Number(x.sets) || 3, 3) });
+        continue;
+      }
+      out.push(x);
+    }
+    // A superset that lost its partner is just a straight set now.
+    const count = {};
+    out.forEach(x => { if (x.groupId) count[x.groupId] = (count[x.groupId] || 0) + 1; });
+    out = out.map(x => (x.groupId && count[x.groupId] < 2 ? { ...x, groupId: null, groupKind: null } : x));
+    return { ...d, exercises: out };
+  });
+}
+
 function buildAIPrompt(intake) {
-  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${sportNameOf(intake)}.` : "You are an elite strength & conditioning coach."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
+  const profile = trainingProfileOf(intake);
+  return `${sportProgramOn(intake) ? `You are a high-level NSCA-certified strength and conditioning coach specialising in ${sportNameOf(intake)}.` : profile.shape === "athletic" ? "You are an elite strength & conditioning coach." : "You are an NSCA-certified strength and conditioning coach and personal trainer writing for a general-population client."} Generate a training program based on this athlete intake. Respond ONLY with valid JSON, no markdown fences, no preamble.
 
 Athlete intake:
 - Sex: ${intake.sex || "unspecified"}
@@ -10427,10 +10584,10 @@ The athlete has ${intake.sessionMinutes || DEFAULT_SESSION_MINUTES} minutes. The
 - COOL-DOWN: 1-2 exercises (phase "cooldown"), also not counted in the main-work cap.
 
 WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Potentiate), written for THIS athlete and THIS day's main lifts. For example, a warm-up of "Back Squat 2x8, Scapular Push Ups, Band External Rotation" before a squat day is a bad warm-up; every piece must have a reason on that day.
-- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, e.g. jump rope, bike, rower or skips. Reps like "3 min".
+- RAISE (the first "warmup_general" exercise): 3-5 minutes of easy whole-body movement to raise heart rate and temperature, ${profile.lowImpact ? "low impact: bike, rower, ski erg, brisk or incline walk, or marching. No jump rope, skips or jogging" : profile.power === "none" ? "e.g. bike, rower, brisk walk or jump rope" : "e.g. jump rope, bike, rower or skips"}. Reps like "3 min".
 - MOBILISE (the rest of "warmup_general"): dynamic, moving stretches through the ranges the day's main lifts use, not static holds. A squat day covers ankles, hips, knees and thoracic spine; a pressing day covers thoracic spine, shoulders and wrists; a hinge day covers hips and hamstrings.
-- ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift and power exercise depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
-- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.
+- ACTIVATE ("warmup_specific" primers): switch on what the day's FIRST main lift${profile.power === "none" ? "" : " and power exercise"} depend on, e.g. glute bridges or bodyweight box squats before squats, hip hinge drills before deadlifts, scapular push-ups before pressing. EVERY primer must prepare a main lift, a power exercise or a listed injury on THAT day. If it prepares nothing that day, leave it out: Band External Rotation belongs before pressing or overhead work, or with a listed shoulder issue, not on a lower-body-led day for its own sake.
+${profile.power === "none" ? `- POTENTIATE (the last primer): there is no power block, so this is a bodyweight or band rehearsal of the day's first main lift at a controlled speed (e.g. bodyweight box squats before squats, a dowel hinge before deadlifts, band rows before rows). No jumps, hops or skips.` : `- POTENTIATE (the last primer): one low-level fast drill that leads into the power block, e.g. pogo hops, A-skips or a light med ball chest pass.`}
 - LOAD CEILING, both warm-up phases: bodyweight, bands or a light medicine ball ONLY. Never a barbell, dumbbell, kettlebell or machine, and NEVER a main lift. Ramp-up sets are not exercises: do not list "Back Squat 2x8" or "Trap Bar Deadlift 2x8 at difficulty 3" anywhere. The athlete works up to the working weight inside that lift; say once in the rationale to build up over 2 or 3 lighter sets before the working sets of each main lift.
 - The same exercise never appears twice in one day.
 - If a CURRENT injury or a mobility limitation is listed, at least 2 of the warm-up or primer exercises must target that area directly on EVERY training day — including days that don't train that area. For a PREVIOUS injury, at least 1 on every day and 2 on days that load it. Light, controlled, pain-free mobility and activation. Examples by area:
@@ -10445,9 +10602,11 @@ WARM-UP CONTENT — the NSCA "RAMP" warm-up (Raise, Activate and Mobilise, Poten
 - This is performance training, not physiotherapy: the targeted drills are mobility and activation to prepare the area, never rehab protocols or treatment claims. For a CURRENT injury, keep the drills easy and pain-free and mention in the rationale that pain during a drill means skip it and check with a physio.
 - A fully recovered injury needs no special treatment beyond a normal thorough warm-up.
 
+${sessionShapeBlock(intake)}
+
 ${sportPromptBlock(intake)}
 
-${startLevelPromptBlock(intake)}
+${startLevelPromptBlock({ ...intake, noJumps: profile.power === "none" })}
 
 ${screeningPromptBlock(intake)}
 
@@ -10474,12 +10633,12 @@ ${stage.lifting === "maximal" ? `- Main lifts are maximal strength, and this is 
 })()}
 
 Rules:
-- Exercise order within EVERY training day must follow this exact phase sequence (skip phases that don't apply to that day): dynamic warmup (see WARM-UP above), 2-3 primer exercises (movement prep, including the injury-specific drills required above), plyometrics/med ball throws, strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
+- Exercise order within EVERY training day must follow this phase sequence (skip phases that don't apply to that day or to this person): dynamic warmup (see WARM-UP above), 2-3 primer exercises (movement prep, including the injury-specific drills required above), ${profile.power === "none" ? "" : "plyometrics/med ball throws, "}strength work — main compound movements then accessories, cardio (short conditioning pieces like assault bike repeats, sled work, etc.), static stretching and cooldown.
 - If a day includes longer aerobic conditioning work (steady-state or extended intervals), give that aerobic work its own dedicated day rather than combining it with a strength session, since it takes significant time on its own.
 - Short, low-time-cost conditioning pieces (e.g. short-burst assault bike repeats for explosive-repeat capacity) belong in the cardio slot before stretching/cooldown, not on a separate day.
 - If the athlete has injuries, follow the WARM-UP injury rule above and avoid contraindicated movements in the main work.
 - GENERAL PREPARATION, NOT THE SPORT. The weight room builds the qualities the sport runs on (strength, power, speed, an aerobic engine, robust joints) with general exercises. It does not copy the sport: no shadow boxing, bag work, sprawls, shots, grappling or wrestling drills, sport-skill circuits or anything that looks like practice. Athletes, and fighters most of all, get their specific work at their gym or practice; repeating it here only adds fatigue. Conditioning matches the sport's energy demands (how long and how hard the efforts are, and the rest between them) using general tools like a bike, rower, sled or running, not the sport's movements. In the last 2 weeks of a fight camp a small amount of more specific conditioning MAY appear if it adds something, never as the default.
-- POWER BLOCK (phase "explosive", after the warm-up and before the strength work): for anyone training for a sport or fighting, 2 exercises on every training day: one jump, bound or sprint, and one med ball throw (a chest pass, a rotational or overhead throw), 3 to 5 reps, full recovery, maximal intent. Choose them to match the day's main lifts (a jump before squats, a throw before pressing). For general fitness, 1 is enough. They count toward the main-work cap: if they push a day over it, drop an accessory, never the power.
+${profile.power === "none" ? "- NO POWER BLOCK for this person (see SESSION SHAPE): the \"explosive\" phase stays empty and the main-work cap goes to strength, accessories and conditioning." : `- POWER BLOCK (phase "explosive", after the warm-up and before the strength work): for anyone training for a sport or fighting, 2 exercises on every training day: one jump, bound or sprint, and one med ball throw (a chest pass, a rotational or overhead throw), 3 to 5 reps, full recovery, maximal intent. Choose them to match the day's main lifts (a jump before squats, a throw before pressing). They count toward the main-work cap: if they push a day over it, drop an accessory, never the power.`}
 - Each day's main lifts should be the movements the warm-up prepared. A primer and a main lift that have nothing to do with each other is a sign the day was not planned as one session.
 - Generate exactly one training day per listed training day, in the SAME chronological order they're listed above (the first day in your response is that first weekday's session, and so on) — use the actual spacing between consecutive training days (e.g. back-to-back days need less overlap in muscle groups than days with rest between them) to inform exercise selection and recovery.
 - Use real exercise names (e.g. "Trap Bar Deadlift", "Med Ball Rotational Slam", "Landmine Press", "Battle Rope Wave Intervals").
@@ -12766,7 +12925,7 @@ function AIProgramGenerator({ intake, onGenerated, onClose, forSelf = false, ath
       });
       progress.setFraction(1);
       const parsed = parseAIJson(text);
-      parsed.days = tagStartRamp(parsed.days, level);
+      parsed.days = tagStartRamp(fitProgramToPerson(parsed.days, { ...intake, startLevel: level }), level);
       setResult(parsed);
       setAppliedChanges(previous ? asked : "");
       if (previous) setChanges("");
@@ -31648,7 +31807,7 @@ function AppInner() {
         onText: signupProgress.onText(totalDays),
       });
       const parsed = parseAIJson(text);
-      parsed.days = tagStartRamp(attachWeekdays(parsed.days, data.trainingDays), startLevelOf(data));
+      parsed.days = tagStartRamp(attachWeekdays(fitProgramToPerson(parsed.days, data), data.trainingDays), startLevelOf(data));
       const weeks = parsed.weeks || 6;
       const sport = data["🥊 Sport / Focus"] || "General Fitness";
       const dbId = userId ? await createProgramRow(userId, parsed.programName, weeks, sport, parsed.days, parsed.rationale || null) : null;

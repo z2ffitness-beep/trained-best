@@ -89,7 +89,7 @@ test("the AI is told, and told the app does the cutting", () => {
   assert.match(b, /do not shrink it yourself/);
   assert.match(b, /No depth jumps/);
   assert.equal(H.startLevelPromptBlock({ lastConsistent: "now", recentDaysPerWeek: "3+" }), "");
-  assert.ok(/\$\{startLevelPromptBlock\(intake\)\}/.test(src), "the block never reaches the prompt");
+  assert.ok(/\$\{startLevelPromptBlock\(\{ \.\.\.intake, noJumps: profile\.power === "none" \}\)\}/.test(src), "the block never reaches the prompt");
 });
 
 test("asked at signup, and in a coach's own training intake", () => {
@@ -99,8 +99,8 @@ test("asked at signup, and in a coach's own training intake", () => {
   assert.ok(/how many days a week did you actually train\?/.test(src));
 });
 test("every program build carries the level", () => {
-  assert.ok(/tagStartRamp\(attachWeekdays\(parsed\.days, data\.trainingDays\), startLevelOf\(data\)\)/.test(src), "the signup build ignores it");
-  assert.ok(/parsed\.days = tagStartRamp\(parsed\.days, level\);/.test(src), "the generator ignores it");
+  assert.ok(/tagStartRamp\(attachWeekdays\(fitProgramToPerson\(parsed\.days, data\), data\.trainingDays\), startLevelOf\(data\)\)/.test(src), "the signup build ignores it");
+  assert.ok(/parsed\.days = tagStartRamp\(fitProgramToPerson\(parsed\.days, \{ \.\.\.intake, startLevel: level \}\), level\);/.test(src), "the generator ignores it");
 });
 test("the athlete is told why it's lighter, and the coach sees the flag", () => {
   const n = H.startRampNotice("foundation", 1);
