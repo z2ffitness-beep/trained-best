@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="/favicon.svg">
+<title>Trained.best Pilot Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@1,700;1,800&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one narrow column like a coach's handout; a navy cover band that matches the app's header, then numbered setup, weekly routine, a tickable test list and how to report. */
+:root {
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --ink: #0f1a2e;
+  --muted: #55627a;
+  --line: #dbe2ee;
+  --accent: #2d6cf0;
+  --accent-ink: #ffffff;
+  --cover: #0b1a33;
+  --cover-ink: #eaf0fb;
+  --cover-muted: #9fb2d3;
+  --tick: #1f9d62;
+  --display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a1220; --surface: #121c2e; --ink: #e7edf8; --muted: #9aa8c0; --line: #24324a;
+    --accent: #5b8cff; --accent-ink: #0a1220; --cover: #071022; --cover-ink: #eaf0fb; --cover-muted: #8fa4c8; --tick: #3ccf8a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0a1220; --surface: #121c2e; --ink: #e7edf8; --muted: #9aa8c0; --line: #24324a;
+  --accent: #5b8cff; --accent-ink: #0a1220; --cover: #071022; --cover-ink: #eaf0fb; --cover-muted: #8fa4c8; --tick: #3ccf8a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 16px/1.55 var(--body); }
+.wrap { max-width: 640px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.cover { background: var(--cover); color: var(--cover-ink); }
+.cover .wrap { padding-block: 36px 32px; display: grid; gap: 14px; }
+.brand { font: italic 800 30px/1 var(--display); letter-spacing: .01em; }
+.brand span { color: var(--accent); }
+.cover h1 { margin: 6px 0 0; font: italic 700 clamp(34px, 9vw, 52px)/1 var(--display); text-wrap: balance; }
+.cover p { margin: 0; color: var(--cover-muted); max-width: 52ch; }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 6px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 22px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-weight: 700; text-decoration: none; border: 0; font-size: 16px; cursor: pointer; }
+.btn:focus-visible, .code button:focus-visible, .check input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.code { display: inline-flex; align-items: center; gap: 10px; border: 1px solid #2a3d61; border-radius: 999px; padding: 6px 6px 6px 16px; }
+.code b { font: 600 18px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .14em; color: var(--cover-ink); }
+.code button { min-height: 36px; padding: 0 14px; border-radius: 999px; border: 0; background: #1f3156; color: var(--cover-ink); font: 600 14px var(--body); cursor: pointer; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: var(--cover-muted); margin-top: 4px; }
+.facts strong { color: var(--cover-ink); font-weight: 600; }
+main .wrap { padding-block: 28px 56px; display: grid; gap: 36px; }
+h2 { margin: 0 0 12px; font: italic 700 28px/1.05 var(--display); letter-spacing: .01em; }
+.lead { margin: 0 0 14px; color: var(--muted); }
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; counter-reset: s; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+ol.steps li::before { content: counter(s); width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font: italic 800 18px var(--display); }
+ol.steps li div { min-width: 0; }
+ol.steps strong { display: block; }
+ol.steps span { color: var(--muted); font-size: 15px; }
+ul.plain { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.tests { display: grid; gap: 8px; }
+.check { display: grid; grid-template-columns: 24px 1fr; gap: 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; cursor: pointer; }
+.check input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--tick); }
+.check div { min-width: 0; }
+.check strong { display: block; font-weight: 600; }
+.check span { color: var(--muted); font-size: 14.5px; }
+.check:has(input:checked) strong { color: var(--muted); text-decoration: line-through; }
+.count { font-size: 14px; color: var(--muted); margin: 10px 0 0; font-variant-numeric: tabular-nums; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 8px; }
+.note p { margin: 0; }
+.weeks { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.week { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.week b { display: block; font: italic 700 20px/1.1 var(--display); margin-bottom: 4px; }
+.week span { color: var(--muted); font-size: 14.5px; }
+footer { color: var(--muted); font-size: 14px; }
+a { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+</head>
+<body>
+<header class="cover">
+  <div class="wrap">
+    <div class="brand">TRAINED<span>.</span>BEST</div>
+    <h1>You're in the pilot</h1>
+    <p>For the next 4 weeks you train with the app and tell Isaiah what works and what doesn't. Your program, your logs and your coach, all in one place.</p>
+    <div class="cta">
+      <a class="btn" href="https://trained-best.vercel.app/?join=4FMDPU" target="_blank" rel="noopener">Open Trained.best</a>
+      <div class="code"><span style="color:var(--cover-muted);font-size:14px">Coach code</span><b id="code">4FMDPU</b><button type="button" id="copy">Copy</button></div>
+    </div>
+    <div class="facts"><span><strong>4 weeks</strong> of training</span><span><strong>2</strong> short check-ins</span><span><strong>Free for life</strong> as a thank-you</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+
+    <section>
+      <h2>Get set up</h2>
+      <p class="lead">About 10 minutes, on your phone.</p>
+      <ol class="steps">
+        <li><div><strong>Open the link on your phone</strong><span>Tap Open Trained.best above. If you're on a computer, open trained-best.vercel.app/?join=4FMDPU on your phone instead.</span></div></li>
+        <li><div><strong>Pick "I have a coach"</strong><span>Isaiah's code, 4FMDPU, fills in by itself so you land on his client list. If it doesn't, type it in.</span></div></li>
+        <li><div><strong>Answer every question honestly</strong><span>Your training days, equipment, injuries and the Health Check decide where your program starts. Guessing high gets you a program that's too hard.</span></div></li>
+        <li><div><strong>Tick both boxes and finish</strong><span>One for the terms, one for the waiver. If it asks you to confirm your email, tap the link in that email, then log in: your answers are saved.</span></div></li>
+        <li><div><strong>Wait 2 to 4 minutes for your program</strong><span>It's being written for you. If it says it didn't finish, tap Try Again on the My Workout tab.</span></div></li>
+        <li><div><strong>Add it to your home screen</strong><span>iPhone: in Safari tap Share, then Add to Home Screen. Android: in Chrome tap the menu, then Add to Home screen. Open it from the new icon from now on.</span></div></li>
+        <li><div><strong>Allow notifications</strong><span>That's how you hear when Isaiah messages you or changes your program.</span></div></li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Every week</h2>
+      <ul class="plain">
+        <li>Train on the days you picked. If you miss one, move it in the Week tab instead of skipping it.</li>
+        <li>Log every set as you go: weight and reps, or say it with the mic.</li>
+        <li>Tap Done at the end of each session so it saves and Isaiah sees it.</li>
+        <li>Log any extra training (a class, a run, sparring) under "Did something extra".</li>
+        <li>Message Isaiah in the Coach tab with anything: pain, questions, a session that felt off.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>What to look for</h2>
+      <p class="lead">Tick these off as you notice them. Anything that's wrong, confusing or slow is worth reporting, even small things.</p>
+      <div class="tests" id="tests">
+        <label class="check"><input type="checkbox" id="t1"><div><strong>Signup made sense</strong><span>Any question you didn't understand, or a screen where you got stuck?</span></div></label>
+        <label class="check"><input type="checkbox" id="t2"><div><strong>The program fits you</strong><span>Right number of days, your equipment, your level. Too easy, too hard, or about right?</span></div></label>
+        <label class="check"><input type="checkbox" id="t3"><div><strong>The warm-up makes sense</strong><span>Does it get you ready for that day's main lifts?</span></div></label>
+        <label class="check"><input type="checkbox" id="t4"><div><strong>Exercises are clear</strong><span>Do you know how to do each one? Note any with no photo or a confusing name.</span></div></label>
+        <label class="check"><input type="checkbox" id="t5"><div><strong>Logging sets is quick</strong><span>Typing and saying it with the mic. Did the mic catch everything you said?</span></div></label>
+        <label class="check"><input type="checkbox" id="t6"><div><strong>Done saves the session</strong><span>After Done, does it show up in your history?</span></div></label>
+        <label class="check"><input type="checkbox" id="t7"><div><strong>Messages and notifications arrive</strong><span>Both ways, and on your lock screen.</span></div></label>
+        <label class="check"><input type="checkbox" id="t8"><div><strong>Nothing breaks or crawls</strong><span>A button that does nothing, a screen that won't scroll, anything that takes too long.</span></div></label>
+      </div>
+      <p class="count" id="count">0 of 8 checked</p>
+    </section>
+
+    <section>
+      <h2>When something's off</h2>
+      <div class="note">
+        <p><strong>In the app:</strong> Profile, then Report a problem. Type or say what happened. It opens an email with your phone details filled in; add a screenshot if you can.</p>
+        <p><strong>Or just tell Isaiah</strong> in the Coach tab.</p>
+        <p><strong>Pain is different:</strong> if something hurts in a way that feels wrong, stop that exercise and message Isaiah before your next session.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>The 4 weeks</h2>
+      <div class="weeks">
+        <div class="week"><b>Week 1</b><span>Set up and train. Isaiah watches your logs.</span></div>
+        <div class="week"><b>Week 2</b><span>10-minute check-in: what's confusing, annoying, or off about your program.</span></div>
+        <div class="week"><b>Week 3</b><span>Keep training. Fixes from week 2 land in the app.</span></div>
+        <div class="week"><b>Week 4</b><span>Final check-in: would you pay for this, and what would you change.</span></div>
+      </div>
+    </section>
+
+    <section class="note" style="text-align:center;justify-items:center">
+      <h2 style="margin:0">Ready?</h2>
+      <p style="color:var(--muted)">Open it on your phone and pick "I have a coach". Code: <b>4FMDPU</b></p>
+      <a class="btn" href="https://trained-best.vercel.app/?join=4FMDPU" target="_blank" rel="noopener">Start my signup</a>
+    </section>
+
+    <footer>
+      Your answers and logs are seen by you and your coach only. Read the <a href="https://trained-best.vercel.app/privacy.html" target="_blank" rel="noopener">privacy policy</a>, <a href="https://trained-best.vercel.app/terms.html" target="_blank" rel="noopener">terms</a> and <a href="https://trained-best.vercel.app/waiver.html" target="_blank" rel="noopener">waiver</a>.
+    </footer>
+  </div>
+</main>
+
+<script>
+(function () {
+  var btn = document.getElementById("copy");
+  btn.addEventListener("click", function () {
+    var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1600); };
+    var fallback = function () {
+      var r = document.createRange(); r.selectNodeContents(document.getElementById("code"));
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected";
+      setTimeout(function () { btn.textContent = "Copy"; }, 1600);
+    };
+    try { navigator.clipboard.writeText("4FMDPU").then(done, fallback); } catch (e) { fallback(); }
+  });
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("#tests input"));
+  var KEY = "tb_pilot_checks";
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  var count = document.getElementById("count");
+  var update = function () {
+    var n = boxes.filter(function (b) { return b.checked; }).length;
+    count.textContent = n + " of " + boxes.length + " checked";
+  };
+  boxes.forEach(function (b) {
+    b.checked = !!saved[b.id];
+    b.addEventListener("change", function () {
+      saved[b.id] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      update();
+    });
+  });
+  update();
+})();
+</script>
+
+</body>
+</html>
