@@ -54,6 +54,12 @@ test("the pilot guide puts the home screen first and notifications after signup"
   assert.ok(pilot.includes("Already signed up?"));
 });
 
+test("signup asks on the program-building screen, and the icon picks the build back up", () => {
+  assert.ok(src.includes("{authUserId && <div className=\"w-full max-w-md mt-6\"><SetupPhoneCard userId={authUserId} atSignup /></div>}"));
+  assert.ok(src.includes('"While you wait: turn on notifications"'));
+  assert.ok(src.includes('.eq("user_id", id).is("for_athlete_id", null).gt("created_at", since)'), "a build started in Safari is found from the home screen app");
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; } catch (err) { console.error(`FAIL  ${name}\n      ${err.message}`); process.exitCode = 1; }
 }

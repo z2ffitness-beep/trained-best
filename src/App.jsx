@@ -25922,7 +25922,7 @@ function isInstalled() {
   return window.matchMedia?.("(display-mode: standalone)")?.matches || navigator.standalone === true;
 }
 
-function SetupPhoneCard({ userId, forCoach = false }) {
+function SetupPhoneCard({ userId, forCoach = false, atSignup = false }) {
   const { support, status, busy, err, turnOn } = usePhonePush(userId);
   const [snoozed, setSnoozed] = useState(() => {
     try { return Number(localStorage.getItem(PHONE_CARD_SNOOZE_KEY) || 0) > Date.now(); } catch { return false; }
@@ -25938,6 +25938,9 @@ function SetupPhoneCard({ userId, forCoach = false }) {
   const why = forCoach
     ? "Hear when a client messages you or finishes a session."
     : "Hear when your coach messages you, and get a reminder on training days.";
+  const title = kind === "ios" && !installed
+    ? (atSignup ? "While you wait: add Trained.best to your home screen" : "Add Trained.best to your home screen")
+    : (atSignup ? "While you wait: turn on notifications" : "Turn on notifications");
   const step = (n, text) => (
     <div className="flex gap-2.5 items-start">
       <span className="shrink-0 w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center" style={{ background: C.blue, color: "#fff" }}>{n}</span>
@@ -25950,7 +25953,9 @@ function SetupPhoneCard({ userId, forCoach = false }) {
       <div className="flex flex-col gap-2 mt-3">
         {step(1, <>In Safari, tap the <b>Share</b> button (the square with the arrow).</>)}
         {step(2, <>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</>)}
-        {step(3, <>Open Trained.best from the new icon. This card will ask to turn notifications on.</>)}
+        {step(3, atSignup
+          ? <>Your program keeps building. Open Trained.best from the new icon, log in, and a card on Home will ask to turn notifications on.</>
+          : <>Open Trained.best from the new icon. This card will ask to turn notifications on.</>)}
       </div>
     );
   } else if (status === "blocked") {
@@ -25974,7 +25979,7 @@ function SetupPhoneCard({ userId, forCoach = false }) {
         <Bell size={18} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
         <div className="flex-1 min-w-0">
           <div className="text-[15px] font-semibold" style={{ color: C.text }}>
-            {kind === "ios" && !installed ? "Add Trained.best to your home screen" : "Turn on notifications"}
+            {title}
           </div>
           <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{why}</div>
         </div>
@@ -32312,9 +32317,20 @@ function AppInner() {
     const id = state.me?.id;
     if (!id || (authed !== "athlete" && authed !== "athlete_coached")) return;
     if (state.me?.program || generatingProgram || resumedBuildFor.current === id) return;
-    if (!readPendingBuild(`first:${id}`)) return;
     resumedBuildFor.current = id;
     (async () => {
+      // On an iPhone the home screen app keeps its own storage, apart from
+      // Safari (25 Nov). Someone who signs up in Safari and then opens the
+      // new icon, as signup now asks, has no note of the build on this side.
+      // The server does: pick up their latest first build from there.
+      if (!readPendingBuild(`first:${id}`)) {
+        const since = new Date(Date.now() - BUILD_STALE_MS).toISOString();
+        const { data } = await supabase.from("program_builds").select("id, status")
+          .eq("user_id", id).is("for_athlete_id", null).gt("created_at", since)
+          .order("created_at", { ascending: false }).limit(1).maybeSingle();
+        if (!data?.id || data.status === "failed") return;
+        writePendingBuild(`first:${id}`, data.id);
+      }
       setGeneratingProgram(true);
       await buildFirstProgram(id, state.me?.intake || {});
       setGeneratingProgram(false);
@@ -32683,7 +32699,10 @@ function AppInner() {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
           <LoadingEstimate big label="Building your program" tips={BUILD_TIPS_CLIENT}
-            detail="Usually two to four minutes. You can switch apps while you wait: it keeps building, and it's here when you come back." />
+            detail="Usually two to seven minutes. You can switch apps while you wait: it keeps building, and it's here when you come back." />
+          {/* Signup's last step (Isaiah, 25 Nov): the wait for the first
+              program is when people are watching, so it asks here. */}
+          {authUserId && <div className="w-full max-w-md mt-6"><SetupPhoneCard userId={authUserId} atSignup /></div>}
         </div>
       );
     }
