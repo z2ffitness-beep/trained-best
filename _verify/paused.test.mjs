@@ -352,7 +352,7 @@ test("the card hides when the program no longer has that day", () => {
 
 test("the workout clock lives in the header, not floating over the Stop button", () => {
   assert.ok(!/function SessionTimerBadge/.test(src), "the floating timer badge is back");
-  assert.ok(/below=\{<>\s*(\{coachFor && <CoachSessionBanner[^\n]*\n\s*)?\{timerIsLive && <SessionTimerStrip/.test(src), "the timer strip is not in the header");
+  assert.ok(/below=\{<>\s*(\{coachFor && <CoachSessionBanner[^\n]*\n\s*)?(<SessionSwitchButton[^\n]*\n\s*)?\{timerIsLive && <SessionTimerStrip/.test(src), "the timer strip is not in the header");
   const at = src.indexOf("const resumeTimer = () => {");
   assert.ok(at > 0, "there is no way to resume the timer");
   const body = src.slice(at, src.indexOf("\n  };", at));

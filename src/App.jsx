@@ -22634,6 +22634,31 @@ function upcomingSessions(program, moves, fromIso = todayISO(), lookAhead = 21) 
   return out;
 }
 
+// Every session the workout screen can switch to (Isaiah, 24 Nov): "I want to
+// do tomorrow's, or Wednesday's, or the one I missed." Today's, the ones
+// missed in the last fortnight, and the next two weeks, each with its date.
+function sessionChoices({ program, logs, moves, today = todayISO(), currentDayName = null }) {
+  const days = program?.days || [];
+  const todays = days.filter(d => isDayScheduledOn(d, today) && !moveFor(moves, d.name, today))
+    .map(day => ({ day, iso: today, when: "today" }));
+  const pulledIn = (moves || []).filter(m => m?.kind === "pull" && m?.toDate === today)
+    .map(m => ({ day: days.find(d => d.name === m.programDay), iso: m.fromDate, when: "today" }))
+    .filter(x => x.day && !todays.some(t => t.day.id === x.day.id));
+  const missed = missedSessions({ program, logs, moves, today, weeksBack: 2 })
+    .filter(m => m.date < today)
+    .map(m => ({ day: days.find(d => d.name === (m.day?.name || m.day)) || m.day, iso: m.date, when: "missed" }))
+    .filter(x => x.day?.id);
+  const upcoming = upcomingSessions(program, moves, today, 14).map(u => ({ day: u.day, iso: u.iso, when: "upcoming" }));
+  // A copy of the session already open is the same workout, and an older
+  // missed copy of one still to catch up is the same catch-up: one of each.
+  const seen = new Set([currentDayName]);
+  const once = (list) => list.filter(x => (seen.has(x.day.name) ? false : (seen.add(x.day.name), true)));
+  const missedOnce = once(missed);
+  seen.clear(); seen.add(currentDayName);
+  const all = [...todays, ...pulledIn, ...missedOnce, ...upcoming.filter(u => u.day.name !== currentDayName)];
+  return all.map(x => ({ ...x, current: x.day.name === currentDayName && x.when === "today" }));
+}
+
 // The session today, by the program or because one was pulled to today.
 // A pulled one wins: the athlete chose it on purpose.
 function sessionForToday(program, moves, logs, todayIso = todayISO()) {
@@ -22833,6 +22858,59 @@ function CoachSession({ state, setState, nav, athleteId }) {
   return <Workout state={view} setState={setView} nav={nav} dayId={null} onExit={back} coachFor={athlete} />;
 }
 
+// The way to another session from inside a workout (Isaiah, 24 Nov).
+function SessionSwitchButton({ isToday, onClick }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="mt-2 inline-flex items-center gap-1.5 text-[12.5px] font-semibold" style={{ color: C.blue }}>
+      <Calendar size={14} /> {isToday ? "Today's session" : "Not today's session"} · Change
+      <ChevronDown size={14} />
+    </button>
+  );
+}
+
+function SessionPickerModal({ open, onClose, onPick, choices, currentDayId }) {
+  const groups = [
+    ["today", "Today"],
+    ["missed", "Missed"],
+    ["upcoming", "Coming up"],
+  ];
+  const shortDay = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return (
+    <Modal open={open} onClose={onClose} title="Pick a session">
+      <p className="text-[12.5px] mb-3" style={{ color: C.sub }}>
+        Any session you pick runs today. If you stop part way, it goes back to its own day.
+      </p>
+      {groups.map(([key, label]) => {
+        const list = (choices || []).filter(c => c.when === key);
+        if (!list.length) return null;
+        return (
+          <div key={key} className="mb-4">
+            <div className="text-[11px] uppercase tracking-[.16em] font-semibold mb-1.5" style={{ color: key === "missed" ? C.amber : C.sub }}>{label}</div>
+            <div className="flex flex-col gap-1.5">
+              {list.map(c => {
+                const here = c.day.id === currentDayId;
+                return (
+                  <button key={`${c.day.id}-${c.iso}`} type="button" disabled={here} onClick={() => onPick(c)}
+                    className="w-full flex items-center justify-between gap-3 rounded-xl px-3.5 py-3 text-left"
+                    style={{ background: here ? `${C.blue}14` : C.panel, border: `1px solid ${here ? C.blue : C.border}` }}>
+                    <span className="min-w-0">
+                      <span className="block text-[14.5px] font-semibold truncate" style={{ color: C.text }}>{calendarSessionLabel(c.day.name)}</span>
+                      <span className="block text-[12px]" style={{ color: C.sub }}>{c.when === "today" ? "Today" : shortDay(c.iso)}</span>
+                    </span>
+                    <span className="shrink-0 text-[12.5px] font-semibold" style={{ color: here ? C.blue : C.sub }}>{here ? "Open now" : "Do it today"}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      {!(choices || []).length && <p className="text-[14px]" style={{ color: C.sub }}>No other sessions in the next two weeks.</p>}
+    </Modal>
+  );
+}
+
 // coachFor: the athlete, when a coach is running this session for them in
 // person (Isaiah, 17 Nov). The screen is the athlete's own; only the save goes
 // through coach_log_session, and nothing is written to the athlete's profile.
@@ -22908,6 +22986,8 @@ function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }
   // A day the athlete is switching to, held while they confirm losing the sets
   // and weights already entered for the current one.
   const [pendingDay, setPendingDay] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickRef = React.useRef(null);
   const [resting, setResting] = useState(0); // rest duration in seconds, 0 = not resting
   const [restKey, setRestKey] = useState(0); // bumped per rest so the timer re-arms
   const [finished, setFinished] = useState(false);
@@ -23315,6 +23395,17 @@ function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }
     // stops it being restored onto the new day by the reset effect below.
     writeSessionTimer(null);
     clearSessionDraft(dayKey, state.me.id);
+    const picked = pickRef.current;
+    pickRef.current = null;
+    if (!coachFor) {
+      const today = todayISO();
+      // Leaving a session that was pulled to today puts it back on its day.
+      const leaving = pullToUndo(state.sessionMoves, day.name, today);
+      if (leaving) clearSessionMove(setState, state.me.id, leaving.programDay, leaving.fromDate);
+      if (picked?.day?.id === id && picked.iso && picked.iso !== today) {
+        saveSessionMove(setState, state.me.id, { programDay: picked.day.name, fromDate: picked.iso, toDate: today, kind: "pull" });
+      }
+    }
     setDayOverride(id);
     setPendingDay(null);
   };
@@ -23322,6 +23413,15 @@ function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }
     if (!id || id === day.id) return;
     if (hasProgress) setPendingDay(id);
     else goToDay(id);
+  };
+  // Picking a session from another date runs it today. Recorded as a pull,
+  // the same as "Do it today instead", so the calendar shows it on today and
+  // stopping part way puts it back on its own day.
+  const pickSession = (item) => {
+    setPickerOpen(false);
+    if (!item?.day || item.day.id === day.id) return;
+    pickRef.current = item;
+    requestDaySwitchTo(item.day.id);
   };
   // `item` so a grouped block can tick any of its movements; it defaults to
   // the block's first, which is the only one a straight set has.
@@ -23920,6 +24020,7 @@ function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }
       <TopBar title={day.name}
         below={<>
           {coachFor && <CoachSessionBanner name={coachFor.name} onExit={onExit} />}
+          <SessionSwitchButton isToday={isToday || (!coachFor && !!pullToUndo(state.sessionMoves, day.name, todayISO()))} onClick={() => setPickerOpen(true)} />
           {timerIsLive && <SessionTimerStrip seconds={timerSeconds} running={timerMode === "running"} onPause={pauseTimer} onResume={resumeTimer} />}
           {progressItems.length > 0 && <WorkoutProgressBar finished={exercisesFinished} total={progressItems.length} />}
           {voiceScopeFor(progressItems).length > 1 && (
@@ -24613,7 +24714,10 @@ function Workout({ state, setState, nav, dayId, onExit = null, coachFor = null }
         <p className="text-[12.5px] mt-1.5 text-center" style={{ color: C.sub }}>Logs what you've done and ends the workout.</p>
       </Modal>
 
-      <Modal open={!!pendingDay} onClose={() => setPendingDay(null)} title="Switch session?">
+      <SessionPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={pickSession}
+        choices={pickerOpen ? sessionChoices({ program: myProgram, logs: state.workoutLogs, moves: state.sessionMoves, currentDayName: day.name }) : []}
+        currentDayId={day.id} />
+      <Modal open={!!pendingDay} onClose={() => { pickRef.current = null; setPendingDay(null); }} title="Switch session?">
         <p className="text-[15px] mb-5" style={{ color: C.text }}>
           You've already entered sets in <span className="font-semibold">{day.name}</span>. Switching to{" "}
           <span className="font-semibold">{allDays.find(d => d.id === pendingDay)?.name}</span> starts a fresh
