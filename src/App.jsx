@@ -13814,6 +13814,7 @@ function CoachDashboard({ state, setState, nav, onSwitchMode }) {
       <TopBar title="Dashboard" onLogout={nav.logout} />
       <div className="px-5 pt-5">
         {onSwitchMode && !wideDash && <ModeSwitch training={false} onChange={onSwitchMode} />}
+        <SetupPhoneCard userId={state.me.id} forCoach />
 
         {/* Booked sessions first: who the coach is seeing today and this
             week. Isaiah, 26 Oct: the coach has to see this the moment the
@@ -18823,7 +18824,7 @@ function CoachProfile({ state, setState, nav }) {
         <ProfileDetailsCard state={state} setState={setState} />
         <ThemePicker state={state} setState={setState} />
         <ChangePasswordCard />
-        <PhoneNotificationsCard userId={state.me.id} />
+        <PhoneNotificationsCard userId={state.me.id} notify={{ ...(state.me?.intake?.notify || {}), forCoach: true }} onNotifyChange={(next) => saveNotifyPrefs(setState, next)} />
 
         <div className="text-[12.5px] uppercase tracking-[.16em] font-semibold mb-2.5" style={{ color: C.sub }}>More</div>
         <div className="grid grid-cols-2 gap-3 mb-5">
@@ -19235,6 +19236,8 @@ function AthleteDashboard({ state, setState, nav, isCoach, onSwitchMode }) {
         </div>
       </div>
 
+
+      {!isCoach && <div className="px-5 pt-3"><SetupPhoneCard userId={state.me.id} /></div>}
 
       <div className="px-5 pt-4" style={wideHome ? { display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 20, alignItems: "start", paddingLeft: 0, paddingRight: 0 } : undefined}>
         <div style={wideHome ? { minWidth: 0 } : undefined}>
@@ -25745,7 +25748,9 @@ function pushSupport() {
   return "ok";
 }
 
-function PhoneNotificationsCard({ userId }) {
+// Whether this phone gets notifications, and turning them on or off. Shared
+// by Profile and the Home card (25 Nov).
+function usePhonePush(userId) {
   const support = pushSupport();
   const [status, setStatus] = useState("checking"); // checking | on | off | blocked
   const [busy, setBusy] = useState(false);
@@ -25755,11 +25760,13 @@ function PhoneNotificationsCard({ userId }) {
     if (support !== "ok") { setStatus("off"); return; }
     if (Notification.permission === "denied") { setStatus("blocked"); return; }
     let alive = true;
+    // A service worker that never gets ready shouldn't hide the switch.
+    const slow = setTimeout(() => { if (alive) setStatus(st => (st === "checking" ? "off" : st)); }, 4000);
     navigator.serviceWorker.ready
       .then(reg => reg.pushManager.getSubscription())
       .then(sub => { if (alive) setStatus(sub ? "on" : "off"); })
       .catch(() => { if (alive) setStatus("off"); });
-    return () => { alive = false; };
+    return () => { alive = false; clearTimeout(slow); };
   }, [support]);
 
   const turnOn = async () => {
@@ -25804,6 +25811,11 @@ function PhoneNotificationsCard({ userId }) {
     }
   };
 
+  return { support, status, busy, err, turnOn, turnOff };
+}
+
+function PhoneNotificationsCard({ userId, notify = null, onNotifyChange = null }) {
+  const { support, status, busy, err, turnOn, turnOff } = usePhonePush(userId);
   const on = status === "on";
   let detail;
   if (support === "needs-home-screen") detail = "On iPhone, open Trained.best from your home screen icon first, then turn this on.";
@@ -25833,8 +25845,128 @@ function PhoneNotificationsCard({ userId }) {
           )}
         </div>
         {err && <div className="text-[11px] mt-2" style={{ color: C.red }}>{err}</div>}
+        {on && onNotifyChange && (
+          <div className="mt-3 pt-3 flex flex-col gap-2.5" style={{ borderTop: `1px solid ${C.border}` }}>
+            {[
+              ...(notify?.forCoach ? [] : [["reminders", "Training reminders", "7 am on training days, and once after a missed session"]]),
+              ["messages", "Messages", notify?.forCoach ? "When a client messages you" : "When your coach messages you"],
+            ].map(([key, label, sub]) => {
+              const isOn = notify?.[key] !== false;
+              return (
+                <div key={key} className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13.5px] font-semibold" style={{ color: C.text }}>{label}</div>
+                    <div className="text-[11px]" style={{ color: C.sub }}>{sub}</div>
+                  </div>
+                  <button type="button" role="switch" aria-checked={isOn} aria-label={label}
+                    onClick={() => onNotifyChange({ ...(notify || {}), forCoach: undefined, [key]: !isOn })}
+                    className="shrink-0 w-11 h-6 rounded-full relative transition-colors"
+                    style={{ background: isOn ? C.orange : C.panelAlt, border: `1px solid ${isOn ? C.orange : C.border}` }}>
+                    <span className="absolute top-0.5 w-[18px] h-[18px] rounded-full bg-white transition-all" style={{ left: isOn ? 22 : 3 }} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </>
+  );
+}
+
+// Saves which phone alerts someone wants (profiles.intake.notify), read by
+// the reminder job and the message trigger (migration 022).
+function saveNotifyPrefs(setState, next) {
+  const clean = { reminders: next.reminders !== false, messages: next.messages !== false };
+  setState(s => ({ ...s, me: { ...s.me, intake: { ...(s.me?.intake || {}), notify: clean } } }));
+  supabase.rpc("set_profile_setting", { p_key: "notify", p_value: clean }).then(() => {}, () => {});
+}
+
+// The app saves the phone's time zone, so a 7 am reminder is 7 am where the
+// person actually is.
+function savePhoneTimeZone(intake) {
+  let tz = null;
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* old browser */ }
+  if (!tz || intake?.timezone === tz) return;
+  supabase.rpc("set_profile_setting", { p_key: "timezone", p_value: tz }).then(() => {}, () => {});
+}
+
+// Home screen card (Isaiah, 25 Nov): until it's an App Store app, getting
+// reminders means adding Trained.best to the home screen and turning
+// notifications on. This walks people through both, then goes away.
+const PHONE_CARD_SNOOZE_KEY = "tb_phone_card_snooze";
+function phoneKind() {
+  if (typeof navigator === "undefined") return "other";
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/.test(ua)) return "ios";
+  if (/Android/.test(ua)) return "android";
+  return "other";
+}
+function isInstalled() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia?.("(display-mode: standalone)")?.matches || navigator.standalone === true;
+}
+
+function SetupPhoneCard({ userId, forCoach = false }) {
+  const { support, status, busy, err, turnOn } = usePhonePush(userId);
+  const [snoozed, setSnoozed] = useState(() => {
+    try { return Number(localStorage.getItem(PHONE_CARD_SNOOZE_KEY) || 0) > Date.now(); } catch { return false; }
+  });
+  const kind = phoneKind();
+  const installed = isInstalled();
+  if (snoozed || status === "on" || status === "checking") return null;
+  if (support === "unsupported" && kind === "other") return null;
+  const snooze = () => {
+    try { localStorage.setItem(PHONE_CARD_SNOOZE_KEY, String(Date.now() + 3 * 86_400_000)); } catch { /* shows again next time */ }
+    setSnoozed(true);
+  };
+  const why = forCoach
+    ? "Hear when a client messages you or finishes a session."
+    : "Hear when your coach messages you, and get a reminder on training days.";
+  const step = (n, text) => (
+    <div className="flex gap-2.5 items-start">
+      <span className="shrink-0 w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center" style={{ background: C.blue, color: "#fff" }}>{n}</span>
+      <span className="text-[13px] leading-snug" style={{ color: C.text }}>{text}</span>
+    </div>
+  );
+  let bodyEl;
+  if (kind === "ios" && !installed) {
+    bodyEl = (
+      <div className="flex flex-col gap-2 mt-3">
+        {step(1, <>In Safari, tap the <b>Share</b> button (the square with the arrow).</>)}
+        {step(2, <>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</>)}
+        {step(3, <>Open Trained.best from the new icon. This card will ask to turn notifications on.</>)}
+      </div>
+    );
+  } else if (status === "blocked") {
+    bodyEl = <p className="text-[13px] mt-2 leading-snug" style={{ color: C.sub }}>Notifications are blocked. Open your phone's <b>Settings</b>, find Trained.best (or your browser), allow notifications, then come back.</p>;
+  } else {
+    bodyEl = (
+      <>
+        {kind === "android" && !installed && (
+          <p className="text-[12.5px] mt-2 leading-snug" style={{ color: C.sub }}>
+            Tip: add it to your home screen first. In Chrome, tap <b>⋮</b> then <b>Add to Home screen</b> (or <b>Install app</b>).
+          </p>
+        )}
+        <Btn className="w-full mt-3" icon={Bell} onClick={turnOn} disabled={busy}>{busy ? "Turning on…" : "Turn on notifications"}</Btn>
+        {err && <div className="text-[11.5px] mt-2" style={{ color: C.red }}>{err}</div>}
+      </>
+    );
+  }
+  return (
+    <div className="rounded-2xl p-4 mb-4" style={{ ...card(), border: `1px solid ${C.blue}66` }}>
+      <div className="flex items-start gap-3">
+        <Bell size={18} className="shrink-0 mt-0.5" style={{ color: C.blue }} />
+        <div className="flex-1 min-w-0">
+          <div className="text-[15px] font-semibold" style={{ color: C.text }}>
+            {kind === "ios" && !installed ? "Add Trained.best to your home screen" : "Turn on notifications"}
+          </div>
+          <div className="text-[12.5px] mt-0.5" style={{ color: C.sub }}>{why}</div>
+        </div>
+        <button type="button" onClick={snooze} className="shrink-0 text-[12px] font-semibold" style={{ color: C.faint }}>Not now</button>
+      </div>
+      {bodyEl}
+    </div>
   );
 }
 
@@ -26246,7 +26378,7 @@ function AthletePreferences({ state, setState }) {
       <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
       <ChangePasswordCard />
-        <PhoneNotificationsCard userId={state.me.id} />
+        <PhoneNotificationsCard userId={state.me.id} notify={state.me?.intake?.notify || {}} onNotifyChange={(next) => saveNotifyPrefs(setState, next)} />
 
       {/* Also in the set table's header, which is where it is actually
           needed with a bar loaded. This copy is for someone setting the app
@@ -31968,6 +32100,8 @@ function AppInner() {
 
   // Recount on navigation — opening a thread marks messages read.
   useEffect(() => { if (authed && authUserId) refreshUnread(); }, [view, authed, authUserId, refreshUnread]);
+  // Reminders go out at 7 am where the person is (migration 022).
+  useEffect(() => { if (authed && authUserId && state.me?.id === authUserId) savePhoneTimeZone(state.me?.intake); }, [authed, authUserId, state.me?.id]);
 
   // Booking data is refreshed on arrival at either booking screen. Without
   // this it loaded once per sign-in and then went stale for the rest of the
