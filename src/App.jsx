@@ -11381,6 +11381,12 @@ async function assignTemplateToAthlete({ template, athlete, coachId, state, allo
     trainingDays.length ? trainingDays : WEEKDAY_ORDER
   );
 
+  // A save that would write nameless rows is a bug upstream, never what the
+  // coach meant: stop rather than store it.
+  const nameless = (scheduled || []).reduce((n, d) => n + (d.exercises || []).filter(x => x.name === "Unknown Exercise").length, 0);
+  if (nameless > 0) {
+    return { ok: false, message: "Something went wrong reading the exercise names, so nothing was saved. Tap Save again, and report it from Profile if it keeps happening." };
+  }
   if (!allowEmpty && !programHasContent(scheduled)) {
     return { ok: false, message: "That program came through with no exercises in it, so nothing was saved. If you imported it, try again — the document may not have read cleanly." };
   }
@@ -11397,6 +11403,7 @@ async function assignTemplateToAthlete({ template, athlete, coachId, state, allo
       name: template.name,
       weeks: template.weeks || 6,
       sport: template.sport || null,
+      rationale: template.rationale || null,
       days: scheduled,
     })
     .select()
@@ -11521,16 +11528,24 @@ function programFromResult(result, athlete) {
 // their app to an empty week and no way to tell that anything went wrong.
 async function saveGeneratedProgram({ result, athlete, coachId, state, setState, allowEmpty = false }) {
   if (!athlete || !result) return { ok: false, message: "Nothing to save." };
+  // Isaiah, 25 Nov: Rasaam's program saved with every row as "Unknown
+  // Exercise". A generated program names its exercises; the save turns
+  // library ids back into names, so the names have to become library entries
+  // first (the same step importProgram takes). Without it, every lookup
+  // missed and all 80 rows were written nameless.
+  const template = programFromResult(result, athlete);
+  const { days: withIds, newExercises: minted } = buildDaysWithExerciseIds(template.days, state, { sortByPhase: true });
   const res = await assignTemplateToAthlete({
-    template: programFromResult(result, athlete), athlete, coachId, state, allowEmpty,
+    template: { ...template, days: withIds }, athlete, coachId,
+    state: { ...state, exercises: [...state.exercises, ...minted] }, allowEmpty,
   });
   if (!res.ok) return res;
   const created = res.created;
   setState(s => {
-    const { days, newExercises } = buildDaysWithExerciseIds(created.days, s);
+    const { days, newExercises } = buildDaysWithExerciseIds(created.days, { ...s, exercises: [...s.exercises, ...minted] });
     return {
       ...s,
-      exercises: [...s.exercises, ...newExercises],
+      exercises: [...s.exercises, ...minted, ...newExercises],
       programs: [...s.programs, {
         id: created.id, name: created.name, weeks: created.weeks, sport: created.sport,
         rationale: created.rationale || null, startedOn: created.started_on || null,

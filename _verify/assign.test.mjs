@@ -145,7 +145,7 @@ test("a generated program is assigned through the same path as a template", () =
   assert.ok(/setAssignError\(res\.message\)/.test(fn), "a failure has to be reported");
   assert.equal((src.match(/async function saveGeneratedProgram\b/g) || []).length, 1,
     "one copy of the save path, not one per screen");
-  assert.ok(/assignTemplateToAthlete\(\{\s*template: programFromResult\(result, athlete\)/.test(src),
+  assert.ok(/const template = programFromResult\(result, athlete\);[\s\S]{0,400}assignTemplateToAthlete\(\{\s*template: \{ \.\.\.template, days: withIds \}/.test(src),
     "and it must still go through the template path");
   assert.ok(/athletes: s\.athletes\.map\(a => a\.id === athlete\.id \? \{ \.\.\.a, program: created\.id/.test(src),
     "and the athlete has to end up pointing at it");
