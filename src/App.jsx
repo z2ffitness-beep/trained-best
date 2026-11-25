@@ -12776,7 +12776,12 @@ async function callAI({ messages, system, maxTokens = 4000, model = MODEL_PROGRA
 // was quit and reopened, picks up the same build instead of paying for a
 // second one.
 const BUILD_POLL_MS = 2500;
-const BUILD_STALE_MS = 7 * 60_000;
+// A long build now runs in up to five back-to-back server runs (24 Nov), so
+// the phone keeps its id for longer, and judges a build dead by it no longer
+// moving rather than by its age: no new text for BUILD_STALL_MS means the
+// server lost it, and the phone starts a fresh one by itself, once.
+const BUILD_STALE_MS = 25 * 60_000;
+const BUILD_STALL_MS = 150_000;
 
 function pendingBuildKey(scope) { return `tb_build_${scope}`; }
 function readPendingBuild(scope) {
@@ -12819,6 +12824,8 @@ function waitForNextCheck(ms) {
 async function waitForBuild(id, { totalDays, onFraction, scope }) {
   const began = Date.now();
   let misses = 0;
+  let lastChars = -1;
+  let lastMoved = Date.now();
   for (;;) {
     const { data, error } = await supabase.from("program_builds")
       .select("status, progress, result, error, stop_reason, created_at").eq("id", id).maybeSingle();
@@ -12835,9 +12842,15 @@ async function waitForBuild(id, { totalDays, onFraction, scope }) {
         clearPendingBuild(scope);
         throw new Error(data.error || "The build stopped partway through. Tap Try Again.");
       }
-      if (Date.now() - Date.parse(data.created_at) > BUILD_STALE_MS) {
+      const chars = Number(data.progress?.chars) || 0;
+      if (chars !== lastChars) { lastChars = chars; lastMoved = Date.now(); }
+      // Measured on this phone's own clock, from the moment it started looking,
+      // so a phone that was away doesn't count the time it wasn't checking.
+      if (Date.now() - lastMoved > BUILD_STALL_MS || Date.now() - Date.parse(data.created_at) > BUILD_STALE_MS) {
         clearPendingBuild(scope);
-        throw new Error("The build stopped on the server. Tap Try Again — nothing was lost.");
+        const stalled = new Error("The build stopped on the server. Tap Try Again — nothing was lost.");
+        stalled.stalled = true;
+        throw stalled;
       }
     } else if (!error && ++misses > 8 && Date.now() - began > 20_000) {
       clearPendingBuild(scope);
@@ -12845,7 +12858,10 @@ async function waitForBuild(id, { totalDays, onFraction, scope }) {
     }
     // A read that fails (no signal while the phone was away) just waits and
     // reads again: the build itself is safe on the server.
+    const before = Date.now();
     await waitForNextCheck(BUILD_POLL_MS);
+    // Back from a long sleep: give the build a fresh window to show movement.
+    if (Date.now() - before > BUILD_POLL_MS * 4) lastMoved = Date.now();
   }
 }
 
@@ -12854,8 +12870,18 @@ async function waitForBuild(id, { totalDays, onFraction, scope }) {
 // for ("self", "first:<user id>", "athlete:<id>"), so a screen opened again
 // finds its own build. Falls back to callAI if the server can't do it this way
 // (an older deploy, or before the database table exists).
-async function callAIBackground({ messages, system, maxTokens = 32000, model = MODEL_PROGRAM, scope = "self", forAthleteId = null, totalDays = 4, onFraction, onText }) {
-  const resume = readPendingBuild(scope);
+async function callAIBackground(opts) {
+  try {
+    return await startOrResumeBuild(opts, false);
+  } catch (err) {
+    if (!err?.stalled) throw err;
+    // The server lost that build: start a fresh one once, without asking.
+    return startOrResumeBuild(opts, true);
+  }
+}
+
+async function startOrResumeBuild({ messages, system, maxTokens = 32000, model = MODEL_PROGRAM, scope = "self", forAthleteId = null, totalDays = 4, onFraction, onText }, fresh) {
+  const resume = fresh ? null : readPendingBuild(scope);
   if (resume) return waitForBuild(resume.id, { totalDays, onFraction, scope });
 
   const { data: { session } } = await supabase.auth.getSession();
@@ -12868,7 +12894,7 @@ async function callAIBackground({ messages, system, maxTokens = 32000, model = M
     response = await fetch(apiUrl("/api/build-program"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-      body: JSON.stringify({ id, model, max_tokens: maxTokens, messages, forAthleteId, ...(system ? { system } : {}) }),
+      body: JSON.stringify({ id, model, max_tokens: maxTokens, messages, forAthleteId, ...(fresh ? { fresh: true } : {}), ...(system ? { system } : {}) }),
     });
   } catch (err) {
     throw aiNetworkError(0, false);

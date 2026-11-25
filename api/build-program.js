@@ -25,6 +25,15 @@ export const config = { maxDuration: 300 };
 export const maxDuration = 300;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Isaiah, 24 Nov: Rasaam's first program (a fighter, so a big one) stopped
+// after 2 of its days and never finished. Vercel stops a function at 300
+// seconds, and a big program can take longer than that to write. So one run
+// writes for at most RUN_BUDGET_MS, saves what it has, and hands the rest to a
+// fresh run of this same function, which carries on from that text. Up to
+// MAX_HOPS hand-offs, about 20 minutes in all.
+const RUN_BUDGET_MS = Number(process.env.BUILD_RUN_BUDGET_MS) || 230_000;
+const MAX_HOPS = 4;
 // A build still "running" after this is treated as dead (the function was
 // stopped), so a new one may start in its place.
 const STALE_MS = 6 * 60_000;
@@ -58,13 +67,19 @@ function supabaseRest(token) {
 }
 
 // Reads Anthropic's stream to the end, reporting the text as it grows.
-async function readStream(response, onText) {
+// shouldStop() true ends it early (the run is out of time); cut tells the
+// caller it ended that way, with the text so far.
+async function readStream(response, onText, shouldStop = () => false) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
   let stopReason = null;
   for (;;) {
+    if (shouldStop()) {
+      try { await reader.cancel(); } catch { /* already closed */ }
+      return { text, stopReason: null, cut: true };
+    }
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -87,16 +102,40 @@ async function readStream(response, onText) {
       }
     }
   }
-  return { text, stopReason };
+  return { text, stopReason, cut: false };
 }
 
-async function runBuild({ id, payload, apiKey, rest }) {
+// The next run's request: the conversation so far plus the text already
+// written, as the start of the reply, so the model carries straight on.
+// A model that won't take a started reply gets told to continue instead.
+const CONTINUE_ASK = "Your reply was cut off. Continue it from exactly the next character after where it stops. Output only the rest: no repeat of anything already written, no code fences, no comment.";
+export function continuationMessages(messages, partial, asked) {
+  if (!partial) return messages;
+  const sofar = { role: "assistant", content: partial };
+  return asked ? [...messages, sofar, { role: "user", content: CONTINUE_ASK }] : [...messages, sofar];
+}
+
+// Joins a continuation onto the text before it. A started reply joins as is;
+// a told-to-continue one may repeat the last few characters or add a fence,
+// so those come off.
+export function joinContinuation(partial, more, asked) {
+  if (!asked) return partial + more;
+  let m = more.replace(/^\s*```(?:json)?\s*/i, "");
+  const tail = partial.slice(-400);
+  for (let n = Math.min(tail.length, m.length); n >= 12; n--) {
+    if (tail.endsWith(m.slice(0, n))) { m = m.slice(n); break; }
+  }
+  return partial + m;
+}
+
+async function runBuild({ id, payload, apiKey, rest, partial = "", hop = 0, handOff = null }) {
   const started = Date.now();
   const patch = (body) => rest(`program_builds?id=eq.${id}`, { method: "PATCH", body }).catch(() => null);
+  let asked = false;
   const call = (model) => fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ ...payload, model, stream: true }),
+    body: JSON.stringify({ ...payload, messages: continuationMessages(payload.messages, partial, asked), model, stream: true }),
   });
 
   try {
@@ -104,7 +143,14 @@ async function runBuild({ id, payload, apiKey, rest }) {
     if (response.status === 404 && payload.model !== FALLBACK_MODEL) {
       console.error("Model", payload.model, "was rejected - retrying on", FALLBACK_MODEL);
       try { await response.arrayBuffer(); } catch { /* nothing to drain */ }
+      payload = { ...payload, model: FALLBACK_MODEL };
       response = await call(FALLBACK_MODEL);
+    }
+    if (partial && response.status === 400) {
+      // This model won't take a started reply: ask it to continue instead.
+      try { await response.arrayBuffer(); } catch { /* nothing to drain */ }
+      asked = true;
+      response = await call(payload.model);
     }
     if (!response.ok || !response.body) {
       let data = null;
@@ -119,13 +165,28 @@ async function runBuild({ id, payload, apiKey, rest }) {
 
     let lastSent = 0;
     let pending = null;
-    const { text, stopReason } = await readStream(response, (soFar) => {
+    const { text: more, stopReason, cut } = await readStream(response, (soFar) => {
       const now = Date.now();
       if (now - lastSent < PROGRESS_EVERY_MS) return;
       lastSent = now;
-      pending = patch({ progress: progressCounts(soFar) });
-    });
+      pending = patch({ progress: progressCounts(joinContinuation(partial, soFar, asked)) });
+    }, () => Date.now() - started > RUN_BUDGET_MS);
     if (pending) await pending;
+    const text = joinContinuation(partial, more, asked);
+
+    if (cut) {
+      // Out of time for this run: save the text and hand the rest on.
+      if (hop >= MAX_HOPS || !handOff) {
+        await patch({ status: "failed", error: "This program took too long to write. Tap Try Again.", finished_at: new Date().toISOString() });
+        return;
+      }
+      const saved = await patch({ result: text, progress: progressCounts(text), stop_reason: `handoff:${hop + 1}` });
+      if (!saved || !saved.ok) throw new Error("could not save the text so far");
+      const next = await handOff(hop + 1);
+      if (!next || !next.ok) throw new Error(`hand-off refused (${next?.status})`);
+      console.log(`Build ${id} handed off after ${Date.now() - started}ms, hop ${hop + 1}, chars=${text.length}`);
+      return;
+    }
 
     if (!text.trim()) {
       await patch({ status: "failed", error: "The AI returned an empty response. Please try again.", finished_at: new Date().toISOString() });
@@ -164,6 +225,34 @@ export default async function handler(req, res) {
   const token = req.headers.authorization.slice(7);
   const rest = supabaseRest(token);
 
+  const payload = {
+    model: ALLOWED_MODELS.has(body.model) ? body.model : DEFAULT_MODEL,
+    max_tokens: Math.min(Number(body.max_tokens) || 4000, MAX_TOKENS_CEILING),
+    messages: body.messages,
+  };
+  if (typeof body.system === "string") payload.system = body.system;
+  // The next run of a long build: this same function, called by itself with
+  // the same sign-in (see RUN_BUDGET_MS).
+  const handOff = (hop) => fetch(`https://${req.headers.host}/api/build-program`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ ...body, continueBuild: true, hop }),
+  }).catch(() => null);
+
+  if (body.continueBuild) {
+    // Only the run that saved the text can start the next one: it is claimed
+    // by the hop number it wrote, once.
+    const hop = Math.trunc(Number(body.hop));
+    if (!(hop >= 1 && hop <= MAX_HOPS)) return res.status(400).json({ error: "Bad hand-off." });
+    const claim = await rest(`program_builds?id=eq.${body.id}&user_id=eq.${user.id}&status=eq.running&stop_reason=eq.handoff:${hop}&select=result`, {
+      method: "PATCH", body: { stop_reason: `run:${hop}` }, prefer: "return=representation",
+    });
+    const rows = claim.ok ? await claim.json().catch(() => []) : [];
+    if (!rows[0]?.result) return res.status(409).json({ error: "That build is not waiting to continue." });
+    waitUntil(runBuild({ id: body.id, payload, apiKey, rest, partial: rows[0].result, hop, handOff }));
+    return res.status(202).json({ id: body.id });
+  }
+
   // One build at a time for the same person: a second tap, or the app coming
   // back and asking again, picks up the one already running instead of
   // paying for another.
@@ -175,7 +264,11 @@ export default async function handler(req, res) {
     return res.status(503).json({ error: "Background builds are not set up yet.", code: "no_table" });
   }
   const running = existing.ok ? await existing.json().catch(() => []) : [];
-  if (running[0]?.id) return res.status(409).json({ id: running[0].id, error: "A build is already running." });
+  if (running[0]?.id && !body.fresh) return res.status(409).json({ id: running[0].id, error: "A build is already running." });
+  if (running[0]?.id && body.fresh) {
+    // The phone saw that one stop moving: close it so it can't land later.
+    await rest(`program_builds?id=eq.${running[0].id}`, { method: "PATCH", body: { status: "failed", error: "Stopped, and replaced by a new build.", finished_at: new Date().toISOString() } }).catch(() => null);
+  }
 
   if (rateLimited(user.id)) return res.status(429).json({ error: "Too many AI requests in a row. Give it a minute and try again." });
 
@@ -194,14 +287,7 @@ export default async function handler(req, res) {
     return res.status(insert.status === 403 ? 403 : 500).json({ error: "Couldn't start the build. Try again." });
   }
 
-  const payload = {
-    model: ALLOWED_MODELS.has(body.model) ? body.model : DEFAULT_MODEL,
-    max_tokens: Math.min(Number(body.max_tokens) || 4000, MAX_TOKENS_CEILING),
-    messages: body.messages,
-  };
-  if (typeof body.system === "string") payload.system = body.system;
-
   // Answer now; the build runs on after the phone has its answer.
-  waitUntil(runBuild({ id: body.id, payload, apiKey, rest }));
+  waitUntil(runBuild({ id: body.id, payload, apiKey, rest, handOff }));
   return res.status(202).json({ id: body.id });
 }
