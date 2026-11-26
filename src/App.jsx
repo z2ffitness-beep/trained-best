@@ -25862,10 +25862,18 @@ function PhoneNotificationsCard({ userId, notify = null, onNotifyChange = null }
         {err && <div className="text-[11px] mt-2" style={{ color: C.red }}>{err}</div>}
         {on && onNotifyChange && (
           <div className="mt-3 pt-3 flex flex-col gap-2.5" style={{ borderTop: `1px solid ${C.border}` }}>
-            {[
-              ...(notify?.forCoach ? [] : [["reminders", "Training reminders", "7 am on training days, and once after a missed session"]]),
-              ["messages", "Messages", notify?.forCoach ? "When a client messages you" : "When your coach messages you"],
-            ].map(([key, label, sub]) => {
+            {(notify?.forCoach ? [
+              // Coaches (Isaiah, 25 Nov): what's happening with their clients.
+              ["today", "Clients training today", "7 am: who has a session today"],
+              ["missed", "Missed sessions", "8 pm: who missed today's session"],
+              ["sessions", "Sessions logged", "When a client finishes a session"],
+              ["messages", "Messages", "When a client messages you"],
+              ["joined", "New clients", "When someone joins your client list"],
+              ["checkin", "Weekly check-in", "Monday 9 am: who hasn't trained in a week"],
+            ] : [
+              ["reminders", "Training reminders", "7 am on training days, and once after a missed session"],
+              ...(notify?.solo ? [] : [["messages", "Messages", "When your coach messages you"]]),
+            ]).map(([key, label, sub]) => {
               const isOn = notify?.[key] !== false;
               return (
                 <div key={key} className="flex items-center gap-3">
@@ -25874,7 +25882,7 @@ function PhoneNotificationsCard({ userId, notify = null, onNotifyChange = null }
                     <div className="text-[11px]" style={{ color: C.sub }}>{sub}</div>
                   </div>
                   <button type="button" role="switch" aria-checked={isOn} aria-label={label}
-                    onClick={() => onNotifyChange({ ...(notify || {}), forCoach: undefined, [key]: !isOn })}
+                    onClick={() => onNotifyChange({ ...(notify || {}), forCoach: undefined, solo: undefined, [key]: !isOn })}
                     className="shrink-0 w-11 h-6 rounded-full relative transition-colors"
                     style={{ background: isOn ? C.orange : C.panelAlt, border: `1px solid ${isOn ? C.orange : C.border}` }}>
                     <span className="absolute top-0.5 w-[18px] h-[18px] rounded-full bg-white transition-all" style={{ left: isOn ? 22 : 3 }} />
@@ -25891,8 +25899,9 @@ function PhoneNotificationsCard({ userId, notify = null, onNotifyChange = null }
 
 // Saves which phone alerts someone wants (profiles.intake.notify), read by
 // the reminder job and the message trigger (migration 022).
+const NOTIFY_KEYS = ["reminders", "messages", "today", "missed", "sessions", "joined", "checkin"];
 function saveNotifyPrefs(setState, next) {
-  const clean = { reminders: next.reminders !== false, messages: next.messages !== false };
+  const clean = Object.fromEntries(NOTIFY_KEYS.map(k => [k, next?.[k] !== false]));
   setState(s => ({ ...s, me: { ...s.me, intake: { ...(s.me?.intake || {}), notify: clean } } }));
   supabase.rpc("set_profile_setting", { p_key: "notify", p_value: clean }).then(() => {}, () => {});
 }
@@ -26398,7 +26407,7 @@ function AthletePreferences({ state, setState }) {
       <ProfileDetailsCard state={state} setState={setState} />
       <ThemePicker state={state} setState={setState} />
       <ChangePasswordCard />
-        <PhoneNotificationsCard userId={state.me.id} notify={state.me?.intake?.notify || {}} onNotifyChange={(next) => saveNotifyPrefs(setState, next)} />
+        <PhoneNotificationsCard userId={state.me.id} notify={{ ...(state.me?.intake?.notify || {}), solo: !state.me?.coachId }} onNotifyChange={(next) => saveNotifyPrefs(setState, next)} />
 
       {/* Also in the set table's header, which is where it is actually
           needed with a bar loaded. This copy is for someone setting the app
