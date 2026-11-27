@@ -28074,6 +28074,9 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [kept, setKept] = useState(true);
+  // Say the change instead of typing it (Isaiah, 27 Nov): a coach with a
+  // client in front of them, or a solo athlete mid-session.
+  const speech = useSpeechToText(input, setInput);
   // The program as it was before each change, for Undo during this visit.
   const snapshots = useRef(new Map());
   const listRef = useRef(null);
@@ -28113,6 +28116,7 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
   const latestUndoable = [...messages].reverse().find(m => m.changes && !m.changes.undone && m.changes.workouts + (m.changes.other || []).length > 0);
 
   const send = async (textArg) => {
+    speech.stop();
     const text = String(textArg ?? input).trim();
     if (!text || busy) return;
     setInput("");
@@ -28257,15 +28261,26 @@ function AdjustChat({ state, setState, program, authorId, onClose, compact = fal
         <div className="flex items-end gap-2">
           <textarea value={input} onChange={e => setInput(e.target.value)} rows={2}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Describe a change"
+            placeholder={speech.supported ? "Describe a change, or tap the mic and say it" : "Describe a change"}
             className="flex-1 rounded-xl px-3 py-2 text-[15px] resize-none"
-            style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, outline: "none" }} />
+            style={{ background: C.bg, border: `1px solid ${speech.listening ? C.red : C.border}`, color: C.text, outline: "none" }} />
+          {speech.supported && (
+            <button type="button" onClick={speech.listening ? speech.stop : speech.start} disabled={busy}
+              aria-label={speech.listening ? "Stop listening" : "Say the change"}
+              className="rounded-xl w-11 h-11 flex items-center justify-center shrink-0"
+              style={{ background: speech.listening ? C.red : C.panelAlt, border: `1px solid ${speech.listening ? C.red : C.border}`,
+                color: speech.listening ? "#fff" : C.text, boxShadow: speech.listening ? `0 0 0 6px ${C.red}26` : "none" }}>
+              {speech.listening ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+          )}
           <button onClick={() => send()} disabled={busy || !input.trim()} aria-label="Send"
             className="rounded-xl w-11 h-11 flex items-center justify-center shrink-0"
             style={{ background: C.orange, opacity: busy || !input.trim() ? 0.4 : 1 }}>
             <Send size={17} color="#fff" />
           </button>
         </div>
+        {speech.listening && <div className="text-[12px] mt-1.5" style={{ color: C.red }}>Listening... tap the mic to stop, then send.</div>}
+        {speech.error && <div className="text-[12px] mt-1.5" style={{ color: C.red }}>{speech.error}</div>}
         {!kept && <div className="text-[11px] mt-1.5" style={{ color: C.faint }}>This chat isn't kept after you leave the page.</div>}
       </div>
     </div>
